@@ -75,7 +75,7 @@ fn main() -> ExitCode {
         }
     };
     #[cfg(target_os = "linux")]
-    let _managed;
+    let mut managed = None;
     if let Some(path) = std::env::var_os("HYPERMESH_CONDUCTOR_CONFIG") {
         #[cfg(not(target_os = "linux"))]
         {
@@ -92,14 +92,15 @@ fn main() -> ExitCode {
                 eprintln!("managed Conductor requires a lease ID and allocates its own address");
                 return ExitCode::from(2);
             }
-            _managed = match managed_conductor::ManagedConductor::start(&path, &journal) {
+            let child = match managed_conductor::ManagedConductor::start(&path, &journal) {
                 Ok(child) => child,
                 Err(e) => {
                     eprintln!("{e}");
                     return ExitCode::from(1);
                 }
             };
-            conductor_addr = Some(_managed.address().expect("bound Conductor listener"));
+            conductor_addr = Some(child.address().expect("bound Conductor listener"));
+            managed = Some(Arc::new(child));
         }
     }
     if lease.is_some() && conductor_addr.is_none() {
@@ -145,6 +146,14 @@ fn main() -> ExitCode {
             return ExitCode::from(1);
         }
     };
+    #[cfg(target_os = "linux")]
+    let result = match managed.as_ref().map(Arc::clone) {
+        Some(child) => runtime.block_on(hypermesh_visor::serve_until(tcp, state, async move {
+            child.monitor().await
+        })),
+        None => runtime.block_on(serve(tcp, state)),
+    };
+    #[cfg(not(target_os = "linux"))]
     let result = runtime.block_on(serve(tcp, state));
     // Drop waits forever for a stuck spawn_blocking task. This bound is the
     // same deadline `serve` uses before it exits the process.

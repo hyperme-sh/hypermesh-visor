@@ -20,7 +20,7 @@ mod session;
 mod stream;
 mod vault;
 
-pub use api::{serve, AppState};
+pub use api::{serve, serve_until, AppState};
 pub use automation::SHUTDOWN_DEADLINE;
 pub use bind::parse_listen;
 pub use companion_sock::{control_socket_file, read_api_token, runtime_dir};

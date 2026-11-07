@@ -888,6 +888,15 @@ async fn capabilities(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
 /// The control API is always on `control.sock`. The companion socket stays
 /// a separate listener and is the only one that can lift a user pause.
 pub async fn serve(tcp: Option<SocketAddr>, state: Arc<AppState>) -> std::io::Result<()> {
+    serve_until(tcp, state, std::future::pending()).await
+}
+
+/// Run the normal coordinated shutdown when a managed dependency fails.
+pub async fn serve_until(
+    tcp: Option<SocketAddr>,
+    state: Arc<AppState>,
+    dependency: impl std::future::Future<Output = std::io::Result<()>> + Send + 'static,
+) -> std::io::Result<()> {
     let runtime = crate::companion_sock::runtime_dir()?;
     crate::companion_sock::prepare_dir(&runtime)?;
     let companion_path = crate::companion_sock::socket_file(&runtime);
@@ -963,6 +972,7 @@ pub async fn serve(tcp: Option<SocketAddr>, state: Arc<AppState>) -> std::io::Re
     let mut signal_stop = cancel_rx;
     jobs.push(tokio::spawn(async move {
         tokio::select! {
+            result = dependency => result,
             _ = shutdown_signal() => Ok(()),
             _ = signal_stop.wait_for(|stop| *stop) => Ok(()),
         }
@@ -1000,7 +1010,7 @@ async fn when_first_stops(
                 "hypermesh-visor: shutdown exceeded {}s; exiting",
                 automation::SHUTDOWN_DEADLINE.as_secs()
             );
-            std::process::exit(0);
+            std::process::exit(i32::from(first.is_err()));
         }
     }
 }

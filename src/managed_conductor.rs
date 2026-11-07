@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub struct ManagedConductor {
-    child: Child,
+    child: std::sync::Mutex<Child>,
     listener: TcpListener,
 }
 
@@ -45,7 +45,10 @@ impl ManagedConductor {
         let child = command
             .spawn()
             .map_err(|e| format!("starting bundled Conductor: {e}"))?;
-        let mut managed = Self { child, listener };
+        let mut managed = Self {
+            child: std::sync::Mutex::new(child),
+            listener,
+        };
         let agent = ureq::AgentBuilder::new()
             .try_proxy_from_env(false)
             .redirects(0)
@@ -56,6 +59,8 @@ impl ManagedConductor {
         loop {
             if managed
                 .child
+                .get_mut()
+                .unwrap()
                 .try_wait()
                 .map_err(|e| e.to_string())?
                 .is_some()
@@ -72,6 +77,17 @@ impl ManagedConductor {
         }
     }
 
+    pub async fn monitor(&self) -> std::io::Result<()> {
+        loop {
+            if let Some(status) = self.child.lock().unwrap().try_wait()? {
+                return Err(std::io::Error::other(format!(
+                    "bundled Conductor exited: {status}"
+                )));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     pub fn address(&self) -> Result<String, String> {
         self.listener
             .local_addr()
@@ -82,7 +98,8 @@ impl ManagedConductor {
 
 impl Drop for ManagedConductor {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let child = self.child.get_mut().unwrap();
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }

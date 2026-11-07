@@ -61,7 +61,7 @@ def check(binary, folder, server):
 
     if len(sys.argv) > 2:
         visor = Path(sys.argv[2]).resolve()
-        for stop in (signal.SIGTERM, signal.SIGKILL):
+        for stop in (signal.SIGTERM, signal.SIGKILL, None):
             check_managed(visor, binary, folder, config, stop)
 
 
@@ -93,8 +93,13 @@ def check_managed(visor, conductor, folder, config, stop):
             assert json.loads(response)["response"] == "ok"
             row = json.loads(journal.read_text())
             assert row["task_id"] == lease and row["step_id"] and row["model_id"] == "coding"
-            child.send_signal(stop)
-            child.wait(timeout=10)
+            if stop is None:
+                os.kill(int(pid), signal.SIGKILL)
+                assert child.wait(timeout=5) == 1, "Visor should report managed child failure"
+                assert not Path(f"/proc/{pid}").exists(), "Conductor was not reaped"
+            else:
+                child.send_signal(stop)
+                child.wait(timeout=10)
             child_fd = Path(f"/proc/{pid}/fd/0")
             for _ in range(100):
                 if not child_fd.exists():
