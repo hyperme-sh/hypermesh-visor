@@ -71,8 +71,8 @@ mkdir -p dist
 find dist -mindepth 1 -delete
 
 # Pin the public source and its bytes independently of the Visor version.
-conductor_revision=9917e5fbc7eb7234b7eeef9284501cc16bae70f3
-conductor_sha256=3f93cfee7fb3de8a3030fcf737c656b1239ce35312ae65aab300408a4a15c82b
+conductor_revision=7193ff1ea1e459c99022dd8ef629b8cb5524cc6f
+conductor_sha256=585fe8f8ff2eab1d2b9090ec1a35df5778de4a7d4799923ddb3b19d18f2365f9
 conductor_src=$(mktemp -d)
 trap 'rm -rf -- "$conductor_src"' EXIT
 curl --fail --silent --show-error --location \
@@ -173,7 +173,7 @@ for target in "${targets[@]}"; do
   if [[ "$target" == "$host_target" ]]; then
     package_root="$conductor_src/installed-$deb_arch"
     dpkg-deb -x "$deb" "$package_root"
-    python3 ci/check-conductor-recipe.py "$package_root/usr/lib/hypermesh-visor/conductor"
+    python3 ci/check-conductor-recipe.py "$package_root/usr/lib/hypermesh-visor/conductor" "$package_root/usr/bin/hypermesh-visor"
   fi
   listing=$(dpkg-deb -c "$deb")
   for path in \

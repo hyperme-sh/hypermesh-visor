@@ -1,4 +1,8 @@
 """Exercise the packaged Conductor against a local provider using a portal-format recipe."""
+import os
+import signal
+import time
+import uuid
 import hashlib
 import json
 import subprocess
@@ -43,7 +47,7 @@ def check(binary, folder, server):
         for name in ("cheap", "frontier")
     }
     config = folder / "endpoints.json"
-    config.write_text(json.dumps({"tiers": tiers, "recipe_file": "recipe.json",
+    config.write_text(json.dumps({"default_class": "code", "tiers": tiers, "recipe_file": "recipe.json",
                                   "prefix": {"system": "Coding fixture"}}))
     journal = folder / "journal.jsonl"
     subprocess.run([binary, "run", "--config", config, "--journal", journal,
@@ -54,6 +58,52 @@ def check(binary, folder, server):
     assert row["recipe_sha256"] == hashlib.sha256(recipe_bytes).hexdigest()
     assert row["estimated_input_tokens"] > 0
     assert (row["task_id"], row["input_tokens"], row["output_tokens"]) == ("visor-package", 12, 1)
+
+    if len(sys.argv) > 2:
+        visor = Path(sys.argv[2]).resolve()
+        for stop in (signal.SIGTERM, signal.SIGKILL):
+            check_managed(visor, binary, folder, config, stop)
+
+
+def check_managed(visor, conductor, folder, config, stop):
+    lease = str(uuid.uuid4())
+    journal = folder / (lease + ".jsonl")
+    runtime = folder / lease
+    env = dict(os.environ, HYPERMESH_CONDUCTOR_CONFIG=str(config),
+               HYPERMESH_CONDUCTOR_JOURNAL=str(journal), HYPERMESH_CONDUCTOR_LEASE_ID=lease,
+               HYPERMESH_DEFAULT_MODEL="coding", HYPERMESH_RUNTIME_DIR=str(runtime))
+    with subprocess.Popen([visor], env=env) as child:
+        try:
+            for _ in range(200):
+                if child.poll() is not None:
+                    raise RuntimeError("Visor exited before readiness")
+                if (runtime / "control.sock").exists():
+                    break
+                time.sleep(.05)
+            pid, = Path(f"/proc/{child.pid}/task/{child.pid}/children").read_text().split()
+            assert Path(f"/proc/{pid}/exe").resolve() == conductor
+            listener = os.readlink(f"/proc/{pid}/fd/0")
+            assert listener.startswith("socket:[")
+            assert listener in [os.readlink(fd) for fd in Path(f"/proc/{child.pid}/fd").iterdir()]
+            response = subprocess.check_output([
+                "curl", "--fail", "--silent", "--show-error", "--max-time", "15",
+                "--unix-socket", str(runtime / "control.sock"), "-H", "Content-Type: application/json",
+                "--data-binary", "@-", "http://localhost/prompt",
+            ], input=b'{"api_key":"org_fixture_ok","prompt":"Reply ok"}')
+            assert json.loads(response)["response"] == "ok"
+            row = json.loads(journal.read_text())
+            assert row["task_id"] == lease and row["step_id"] and row["model_id"] == "coding"
+            child.send_signal(stop)
+            child.wait(timeout=10)
+            child_fd = Path(f"/proc/{pid}/fd/0")
+            for _ in range(100):
+                if not child_fd.exists():
+                    break
+                time.sleep(.05)
+            assert not child_fd.exists(), "Conductor retained the listener after Visor exited"
+        finally:
+            if child.poll() is None:
+                child.kill()
 
 
 if __name__ == "__main__":

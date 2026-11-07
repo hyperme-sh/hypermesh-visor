@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+mod managed_conductor;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -60,8 +62,53 @@ fn main() -> ExitCode {
         let desktop = hypermesh_visor::MacDesktop;
         Arc::new(desktop)
     };
+    let mut conductor_addr = std::env::var("HYPERMESH_CONDUCTOR_ADDR").ok();
+    let lease = std::env::var_os("HYPERMESH_CONDUCTOR_LEASE_ID");
+    let lease = match lease
+        .map(|s| uuid::Uuid::parse_str(&s.to_string_lossy()))
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(_) => {
+            eprintln!("invalid HYPERMESH_CONDUCTOR_LEASE_ID");
+            return ExitCode::from(2);
+        }
+    };
+    #[cfg(target_os = "linux")]
+    let _managed;
+    if let Some(path) = std::env::var_os("HYPERMESH_CONDUCTOR_CONFIG") {
+        #[cfg(not(target_os = "linux"))]
+        {
+            eprintln!("bundled Conductor requires Linux");
+            return ExitCode::from(2);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Some(journal) = std::env::var_os("HYPERMESH_CONDUCTOR_JOURNAL") else {
+                eprintln!("managed Conductor requires HYPERMESH_CONDUCTOR_JOURNAL");
+                return ExitCode::from(2);
+            };
+            if conductor_addr.is_some() || lease.is_none() {
+                eprintln!("managed Conductor requires a lease ID and allocates its own address");
+                return ExitCode::from(2);
+            }
+            _managed = match managed_conductor::ManagedConductor::start(&path, &journal) {
+                Ok(child) => child,
+                Err(e) => {
+                    eprintln!("{e}");
+                    return ExitCode::from(1);
+                }
+            };
+            conductor_addr = Some(_managed.address().expect("bound Conductor listener"));
+        }
+    }
+    if lease.is_some() && conductor_addr.is_none() {
+        eprintln!("Conductor lease ID requires a Conductor route");
+        return ExitCode::from(2);
+    }
     let config = DoorConfig {
-        conductor_addr: std::env::var("HYPERMESH_CONDUCTOR_ADDR").ok(),
+        conductor_addr,
+        conductor_lease: lease,
         default_model: resolve_default_model(
             options.default_model.as_deref(),
             std::env::var("HYPERMESH_DEFAULT_MODEL").ok().as_deref(),

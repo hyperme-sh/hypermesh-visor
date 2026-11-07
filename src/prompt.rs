@@ -123,12 +123,13 @@ impl PromptDoor for SupervisorDoor {
 
 /// The bundled Conductor's loopback listener, configured with a default class.
 pub(crate) struct ConductorDoor {
+    lease: Option<uuid::Uuid>,
     endpoint: String,
     agent: ureq::Agent,
 }
 
 impl ConductorDoor {
-    pub(crate) fn connect(address: &str) -> Result<Self, String> {
+    pub(crate) fn connect(address: &str, lease: Option<uuid::Uuid>) -> Result<Self, String> {
         let addr: std::net::SocketAddr = address
             .parse()
             .map_err(|_| "invalid Conductor socket address")?;
@@ -136,6 +137,7 @@ impl ConductorDoor {
             return Err("Conductor requires a loopback address with a port".into());
         }
         Ok(Self {
+            lease,
             endpoint: format!("http://{addr}{CHAT_COMPLETIONS_PATH}"),
             agent: ureq::AgentBuilder::new()
                 .try_proxy_from_env(false)
@@ -160,17 +162,19 @@ impl PromptDoor for ConductorDoor {
             }],
         };
         let payload = serde_json::to_vec(&body).map_err(|_| "prompt could not be encoded")?;
-        let response = self
+        let mut request = self
             .agent
             .post(&self.endpoint)
             .set("Content-Type", "application/json")
             .set("X-Conductor-Expected-Model", model)
-            .set("Authorization", &format!("Bearer {}", call.api_key))
-            .send_bytes(&payload)
-            .map_err(|e| match e {
-                ureq::Error::Status(code, _) => format!("Conductor HTTP {code}"),
-                _ => "Conductor request failed".into(),
-            })?;
+            .set("Authorization", &format!("Bearer {}", call.api_key));
+        if let Some(id) = self.lease {
+            request = request.set("X-Conductor-Task", &id.to_string());
+        }
+        let response = request.send_bytes(&payload).map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("Conductor HTTP {code}"),
+            _ => "Conductor request failed".into(),
+        })?;
         completion_text(&read_limited(response)?)
     }
 }
@@ -1171,7 +1175,7 @@ mod tests {
         assert_eq!(hits[0].authorization, format!("Bearer {FIXTURE_KEY}"));
         assert_eq!(hits[0].expected_model, DEFAULT_CATALOG_ID);
         assert!(hits[0].api_key.is_empty());
-        assert!(ConductorDoor::connect("192.0.2.1:80").is_err());
+        assert!(ConductorDoor::connect("192.0.2.1:80", None).is_err());
         assert!(PromptPass::open(&DoorConfig {
             primary_url: Some(fixture.url),
             ..config
@@ -1376,6 +1380,7 @@ mod tests {
         let pass = PromptPass::open(&DoorConfig {
             default_model: DEFAULT_CATALOG_ID.into(),
             conductor_addr: None,
+            conductor_lease: None,
             primary_url: None,
             second_url: Some("http://127.0.0.1:9".into()),
             routes: Vec::new(),
