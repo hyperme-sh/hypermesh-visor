@@ -70,6 +70,18 @@ esac
 mkdir -p dist
 find dist -mindepth 1 -delete
 
+# Pin the public source and its bytes independently of the Visor version.
+conductor_revision=64aa06f60b79fff2e7c4d3f0d3223a627d7ecad2
+conductor_sha256=f59894121e307af558ffac55e71ae05a6632231be8aacb51241111fda7847116
+conductor_src=$(mktemp -d)
+trap 'rm -rf -- "$conductor_src"' EXIT
+curl --fail --silent --show-error --location \
+  "https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/$conductor_revision" \
+  -o "$conductor_src/source.tar.gz"
+echo "$conductor_sha256  $conductor_src/source.tar.gz" | sha256sum --check --status
+tar --extract --gzip --file="$conductor_src/source.tar.gz" --directory="$conductor_src" --strip-components=1
+export CONDUCTOR_LICENSE="$conductor_src/LICENSE"
+
 for target in "${targets[@]}"; do
   case "$target" in
     x86_64-unknown-linux-gnu)
@@ -132,6 +144,10 @@ for target in "${targets[@]}"; do
     CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -mod=readonly -trimpath -o "$root/$hm_bin" ./cmd/hm
   )
 
+  export CONDUCTOR_BIN="$root/target/nfpm/conductor-$asset_arch"
+  (cd "$conductor_src" && CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" go build -buildvcs=false -mod=readonly -trimpath -o "$CONDUCTOR_BIN" ./cmd/conductor)
+  file -b "$CONDUCTOR_BIN" | grep -q "$elf_needle"
+
   if ! file -b "$raw" | grep -q "$elf_needle"; then
     echo "$raw is not a $elf_needle ELF" >&2
     file -b "$raw" >&2
@@ -160,6 +176,7 @@ for target in "${targets[@]}"; do
     './usr/bin/hypermesh-companion' \
     './usr/bin/hypermesh-desktop-mcp' \
     './usr/bin/hypermesh' \
+    './usr/lib/hypermesh-visor/conductor' \
     './usr/bin/hm' \
     './etc/xdg/autostart/hypermesh-companion.desktop'
   do

@@ -17,6 +17,16 @@ homepage: https://github.com/FyberLabs/hypermesh-visor
 depends:
   - zenity
 contents:
+  - src: ${CONDUCTOR_BIN}
+    dst: /usr/lib/hypermesh-visor/conductor
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${CONDUCTOR_LICENSE}
+    dst: /usr/share/doc/hypermesh-visor/conductor-LICENSE
+    expand: true
+    file_info:
+      mode: 0644
   - src: ${VISOR_BIN}
     dst: /usr/bin/hypermesh-visor
     expand: true
