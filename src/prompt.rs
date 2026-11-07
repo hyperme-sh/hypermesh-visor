@@ -121,6 +121,60 @@ impl PromptDoor for SupervisorDoor {
     }
 }
 
+/// The bundled Conductor's loopback listener, configured with a default class.
+pub(crate) struct ConductorDoor {
+    endpoint: String,
+    agent: ureq::Agent,
+}
+
+impl ConductorDoor {
+    pub(crate) fn connect(address: &str) -> Result<Self, String> {
+        let addr: std::net::SocketAddr = address
+            .parse()
+            .map_err(|_| "invalid Conductor socket address")?;
+        if !addr.ip().is_loopback() || addr.port() == 0 {
+            return Err("Conductor requires a loopback address with a port".into());
+        }
+        Ok(Self {
+            endpoint: format!("http://{addr}{CHAT_COMPLETIONS_PATH}"),
+            agent: ureq::AgentBuilder::new()
+                .try_proxy_from_env(false)
+                .redirects(0)
+                .timeout(Duration::from_secs(130))
+                .build(),
+        })
+    }
+}
+
+impl PromptDoor for ConductorDoor {
+    fn forward(&self, call: &ForwardedPrompt) -> Result<String, String> {
+        let model = call
+            .model
+            .as_deref()
+            .ok_or("Conductor requires a selected model")?;
+        let body = ChatBody {
+            model: Some(model),
+            messages: [ChatMessage {
+                role: "user",
+                content: &call.prompt,
+            }],
+        };
+        let payload = serde_json::to_vec(&body).map_err(|_| "prompt could not be encoded")?;
+        let response = self
+            .agent
+            .post(&self.endpoint)
+            .set("Content-Type", "application/json")
+            .set("X-Conductor-Expected-Model", model)
+            .set("Authorization", &format!("Bearer {}", call.api_key))
+            .send_bytes(&payload)
+            .map_err(|e| match e {
+                ureq::Error::Status(code, _) => format!("Conductor HTTP {code}"),
+                _ => "Conductor request failed".into(),
+            })?;
+        completion_text(&read_limited(response)?)
+    }
+}
+
 /// Blank or missing `chat_base` keeps the unconfigured door.
 /// A set URL is the renter supervisor chat base and does not carry a secret.
 pub fn open_supervisor_door(chat_base: Option<&str>) -> Result<Arc<dyn PromptDoor>, String> {
@@ -1101,6 +1155,31 @@ mod tests {
     }
 
     #[test]
+    fn conductor_receives_the_renter_bearer_and_selected_catalog_id() {
+        let fixture = ChatFixture::spawn(200, r#"{"choices":[{"message":{"content":"done"}}]}"#);
+        let config = DoorConfig {
+            conductor_addr: Some(fixture.url.trim_start_matches("http://").into()),
+            ..DoorConfig::default()
+        };
+        let pass = PromptPass::open(&config).unwrap();
+        assert_eq!(
+            pass.submit(FIXTURE_PROMPT, FIXTURE_KEY, None).unwrap(),
+            "done"
+        );
+        let hits = fixture.hits();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].authorization, format!("Bearer {FIXTURE_KEY}"));
+        assert_eq!(hits[0].expected_model, DEFAULT_CATALOG_ID);
+        assert!(hits[0].api_key.is_empty());
+        assert!(ConductorDoor::connect("192.0.2.1:80").is_err());
+        assert!(PromptPass::open(&DoorConfig {
+            primary_url: Some(fixture.url),
+            ..config
+        })
+        .is_err());
+    }
+
+    #[test]
     fn supervisor_fixture_receives_the_key_and_the_auditor_hides_it() {
         let fixture = ChatFixture::spawn(
             200,
@@ -1296,6 +1375,7 @@ mod tests {
     fn a_second_url_does_not_turn_a_blank_first_url_into_a_call() {
         let pass = PromptPass::open(&DoorConfig {
             default_model: DEFAULT_CATALOG_ID.into(),
+            conductor_addr: None,
             primary_url: None,
             second_url: Some("http://127.0.0.1:9".into()),
             routes: Vec::new(),
@@ -1474,6 +1554,8 @@ mod tests {
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct ChatHit {
+    pub authorization: String,
+    pub expected_model: String,
     pub path: String,
     pub api_key: String,
     pub body: String,
@@ -1504,6 +1586,11 @@ impl ChatFixture {
                     continue;
                 };
                 recorded.lock().unwrap().push(ChatHit {
+                    authorization: headers.get("authorization").cloned().unwrap_or_default(),
+                    expected_model: headers
+                        .get("x-conductor-expected-model")
+                        .cloned()
+                        .unwrap_or_default(),
                     path,
                     api_key: headers.get("x-api-key").cloned().unwrap_or_default(),
                     lease: headers.get("x-lease-id").cloned().unwrap_or_default(),

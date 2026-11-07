@@ -24,6 +24,7 @@ const PRODUCT_CATALOG: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct DoorConfig {
     pub default_model: String,
+    pub conductor_addr: Option<String>,
     pub primary_url: Option<String>,
     pub second_url: Option<String>,
     pub routes: Vec<(String, String)>,
@@ -35,6 +36,7 @@ impl Default for DoorConfig {
     fn default() -> Self {
         Self {
             default_model: DEFAULT_CATALOG_ID.to_string(),
+            conductor_addr: None,
             primary_url: None,
             second_url: None,
             routes: Vec::new(),
@@ -394,6 +396,24 @@ pub(crate) fn connect(config: &DoorConfig) -> Result<Orchestrator, String> {
     };
     let primary = blank_to_none(config.primary_url.as_deref());
     let second = blank_to_none(config.second_url.as_deref());
+    if let Some(addr) = &config.conductor_addr {
+        if primary.is_some()
+            || second.is_some()
+            || !config.routes.is_empty()
+            || !config.experts.is_empty()
+            || !config.answers.is_empty()
+        {
+            return Err("Conductor requires an exclusive prompt route".into());
+        }
+        let door = crate::prompt::ConductorDoor::connect(addr)?;
+        return Ok(Orchestrator::from_named(
+            &default_model,
+            vec![("conductor".into(), Arc::new(door))],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
+    }
     let Some(primary) = primary else {
         if !config.routes.is_empty() || !config.experts.is_empty() || !config.answers.is_empty() {
             return Err("a supervisor url is required before a route or an expert set".into());
