@@ -61,6 +61,7 @@ fn main() -> ExitCode {
         Arc::new(desktop)
     };
     let config = DoorConfig {
+        conductor_addr: std::env::var("HYPERMESH_CONDUCTOR_ADDR").ok(),
         default_model: resolve_default_model(
             options.default_model.as_deref(),
             std::env::var("HYPERMESH_DEFAULT_MODEL").ok().as_deref(),
