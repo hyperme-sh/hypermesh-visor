@@ -24,6 +24,7 @@ const PRODUCT_CATALOG: &[&str] = &[
 #[derive(Clone, Debug)]
 pub struct DoorConfig {
     pub default_model: String,
+    pub conductor_lease: Option<uuid::Uuid>,
     pub conductor_addr: Option<String>,
     pub primary_url: Option<String>,
     pub second_url: Option<String>,
@@ -37,6 +38,7 @@ impl Default for DoorConfig {
         Self {
             default_model: DEFAULT_CATALOG_ID.to_string(),
             conductor_addr: None,
+            conductor_lease: None,
             primary_url: None,
             second_url: None,
             routes: Vec::new(),
@@ -405,7 +407,7 @@ pub(crate) fn connect(config: &DoorConfig) -> Result<Orchestrator, String> {
         {
             return Err("Conductor requires an exclusive prompt route".into());
         }
-        let door = crate::prompt::ConductorDoor::connect(addr)?;
+        let door = crate::prompt::ConductorDoor::connect(addr, config.conductor_lease)?;
         return Ok(Orchestrator::from_named(
             &default_model,
             vec![("conductor".into(), Arc::new(door))],
