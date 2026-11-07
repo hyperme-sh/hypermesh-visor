@@ -71,8 +71,8 @@ mkdir -p dist
 find dist -mindepth 1 -delete
 
 # Pin the public source and its bytes independently of the Visor version.
-conductor_revision=64aa06f60b79fff2e7c4d3f0d3223a627d7ecad2
-conductor_sha256=f59894121e307af558ffac55e71ae05a6632231be8aacb51241111fda7847116
+conductor_revision=88b43487d75fed83f9ffe87f230ac6164d4ff823
+conductor_sha256=909db3a64d9b8acfe02a24659f3c7d93df512abf4e1bb52e33b5ec5ee4c8caff
 conductor_src=$(mktemp -d)
 trap 'rm -rf -- "$conductor_src"' EXIT
 curl --fail --silent --show-error --location \
@@ -169,6 +169,11 @@ for target in "${targets[@]}"; do
   if [[ "$got_deb_arch" != "$deb_arch" || "$got_deb_name" != "hypermesh-visor" || "$got_deb_home" != "https://github.com/FyberLabs/hypermesh-visor" ]]; then
     echo "unexpected deb metadata for $deb: $got_deb_name $got_deb_arch $got_deb_home" >&2
     exit 1
+  fi
+  if [[ "$target" == "$host_target" ]]; then
+    package_root="$conductor_src/installed-$deb_arch"
+    dpkg-deb -x "$deb" "$package_root"
+    python3 ci/check-conductor-recipe.py "$package_root/usr/lib/hypermesh-visor/conductor"
   fi
   listing=$(dpkg-deb -c "$deb")
   for path in \
