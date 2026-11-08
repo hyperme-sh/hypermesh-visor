@@ -10,5 +10,6 @@
     "max_output_tokens": 16,
     "context_window_tokens": 44
   },
+  "max_task_tokens": 72,
   "max_task_output_tokens": 96
 }

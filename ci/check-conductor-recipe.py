@@ -1,6 +1,7 @@
 """Exercise the packaged Conductor with a recipe exported by the portal editor."""
 import os
 import signal
+import sqlite3
 import time
 import uuid
 import hashlib
@@ -96,7 +97,7 @@ def check_managed(visor, conductor, folder, config, stop, server):
             assert listener.startswith("socket:[")
             assert listener in [os.readlink(fd) for fd in Path(f"/proc/{child.pid}/fd").iterdir()]
             command = [
-                "curl", "--fail", "--silent", "--show-error", "--max-time", "15",
+                "curl", "--fail-with-body", "--silent", "--show-error", "--max-time", "15",
                 "--unix-socket", str(runtime / "control.sock"), "-H", "Content-Type: application/json",
                 "--data-binary", "@-", "http://localhost/prompt",
             ]
@@ -107,6 +108,19 @@ def check_managed(visor, conductor, folder, config, stop, server):
             assert row["task_id"] == lease and row["step_id"] and row["model_id"] == "coding"
             assert row["counted_input_tokens"] == 28 and row["input_tokens"] == 28
             assert row["recipe_sha256"] == hashlib.sha256((folder / "recipe.json").read_bytes()).hexdigest()
+            # This second prompt fits the frontier context window. Only the
+            # combined task budget is exhausted: 29 already used + 44 requested.
+            budget = subprocess.run(command, input=b'{"api_key":"org_fixture_ok","prompt":"Next step"}',
+                                    capture_output=True, timeout=20)
+            assert budget.returncode == 22 and b"Conductor HTTP 409" in budget.stdout, budget
+            assert server.counts[-2:] == [28, 28] and len(server.calls) == calls_before + 1
+            assert json.loads(journal.read_text()) == row
+            with sqlite3.connect(f"file:{journal}.output.sqlite?mode=ro", uri=True) as ledger:
+                attempts = ledger.execute("SELECT step,input_charge,charge FROM output_attempts WHERE task=?",
+                                          (lease,)).fetchall()
+            assert attempts == [(row["step_id"], 28, 1)], attempts
+            print(f"lease={lease} step={row['step_id']} used=29 requested=44 limit=72 "
+                  f"conductor_http=409 generations={len(server.calls) - calls_before}", flush=True)
             refused = subprocess.run(command, input=b'{"api_key":"org_fixture_ok","prompt":"Over window"}',
                                      capture_output=True, timeout=20)
             assert refused.returncode == 22, refused
