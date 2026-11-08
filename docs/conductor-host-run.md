@@ -26,3 +26,11 @@ The test Compose VM ran staged Linux Visor and Conductor binaries built from the
 Asked to repair the initial upper bound of a half-open binary search, the model returned a function header and the assignment `lo, hi = 0, len(values)`. The one-line format check rejected the extra header. A separate check inspected the returned assignment's Python AST, completed the supplied search loop, and compared the result with `bisect_left` across 2,016 inputs. All matched on the original response.
 
 Cleanup revoked the renter key and closed the lease. Stop job `a67840b6-920e-449a-b5f4-388d0e52d864` passed. At 18:43:55 UTC the plane heartbeat showed paused, with zero outstanding leases. The host had no running Docker containers. Both VM test processes were stopped.
+
+## Context-window preflight for Strix Halo
+
+Export the recipe from the portal and retain its original bytes. Set the frontier model ID and context window for the certified deployment. Configure that tier's OpenAI-compatible endpoints entry with `input_counter: vllm`. Verify the gateway serves both chat and the sibling tokenizer using the same model revision and template.
+
+The package check uses a portal export from controlplane-portal fb4de804 and a deterministic tokenizer fixture. The frontier window is 44 with a 16-token output cap. A count of 28 fits exactly; 29 must yield a refusal and zero additional generation calls. The cheap window of 24 also refuses the 28-token input. Check the accepted journal entry for the lease UUID, the exported file's SHA-256, counted input and provider-reported usage. The fixture values exercise boundaries; use the qualified model's values for the hardware run.
+
+The staged Linux bundle with Conductor 33e89a0 passed this check on the test Compose VM, pano-test. The exported recipe SHA-256 was `8ec0cba5e170558d412592c36164d0ec70c5ce4e9c0e9abc8d4d327534ab89fc`. The accepted frontier receipt recorded 28 counted input tokens, 28 provider-reported input tokens and one output token. Both tier refusal checks passed before generation. This run used a local tokenizer/provider fixture.
