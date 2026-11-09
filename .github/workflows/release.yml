@@ -48,6 +48,7 @@ jobs:
         with:
           name: hypermesh-visor-linux
           path: dist/*
+          retention-days: 1
           if-no-files-found: error
 
   installed-x11:
