@@ -14,7 +14,10 @@ jobs:
       - name: Check Python fixture syntax
         run: python3 -m compileall -q container ci/container
       - name: Check shell harness syntax
-        run: bash -n ci/verbs.sh ci/cross-user.sh ci/display/run.sh
+        run: |
+          for script in ci/verbs.sh ci/cross-user.sh ci/display/run.sh; do
+            bash -n "$script"
+          done
       - name: Validate Compose contract without starting containers
         env:
           VISOR_IMAGE: visor-container:contract-only
