@@ -30,8 +30,29 @@ glibc and musl. Alpine builds verify the kernel and Rust host architecture and
 reject dynamic ELF interpreters. No QEMU or cross-architecture fallback is used.
 CI artifacts expire after one day; they are not published releases.
 
-This implements the build/storage dependency portion of #99/#101. Separate
-packages and OpenRC service installation, bundled musl Conductor, on-request host
-delivery/removal, the opt-in host capability schema and AIuditor integration
-remain required. Nightly integration coverage must be added for those paths;
+Native musl CI also creates unsigned `.apk`, `.deb`, `.rpm` and tar bundles.
+They install `/usr/bin/hypermesh-visor-headless` and a static Conductor under
+`/usr/lib/hypermesh-visor-headless/`. The two package names and install paths are
+separate, so installing headless does not replace the desktop companion.
+Package versions retain the Cargo version. These short-lived CI artifacts are
+not an update channel: `build.txt` identifies both source revisions and the
+architecture, and `checksums.txt` identifies the exact downloadable bytes.
+They do not create users, enable a daemon, or configure network services.
+
+The APK includes an OpenRC service. Deployment configuration must first provision
+a dedicated non-root account and set `visor_user` in
+`/etc/conf.d/hypermesh-visor-headless`. The service refuses an empty account or
+UID zero, creates private runtime/state directories, and keeps its PID file in
+root-owned `/run`. Installation leaves it disabled. Its default transport is a
+local socket; network access requires separate configuration.
+
+This implements the build/storage and package portions of #99/#101. Installed
+OpenRC behavior, on-request host delivery/removal, the opt-in host capability
+schema and AIuditor integration remain required. Nightly integration coverage must be added for those paths;
 unit/build results do not establish installed-service behavior.
+
+The same Dockerfile has an optional `runtime` target built on digest-pinned
+Alpine. It installs the APK, runs as UID 1000, and contains no Rust/Go toolchain,
+desktop stack or D-Bus service. Its local sockets are under `/run/visor`; private
+state is under `/var/lib/visor`. Deployment configuration owns any state mounts
+and grants; the image does not expose a TCP port or mount host resources.

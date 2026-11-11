@@ -20,7 +20,11 @@ impl ManagedConductor {
             .parent()
             .and_then(|bin| bin.parent())
             .ok_or("invalid package layout")?;
-        let mut command = Command::new(prefix.join("lib/hypermesh-visor/conductor"));
+        #[cfg(feature = "desktop")]
+        let relative = "lib/hypermesh-visor/conductor";
+        #[cfg(not(feature = "desktop"))]
+        let relative = "lib/hypermesh-visor-headless/conductor";
+        let mut command = Command::new(prefix.join(relative));
         command
             .arg("serve")
             .arg("--stdin-listener")
