@@ -179,6 +179,56 @@ fn roundtrip(
 }
 
 #[test]
+fn capabilities_preserve_authenticated_contract_over_both_transports() {
+    let contract = json!({"schema_version": 1, "verbs": [], "limits": {"max": 128}});
+    for unix in [false, true] {
+        let (response, wire) = roundtrip(
+            unix,
+            200,
+            "application/json; charset=utf-8",
+            serde_json::to_vec(&contract).unwrap(),
+            true,
+            call("capabilities", json!({})),
+        );
+        assert!(wire.starts_with("GET /capabilities HTTP/1.1"));
+        if !unix {
+            assert!(wire
+                .to_lowercase()
+                .contains("authorization: bearer test-bearer"));
+        }
+        assert_eq!(response["result"]["isError"], false);
+        let actual: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(actual, contract);
+        let (denied, _) = roundtrip(
+            unix,
+            401,
+            "application/json",
+            br#"{"error":"unauthorized"}"#.to_vec(),
+            false,
+            call("capabilities", json!({})),
+        );
+        assert_eq!(denied["result"]["isError"], true);
+    }
+    for (mime, body) in [
+        ("text/html", "{}"),
+        ("application/json", "[]"),
+        ("application/json", "broken"),
+    ] {
+        let (response, _) = roundtrip(
+            false,
+            200,
+            mime,
+            body.as_bytes().to_vec(),
+            false,
+            call("capabilities", json!({})),
+        );
+        assert_eq!(response["result"]["isError"], true);
+    }
+}
+
+#[test]
 fn screenshots_preserve_png_bytes_over_both_transports_and_framings() {
     for unix in [false, true] {
         for chunked in [false, true] {
@@ -253,6 +303,7 @@ fn invalid_arguments_never_reach_the_transport() {
     requests.extend([
         call("type_text", json!({})),
         call("view", json!({"extra":true})),
+        call("capabilities", json!({"session":"override"})),
         call("resume", json!({})),
         call("read_file", json!({})),
         json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}),
@@ -364,17 +415,129 @@ fn tool_notifications_cannot_execute_and_schema_matches_validation() {
     let responses = run("http://127.0.0.1:0", false, SESSION, &messages);
     assert_eq!(responses.len(), 1);
     let tools = responses[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 5);
-    assert_eq!(tools[1]["inputSchema"]["properties"]["x"]["maximum"], 32767);
+    assert_eq!(tools.len(), 9);
+    assert_eq!(tools[2]["inputSchema"]["properties"]["x"]["maximum"], 32767);
     assert_eq!(
-        tools[2]["inputSchema"]["properties"]["button"]["enum"],
+        tools[3]["inputSchema"]["properties"]["button"]["enum"],
         json!(["left", "right", "middle"])
     );
     assert_eq!(
-        tools[4]["inputSchema"]["properties"]["text"]["maxLength"],
+        tools[5]["inputSchema"]["properties"]["text"]["maxLength"],
         4096
     );
     assert!(tools
         .iter()
         .all(|tool| tool["inputSchema"]["additionalProperties"] == false));
+}
+
+#[test]
+fn queued_task_routes_and_results_preserve_the_assigned_session() {
+    let task = "00000000-0000-0000-0000-000000000002";
+    for unix in [false, true] {
+        for (tool, method) in [("task_status", "GET"), ("task_cancel", "DELETE")] {
+            let (result, wire) = roundtrip(
+                unix,
+                200,
+                "application/json",
+                serde_json::to_vec(&json!({"id":task,"status":"completed","results":[]})).unwrap(),
+                false,
+                call(tool, json!({"task_id":task})),
+            );
+            assert!(wire.starts_with(&format!(
+                "{method} /session/{SESSION}/tasks/{task} HTTP/1.1"
+            )));
+            assert_eq!(result["result"]["isError"], false);
+        }
+        let (result, wire) = roundtrip(
+            unix,
+            202,
+            "application/json",
+            serde_json::to_vec(&json!({"id":task,"status":"completed","results":[]})).unwrap(),
+            false,
+            call(
+                "task_submit",
+                json!({"steps":[{"tool":"view","arguments":{}}]}),
+            ),
+        );
+        assert!(wire.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
+        assert_eq!(result["result"]["isError"], false);
+    }
+    let response = json!({"id":task,"status":"completed","results":[{"type":"image","mimeType":"image/png",
+        "data":base64::engine::general_purpose::STANDARD.encode(png())}]});
+    let (result, _) = roundtrip(
+        false,
+        200,
+        "application/json",
+        serde_json::to_vec(&response).unwrap(),
+        false,
+        call("task_status", json!({"task_id":task})),
+    );
+    assert_eq!(result["result"]["content"][1], response["results"][0]);
+    for args in [
+        json!({"steps":[]}),
+        json!({"steps":[{"tool":"task_submit","arguments":{}}]}),
+        json!({"steps":[{"tool":"view","arguments":{},"session":"other"}]}),
+    ] {
+        assert_eq!(
+            run(
+                "http://127.0.0.1:0",
+                false,
+                SESSION,
+                &[call("task_submit", args)]
+            )[0]["error"]["code"],
+            -32602
+        );
+    }
+    assert_eq!(
+        run(
+            "http://127.0.0.1:0",
+            false,
+            SESSION,
+            &[call("task_status", json!({"task_id":"../other"}))]
+        )[0]["error"]["code"],
+        -32602
+    );
+}
+
+#[test]
+fn mcp_disconnect_cancels_only_its_submitted_task() {
+    let task = "00000000-0000-0000-0000-000000000002";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = accept_bounded!(listener);
+        let first = exchange(
+            stream,
+            202,
+            "application/json",
+            serde_json::to_string(&json!({"id":task,"status":"queued"}))
+                .unwrap()
+                .as_bytes(),
+            false,
+        );
+        let (stream, _) = accept_bounded!(listener);
+        let second = exchange(
+            stream,
+            200,
+            "application/json",
+            serde_json::to_string(&json!({"id":task,"status":"cancelled"}))
+                .unwrap()
+                .as_bytes(),
+            false,
+        );
+        (first, second)
+    });
+    let responses = run(
+        &format!("http://{address}"),
+        false,
+        SESSION,
+        &[call(
+            "task_submit",
+            json!({"steps":[{"tool":"view","arguments":{}}]}),
+        )],
+    );
+    assert_eq!(responses.len(), 1);
+    let (first, second) = server.join().unwrap();
+    assert!(first.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
+    assert!(second.starts_with(&format!("DELETE /session/{SESSION}/tasks/{task} HTTP/1.1")));
 }

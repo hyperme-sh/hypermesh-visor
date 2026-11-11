@@ -57,7 +57,7 @@ pub(crate) fn describe(backend: &str) -> Value {
             "attached_tools": "/session/{id}/mcp",
             "refresh_tools": "/session/{id}/mcp/refresh",
             "refresh_actions": ["refresh", "reconnect"],
-            "inverse_tools": ["view", "mouse_move", "mouse_click", "mouse_scroll", "type_text"]
+            "inverse_tools": ["capabilities", "view", "mouse_move", "mouse_click", "mouse_scroll", "type_text", "task_submit", "task_status", "task_cancel"]
         }
     })
 }
