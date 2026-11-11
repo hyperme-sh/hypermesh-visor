@@ -45,3 +45,19 @@ disconnect requests cancellation only for tasks created by that connection.
 Abrupt process loss still relies on the daemon deadline or session closure.
 `capabilities` returns the authenticated daemon contract without requiring a
 session or granting desktop access.
+
+The stdio adapter negotiates MCP `2024-11-05`. Clients send a valid `initialize`
+request followed by `notifications/initialized` before listing or calling tools.
+For another requested version, the server returns its supported version; clients
+that cannot use it should disconnect. Ping requests work during setup. Invalid
+JSON-RPC envelopes and malformed initialization requests receive protocol errors;
+notifications never produce responses or execute tools.
+
+`notifications/cancelled` does not interrupt a synchronous desktop HTTP call.
+Such calls retain their transport timeout and existing user-pause controls.
+Use queued jobs and `task_cancel` for interruptible multi-step work. A cancellation
+notification for an already-completed RPC does not cancel the task that RPC
+created. General in-flight RPC interruption remains a gap in #32.
+
+Each stdio request is limited to 512 KiB. An oversized line ends the connection
+after a protocol error and requests cleanup of its queued jobs.
