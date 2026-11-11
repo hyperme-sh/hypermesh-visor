@@ -39,7 +39,24 @@ macro_rules! accept_bounded {
     }};
 }
 
+fn initialize(version: &str) -> Value {
+    json!({"jsonrpc":"2.0", "id":"handshake", "method":"initialize", "params":{
+        "protocolVersion":version,"capabilities":{},"clientInfo":{"name":"contract-client","version":"1"}}})
+}
+
 fn run(endpoint: &str, unix: bool, session: &str, requests: &[Value]) -> Vec<Value> {
+    let mut messages = vec![
+        initialize("2024-11-05"),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+    ];
+    messages.extend_from_slice(requests);
+    run_raw(endpoint, unix, session, &messages)
+        .into_iter()
+        .filter(|message| message["id"] != "handshake")
+        .collect()
+}
+
+fn run_raw(endpoint: &str, unix: bool, session: &str, requests: &[Value]) -> Vec<Value> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_hypermesh-desktop-mcp"));
     command
         .env("HYPERMESH_SESSION_ID", session)
@@ -540,4 +557,44 @@ fn mcp_disconnect_cancels_only_its_submitted_task() {
     let (first, second) = server.join().unwrap();
     assert!(first.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
     assert!(second.starts_with(&format!("DELETE /session/{SESSION}/tasks/{task} HTTP/1.1")));
+}
+
+#[test]
+fn initialization_negotiates_before_tools_and_notifications_never_reply() {
+    let messages = [
+        call("view", json!({})),
+        json!({"jsonrpc":"2.0","method":"initialize","params":{}}),
+        json!({"jsonrpc":"2.0","method":"tools/list"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{}}),
+        initialize("2099-01-01"),
+        json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/list"}),
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}),
+        initialize("2024-11-05"),
+        json!({"jsonrpc":"1.0","id":6,"method":"tools/list"}),
+    ];
+    let replies = run_raw("http://127.0.0.1:0", false, SESSION, &messages);
+    assert_eq!(replies.len(), 8);
+    assert_eq!(replies[0]["error"]["code"], -32002);
+    assert_eq!(replies[1]["error"]["code"], -32602);
+    assert_eq!(replies[2]["result"]["protocolVersion"], "2024-11-05");
+    assert_eq!(replies[3]["result"], json!({}));
+    assert_eq!(replies[4]["error"]["code"], -32002);
+    assert_eq!(replies[5]["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(replies[6]["error"]["code"], -32600);
+    assert_eq!(replies[7]["error"]["code"], -32600);
+}
+
+#[test]
+fn oversized_stdio_request_is_bounded_and_rejected_without_transport() {
+    let replies = run_raw(
+        "http://127.0.0.1:0",
+        false,
+        SESSION,
+        &[json!({"jsonrpc":"2.0","id":1,"method":"tools/list","padding":"x".repeat(512 * 1024)})],
+    );
+    assert_eq!(replies.len(), 1);
+    assert_eq!(replies[0]["error"]["code"], -32600);
 }
