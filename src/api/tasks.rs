@@ -107,6 +107,15 @@ fn action(step: Step) -> Result<Action, ApiError> {
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty() && s.chars().count() <= 4096)
                 .ok_or_else(|| ApiError::bad("task text must contain 1 to 4096 characters"))?;
+            let body = TypeBody {
+                text: Some(text.to_owned()),
+                keys: Vec::new(),
+                secret: None,
+            };
+            let planned = plan_type(&body, None).map_err(ApiError::from_plan)?;
+            if keystroke_count(&planned) > TYPE_MAX_KEYSTROKES {
+                return Err(ApiError::bad("task typing exceeds the keystroke limit"));
+            }
             Action::Type(text.to_owned())
         }
         "mouse_move" => Action::Mouse(MouseOp::Move {

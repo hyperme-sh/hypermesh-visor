@@ -7405,6 +7405,7 @@ while True:
             serde_json::json!([{"tool":"mouse_move","arguments":{"x":-1,"y":2}}]),
             serde_json::json!([{"tool":"view","arguments":{"extra":true}}]),
             serde_json::json!([{"tool":"type_text","arguments":{"text":""}}]),
+            serde_json::json!([{"tool":"mouse_click","arguments":{"x":1,"y":1}}, {"tool":"type_text","arguments":{"text":"😀"}}]),
         ] {
             assert_eq!(
                 task_request(
@@ -7431,6 +7432,8 @@ while True:
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+        assert!(lock(&desktop.mice).is_empty());
+        assert!(lock(&desktop.typed).is_empty());
     }
 
     #[tokio::test]
