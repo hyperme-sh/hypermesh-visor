@@ -34,5 +34,16 @@ RUN readelf -l target/release/hypermesh-visor > /tmp/program-headers && ! grep -
 ARG SOURCE_REVISION
 RUN readelf -l /bundle/conductor > /tmp/conductor-headers && ! grep -q INTERP /tmp/conductor-headers
 RUN EXPECTED_ARCH="$EXPECTED_ARCH" SOURCE_REVISION="$SOURCE_REVISION" sh packaging/headless/package.sh
+# Optional runtime target; retains no compiler, desktop or D-Bus packages.
+FROM alpine:3.22@sha256:49340b346798875b5592e5d420241f2f9cfba5f47e62ebb1446a1b34734e898f AS runtime
+COPY --from=build /output/*.apk /tmp/
+RUN apk add --no-cache ca-certificates && apk add --no-network --allow-untrusted /tmp/*.apk && rm /tmp/*.apk && \
+    addgroup -g 1000 visor && adduser -D -u 1000 -G visor visor && \
+    mkdir -p /run/visor /var/lib/visor && chown visor:visor /run/visor /var/lib/visor && chmod 0700 /run/visor /var/lib/visor
+ENV HYPERMESH_RUNTIME_DIR=/run/visor HYPERMESH_SESSION_SECRET_FILE=/var/lib/visor/session.json XDG_CONFIG_HOME=/var/lib/visor
+USER 1000:1000
+WORKDIR /var/lib/visor
+ENTRYPOINT ["/usr/bin/hypermesh-visor-headless"]
+
 FROM scratch AS artifacts
 COPY --from=build /output/ /

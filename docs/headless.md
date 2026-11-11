@@ -50,3 +50,9 @@ This implements the build/storage and package portions of #99/#101. Installed
 OpenRC behavior, on-request host delivery/removal, the opt-in host capability
 schema and AIuditor integration remain required. Nightly integration coverage must be added for those paths;
 unit/build results do not establish installed-service behavior.
+
+The same Dockerfile has an optional `runtime` target built on digest-pinned
+Alpine. It installs the APK, runs as UID 1000, and contains no Rust/Go toolchain,
+desktop stack or D-Bus service. Its local sockets are under `/run/visor`; private
+state is under `/var/lib/visor`. Deployment configuration owns any state mounts
+and grants; the image does not expose a TCP port or mount host resources.
