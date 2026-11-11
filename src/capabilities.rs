@@ -4,11 +4,13 @@ use serde_json::{json, Value};
 pub(crate) fn describe(backend: &str) -> Value {
     let capture = match backend {
         "x11" | "wayland" => "conditional",
+        "macos" => "disabled",
         "fixture" => "fixture",
         _ => "unavailable",
     };
     let input = match backend {
         "x11" => "conditional",
+        "macos" => "disabled",
         "fixture" => "fixture",
         "wayland" => "disabled",
         _ => "unavailable",
@@ -20,10 +22,16 @@ pub(crate) fn describe(backend: &str) -> Value {
         "readiness_probed": false,
         "authorization_granted": false,
         "desktop": {
-            "view": capture, "watch": capture, "listen": capture,
+            "view": capture, "watch": capture,
+            "listen": if backend == "macos" { "unavailable" } else { capture },
             "mouse": input, "type": input,
-            "input_disabled_reason": if backend == "wayland" {
-                Some(crate::desktop::WAYLAND_AUTOMATION)
+            "input_disabled_reason": match backend {
+                "wayland" => Some(crate::desktop::WAYLAND_AUTOMATION),
+                "macos" => Some("native automation disabled pending authenticated daemon integration"),
+                _ => None
+            },
+            "capture_disabled_reason": if backend == "macos" {
+                Some("native automation disabled pending authenticated daemon integration")
             } else { None },
             "mouse_actions": ["move", "click", "drag", "scroll"],
             "mouse_buttons": ["left", "right", "middle"],
@@ -31,7 +39,11 @@ pub(crate) fn describe(backend: &str) -> Value {
             "key_actions": ["tap", "down", "up"],
             "unsupported": ["clipboard", "display_enumeration", "accessibility_tree", "audio_playback"],
             "coordinates": {
-                "space": if backend == "x11" { "root_window_pixels" } else { "unspecified" },
+                "space": match backend {
+                    "x11" => "root_window_pixels",
+                    "macos" => "unspecified",
+                    _ => "unspecified"
+                },
                 "display_selection": false,
                 "dpi_transform": false
             },
@@ -71,6 +83,7 @@ mod tests {
     fn discovery_never_advertises_disabled_or_unknown_input_as_ready() {
         for (backend, status) in [
             ("x11", "conditional"),
+            ("macos", "disabled"),
             ("wayland", "disabled"),
             ("fixture", "fixture"),
             ("unknown", "unavailable"),
@@ -87,4 +100,17 @@ mod tests {
             .unwrap()
             .contains("#17"));
     }
+    #[test]
+    fn macos_discovery_preserves_native_bridge_refusal() {
+        let value = describe("macos");
+        assert_eq!(value["desktop"]["view"], "disabled");
+        assert_eq!(value["desktop"]["watch"], "disabled");
+        assert_eq!(value["desktop"]["listen"], "unavailable");
+        assert!(value["desktop"]["capture_disabled_reason"].as_str().unwrap().contains("authenticated daemon"));
+        assert!(value["desktop"]["input_disabled_reason"].as_str().unwrap().contains("authenticated daemon"));
+        assert_eq!(value["desktop"]["coordinates"]["space"], "unspecified");
+        assert_eq!(value["desktop"]["coordinates"]["display_selection"], false);
+        assert_eq!(value["authorization_granted"], false);
+    }
+
 }
