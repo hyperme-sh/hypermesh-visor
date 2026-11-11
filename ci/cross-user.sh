@@ -25,9 +25,13 @@ if [[ ! -x "$bin" ]]; then
   cargo build --locked
 fi
 
-guest=hm-visor-guest
-if ! id -u "$guest" >/dev/null 2>&1; then
-  sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$guest"
+# Infra selects a provisioned unprivileged account; never create host identities
+# as a side effect of a product test.
+guest=${HYPERMESH_TEST_GUEST:?Infra must select the provisioned test guest}
+guest_uid=$(id -u "$guest")
+if [[ "$guest_uid" -eq 0 || "$guest_uid" -eq "$(id -u)" ]]; then
+  echo "test guest must be a distinct non-root user" >&2
+  exit 1
 fi
 
 # --chdir is not allowed here. /tmp is traversable by the guest account.
