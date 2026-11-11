@@ -1,13 +1,13 @@
 # Desktop verb and capability contract
 
-This audit describes the Linux implementation. `GET /capabilities` returns
+This audit describes the Linux and native macOS implementations. `GET /capabilities` returns
 schema version 1 without opening a session, taking a screenshot, recording audio,
 or connecting an MCP server. It uses the same protected Unix sockets and opt-in
 TCP bearer authentication as the other routes.
 
 `conditional` means implemented but dependent on device access, services, consent,
 and the automation gate. `disabled` means deliberately refused. `unavailable`
-means no recognized backend. `fixture` means test data, never live desktop access.
+means the operation is not implemented by the selected backend. `fixture` means test data, never live desktop access.
 Discovery is neither a readiness probe nor an authorization grant. Clients must
 handle operation errors even after discovery. Ignore unknown additive fields;
 reject unsupported schema versions. There is no capability cache lifetime promise.
@@ -34,8 +34,8 @@ the deserializers in `src/api.rs`, `src/input.rs`, `src/harness.rs`, and
 | `POST …/view` | No body; PNG bytes | Live session and capture backend |
 | `GET …/watch` | SSE capture updates; optional `mode` | Live session; disconnect/close ends streaming |
 | `GET …/listen` | PCM audio stream | Live session; PulseAudio-compatible service; s16le, 48 kHz, mono |
-| `POST …/mouse` | `action`: move/click/drag/scroll; `x`,`y`; drag adds `to_x`,`to_y`; optional left/right/middle `button`; move accepts `clickable` | X11 automation gate; scroll adds required `delta_x`,`delta_y` in wheel ticks |
-| `POST …/type` | `text`, `keys:[{key,action}]`, or secret handle `secret`; actions tap/down/up | At most 4096 planned keystrokes; X11 automation gate |
+| `POST …/mouse` | `action`: move/click/drag/scroll; `x`,`y`; drag adds `to_x`,`to_y`; optional left/right/middle `button`; move accepts `clickable` | Desktop automation gate; scroll adds required `delta_x`,`delta_y` in wheel ticks |
+| `POST …/type` | `text`, `keys:[{key,action}]`, or secret handle `secret`; actions tap/down/up | At most 4096 planned keystrokes; Desktop automation gate |
 | `GET …/feed` | Activity and latest snapshot handle | Does not return secret values or file bytes |
 | `GET …/feed/snapshot` | Cached PNG | Does not capture a new frame |
 | `POST …/stream` | Newline-delimited prompt/file/secret items; acknowledgement lines | `X-Api-Key`; at most 1 MiB body; prompt items enter prompt routing |
@@ -64,10 +64,18 @@ transform, screenshot crop transform, or normalized coordinate API. Clients must
 not assume CSS pixels equal input pixels. The contract deliberately publishes no
 Wayland coordinate promise while injection is disabled (#17).
 
+Native macOS uses coordinates relative to the main display in logical points.
+Its capture helper requests an image of those same logical dimensions, including
+on Retina displays. Other displays cannot be selected. Capture and input are
+conditional on the bundled helper, the respective macOS permissions and the
+automation gate; audio capture remains unavailable. Discovery never prompts for
+permissions or probes the helper.
+
 Input runs in batches under a shared automation gate. Physical input, pause/stop,
 session close, and watchdog events can interrupt an operation. Held keys/buttons
-are released during unwind. A client HTTP timeout is not a cancellation receipt.
-There is no general request ID, task cancellation endpoint, or idempotency key.
+are released during unwind. A client HTTP timeout does not cancel an operation.
+Queued jobs provide task IDs and cancellation through the [task API](queued-tasks.md);
+direct calls have no general request ID or idempotency key.
 Do not automatically retry a click, type, drag, or MCP tool call after a timeout or
 partial-progress error: observe state and reconcile first. Read-only discovery
 can be retried. Watch/listen clients should bound their own consumption time.
