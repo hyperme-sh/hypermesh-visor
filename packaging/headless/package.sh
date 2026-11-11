@@ -20,7 +20,8 @@ cp docs/headless.md /bundle/root/usr/share/doc/hypermesh-visor-headless/README.m
 for format in apk deb rpm; do
   nfpm package --config packaging/headless/nfpm.yaml --packager "$format" --target "/output/hypermesh-visor-headless-${EXPECTED_ARCH}.${format}"
 done
+cp target/release/hypermesh-visor "/output/hypermesh-visor-headless-${EXPECTED_ARCH}"
 tar czf "/output/hypermesh-visor-headless-${EXPECTED_ARCH}.tar.gz" -C /bundle/root .
 printf 'visor=%s\nconductor=%s\narchitecture=%s\n' "$SOURCE_REVISION" 8c381046952863e8ba83f054d467402c959eb59a "$EXPECTED_ARCH" > /output/build.txt
 cd /output
-sha256sum ./*.apk ./*.deb ./*.rpm ./*.tar.gz build.txt > checksums.txt
+sha256sum "hypermesh-visor-headless-${EXPECTED_ARCH}" ./*.apk ./*.deb ./*.rpm ./*.tar.gz build.txt > checksums.txt

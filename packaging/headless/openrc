@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+name="Hypermesh headless Visor"
+description="Local headless session and configured MCP tools"
+command="/usr/bin/hypermesh-visor-headless"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+command_user="${visor_user}"
+umask=0077
+
+start_pre() {
+    case "$visor_user" in
+        ''|*[!a-zA-Z0-9_-]*) eerror "Set visor_user to a provisioned service account"; return 1 ;;
+    esac
+    local uid
+    uid=$(id -u "$visor_user") || return 1
+    [ "$uid" -ne 0 ] || { eerror "Visor must not run as root"; return 1; }
+    checkpath --directory --mode 0700 --owner "$visor_user" /run/hypermesh-visor-headless || return 1
+    checkpath --directory --mode 0700 --owner "$visor_user" /var/lib/hypermesh-visor-headless || return 1
+    export HYPERMESH_RUNTIME_DIR=/run/hypermesh-visor-headless
+    export HYPERMESH_SESSION_SECRET_FILE=/var/lib/hypermesh-visor-headless/session.json
+    export HOME=/var/lib/hypermesh-visor-headless
+    export HYPERMESH_TCP=0
+}

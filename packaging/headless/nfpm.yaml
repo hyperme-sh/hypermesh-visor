@@ -30,3 +30,14 @@ contents:
     dst: /usr/share/doc/hypermesh-visor-headless/LICENSE
     file_info:
       mode: 0644
+  - src: packaging/headless/openrc
+    dst: /etc/init.d/hypermesh-visor-headless
+    packager: apk
+    file_info:
+      mode: 0755
+  - src: packaging/headless/openrc.conf
+    dst: /etc/conf.d/hypermesh-visor-headless
+    packager: apk
+    type: config
+    file_info:
+      mode: 0644

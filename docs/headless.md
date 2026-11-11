@@ -39,7 +39,14 @@ not an update channel: `build.txt` identifies both source revisions and the
 architecture, and `checksums.txt` identifies the exact downloadable bytes.
 They do not create users, enable a daemon, or configure network services.
 
-This implements the build/storage and package portions of #99/#101. OpenRC
-service installation, on-request host delivery/removal, the opt-in host
-capability schema and AIuditor integration remain required. Nightly integration coverage must be added for those paths;
+The APK includes an OpenRC service. Deployment configuration must first provision
+a dedicated non-root account and set `visor_user` in
+`/etc/conf.d/hypermesh-visor-headless`. The service refuses an empty account or
+UID zero, creates private runtime/state directories, and keeps its PID file in
+root-owned `/run`. Installation leaves it disabled. Its default transport is a
+local socket; network access requires separate configuration.
+
+This implements the build/storage and package portions of #99/#101. Installed
+OpenRC behavior, on-request host delivery/removal, the opt-in host capability
+schema and AIuditor integration remain required. Nightly integration coverage must be added for those paths;
 unit/build results do not establish installed-service behavior.
