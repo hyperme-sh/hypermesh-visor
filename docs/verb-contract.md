@@ -64,12 +64,11 @@ transform, screenshot crop transform, or normalized coordinate API. Clients must
 not assume CSS pixels equal input pixels. The contract deliberately publishes no
 Wayland coordinate promise while injection is disabled (#17).
 
-Native macOS uses coordinates relative to the main display in logical points.
-Its capture helper requests an image of those same logical dimensions, including
-on Retina displays. Other displays cannot be selected. Capture and input are
-conditional on the bundled helper, the respective macOS permissions and the
-automation gate; audio capture remains unavailable. Discovery never prompts for
-permissions or probes the helper.
+The checked-in native macOS helper deliberately refuses automation until it has
+an authenticated daemon channel. Discovery reports capture and input as
+`disabled`, with that restriction, and audio as `unavailable`. It publishes no
+usable coordinate contract for that disabled channel. OS permission grants alone
+do not enable it; discovery never prompts for permissions or probes the helper.
 
 Input runs in batches under a shared automation gate. Physical input, pause/stop,
 session close, and watchdog events can interrupt an operation. Held keys/buttons
