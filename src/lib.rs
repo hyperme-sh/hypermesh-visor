@@ -4,6 +4,9 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("hypermesh-visor version one is Linux only");
 
+#[cfg(all(feature = "desktop", feature = "headless"))]
+compile_error!("desktop and headless are exclusive; use --no-default-features --features headless");
+
 mod api;
 mod automation;
 mod bind;
@@ -24,9 +27,11 @@ pub use api::{serve, serve_until, AppState};
 pub use automation::SHUTDOWN_DEADLINE;
 pub use bind::parse_listen;
 pub use companion_sock::{control_socket_file, read_api_token, runtime_dir};
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 pub use desktop::MacDesktop;
-pub use desktop::{current_euid, Desktop, FixtureDesktop, LinuxDesktop};
+#[cfg(feature = "desktop")]
+pub use desktop::LinuxDesktop;
+pub use desktop::{current_euid, Desktop, FixtureDesktop, HeadlessDesktop};
 pub use hypermesh_session::{refresh_token, MemoryStore, SessionStore};
 pub use input::SCROLL_MAX_TICKS;
 pub use prompt::{open_supervisor_door, DoorConfig, PromptDoor, DEFAULT_CATALOG_ID};

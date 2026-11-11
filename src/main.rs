@@ -1,12 +1,14 @@
 #[cfg(target_os = "linux")]
 mod managed_conductor;
+#[cfg(feature = "desktop")]
+use hypermesh_visor::LinuxDesktop;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
 use hypermesh_visor::{
-    current_euid, parse_listen, serve, AppState, Desktop, DoorConfig, FixtureDesktop, LinuxDesktop,
+    current_euid, parse_listen, serve, AppState, Desktop, DoorConfig, FixtureDesktop,
     DEFAULT_CATALOG_ID, SHUTDOWN_DEADLINE,
 };
 
@@ -56,10 +58,12 @@ fn main() -> ExitCode {
             }
         }
     } else {
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", feature = "desktop"))]
         let desktop = LinuxDesktop::from_process();
-        #[cfg(target_os = "macos")]
+        #[cfg(all(target_os = "macos", feature = "desktop"))]
         let desktop = hypermesh_visor::MacDesktop;
+        #[cfg(not(feature = "desktop"))]
+        let desktop = hypermesh_visor::HeadlessDesktop;
         Arc::new(desktop)
     };
     let mut conductor_addr = std::env::var("HYPERMESH_CONDUCTOR_ADDR").ok();

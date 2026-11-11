@@ -1,12 +1,18 @@
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "desktop"))]
 pub use macos::MacDesktop;
+#[cfg(feature = "desktop")]
 mod audio;
 mod fixture;
+mod headless;
+pub use headless::HeadlessDesktop;
+#[cfg(feature = "desktop")]
 mod focus;
 pub(crate) mod pixels;
+#[cfg(feature = "desktop")]
 mod wayland;
+#[cfg(feature = "desktop")]
 mod x11;
 
 pub use fixture::FixtureDesktop;
@@ -187,6 +193,7 @@ fn present(value: &Option<String>) -> bool {
     value.as_ref().is_some_and(|item| !item.is_empty())
 }
 
+#[cfg(feature = "desktop")]
 pub struct LinuxDesktop {
     env: SessionEnv,
     /// Held for issue #17. Nothing calls it while portal injection is gated off.
@@ -194,6 +201,7 @@ pub struct LinuxDesktop {
     wayland_input: Mutex<Option<wayland::WaylandInput>>,
 }
 
+#[cfg(feature = "desktop")]
 impl LinuxDesktop {
     pub fn new(env: SessionEnv) -> Self {
         Self {
@@ -207,6 +215,7 @@ impl LinuxDesktop {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl Desktop for LinuxDesktop {
     fn view(&self) -> Result<Frame, DesktopError> {
         match choose_backend(&self.env)? {
@@ -285,6 +294,7 @@ impl Desktop for LinuxDesktop {
     }
 }
 
+#[cfg(feature = "desktop")]
 impl LinuxDesktop {
     /// Opens a RemoteDesktop session. Issue #17 is what calls this again.
     #[allow(dead_code)]
@@ -361,6 +371,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "desktop")]
     #[test]
     fn wayland_injection_does_not_open_the_portal() {
         let desktop = LinuxDesktop::new(env(Some("wayland"), Some(":0"), Some("wayland-0"), 1000));

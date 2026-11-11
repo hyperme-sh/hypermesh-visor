@@ -5,6 +5,11 @@
 //! is the only persisted credential, and it lives in the OS keychain under
 //! service `hypermesh`, account `session`.
 
+#[cfg(unix)]
+mod file_store;
+#[cfg(unix)]
+pub use file_store::FileStore;
+
 mod oauth;
 mod pkce;
 mod store;

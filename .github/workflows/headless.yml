@@ -1,0 +1,69 @@
+name: headless unit and build contracts
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  glibc:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require native architecture
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: test "$(uname -m)" = "$EXPECTED_ARCH"
+      - name: Reject desktop dependencies
+        run: |
+          cargo tree --locked -p hypermesh-visor --no-default-features --features headless --prefix none > "$RUNNER_TEMP/headless-dependencies"
+          if grep -E '^(x11rb|zbus|keyring|secret-service) ' "$RUNNER_TEMP/headless-dependencies"; then
+            exit 1
+          fi
+      - name: Unit contracts
+        run: |
+          cargo test --locked -p hypermesh-session --no-default-features --lib
+          cargo test --locked -p hypermesh-visor --no-default-features --features headless --lib
+      - name: Build headless daemon
+        run: cargo build --release --locked -p hypermesh-visor --no-default-features --features headless
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-glibc-${{ matrix.arch }}
+          path: target/release/hypermesh-visor
+          retention-days: 1
+          if-no-files-found: error
+  musl:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build and unit-test on native Alpine
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          docker build --file ci/headless/Dockerfile --build-arg "EXPECTED_ARCH=$EXPECTED_ARCH" --output "type=local,dest=$RUNNER_TEMP/headless" .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: headless-musl-${{ matrix.arch }}
+          path: ${{ runner.temp }}/headless/
+          retention-days: 1
+          if-no-files-found: error

@@ -73,10 +73,11 @@ impl SessionStore for MemoryStore {
     }
 }
 
-/// OS keychain. A missing Secret Service, Keychain, or Credential Manager is an
-/// error. This type does not write a file.
+/// OS keychain by default; a missing service never triggers a file fallback.
+/// Builds without os-keyring require an explicitly configured private file.
 pub struct KeyringStore;
 
+#[cfg(feature = "os-keyring")]
 impl SessionStore for KeyringStore {
     fn put_refresh_token(&self, token: &str) -> Result<(), AuthError> {
         if token.is_empty() {
@@ -105,6 +106,7 @@ impl SessionStore for KeyringStore {
     }
 }
 
+#[cfg(feature = "os-keyring")]
 fn map_keyring(err: keyring::Error) -> AuthError {
     match err {
         keyring::Error::NoEntry => AuthError::NoSession,
@@ -139,4 +141,25 @@ mod tests {
         assert!(store.put_refresh_token("").is_err());
         assert_eq!(store.refresh_token().unwrap(), None);
     }
+}
+
+
+#[cfg(all(not(feature = "os-keyring"), unix))]
+impl SessionStore for KeyringStore {
+    fn put_refresh_token(&self, token: &str) -> Result<(), AuthError> {
+        crate::file_store::configured()?.put_refresh_token(token)
+    }
+    fn refresh_token(&self) -> Result<Option<String>, AuthError> {
+        crate::file_store::configured()?.refresh_token()
+    }
+    fn delete(&self) -> Result<(), AuthError> {
+        crate::file_store::configured()?.delete()
+    }
+}
+
+#[cfg(all(not(feature = "os-keyring"), not(unix)))]
+impl SessionStore for KeyringStore {
+    fn put_refresh_token(&self, _: &str) -> Result<(), AuthError> { Err(AuthError::NoKeychain) }
+    fn refresh_token(&self) -> Result<Option<String>, AuthError> { Err(AuthError::NoKeychain) }
+    fn delete(&self) -> Result<(), AuthError> { Err(AuthError::NoKeychain) }
 }

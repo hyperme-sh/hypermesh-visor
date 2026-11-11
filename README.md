@@ -21,6 +21,8 @@ See the [inverse MCP contract](docs/verb-contract.md#mcp-preference-and-inverse-
 for limits and supported tools.
 
 
+For the non-graphical build and its current limits, see [headless build](docs/headless.md).
+
 ## Linux build and tests
 
 Stable Rust. The workspace tests do not need a display server.
