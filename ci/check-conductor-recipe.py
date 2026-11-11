@@ -85,7 +85,7 @@ def process_identity(pid):
 def process_exited(pid, started):
     try:
         state, current = process_identity(pid)
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         return True
     except PermissionError:
         # Loss of access alone must never count as successful shutdown.
