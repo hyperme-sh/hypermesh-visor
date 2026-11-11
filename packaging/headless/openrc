@@ -18,6 +18,6 @@ start_pre() {
     checkpath --directory --mode 0700 --owner "$visor_user" /var/lib/hypermesh-visor-headless || return 1
     export HYPERMESH_RUNTIME_DIR=/run/hypermesh-visor-headless
     export HYPERMESH_SESSION_SECRET_FILE=/var/lib/hypermesh-visor-headless/session.json
-    export HOME=/var/lib/hypermesh-visor-headless
+    export XDG_CONFIG_HOME=/var/lib/hypermesh-visor-headless
     export HYPERMESH_TCP=0
 }
