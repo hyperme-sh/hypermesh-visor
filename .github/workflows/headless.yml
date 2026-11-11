@@ -60,7 +60,7 @@ jobs:
           EXPECTED_ARCH: ${{ matrix.arch }}
         run: |
           test "$(uname -m)" = "$EXPECTED_ARCH"
-          docker build --file ci/headless/Dockerfile --build-arg "EXPECTED_ARCH=$EXPECTED_ARCH" --output "type=local,dest=$RUNNER_TEMP/headless" .
+          docker build --file ci/headless/Dockerfile --build-arg "EXPECTED_ARCH=$EXPECTED_ARCH" --build-arg "SOURCE_REVISION=$GITHUB_SHA" --output "type=local,dest=$RUNNER_TEMP/headless" .
       - uses: actions/upload-artifact@v4
         with:
           name: headless-musl-${{ matrix.arch }}

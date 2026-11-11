@@ -30,8 +30,16 @@ glibc and musl. Alpine builds verify the kernel and Rust host architecture and
 reject dynamic ELF interpreters. No QEMU or cross-architecture fallback is used.
 CI artifacts expire after one day; they are not published releases.
 
-This implements the build/storage dependency portion of #99/#101. Separate
-packages and OpenRC service installation, bundled musl Conductor, on-request host
-delivery/removal, the opt-in host capability schema and AIuditor integration
-remain required. Nightly integration coverage must be added for those paths;
+Native musl CI also creates unsigned `.apk`, `.deb`, `.rpm` and tar bundles.
+They install `/usr/bin/hypermesh-visor-headless` and a static Conductor under
+`/usr/lib/hypermesh-visor-headless/`. The two package names and install paths are
+separate, so installing headless does not replace the desktop companion.
+Package versions retain the Cargo version. These short-lived CI artifacts are
+not an update channel: `build.txt` identifies both source revisions and the
+architecture, and `checksums.txt` identifies the exact downloadable bytes.
+They do not create users, enable a daemon, or configure network services.
+
+This implements the build/storage and package portions of #99/#101. OpenRC
+service installation, on-request host delivery/removal, the opt-in host
+capability schema and AIuditor integration remain required. Nightly integration coverage must be added for those paths;
 unit/build results do not establish installed-service behavior.

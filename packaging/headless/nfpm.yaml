@@ -1,0 +1,32 @@
+name: hypermesh-visor-headless
+arch: ${NFPM_ARCH}
+platform: linux
+version: ${VERSION}
+release: "1"
+section: utils
+priority: optional
+maintainer: Fyber Labs <github@fyberlabs.com>
+description: Headless Hypermesh daemon with bundled Conductor; no desktop dependencies
+homepage: https://github.com/hyperme-sh/hypermesh-visor
+license: MIT
+contents:
+  - src: target/release/hypermesh-visor
+    dst: /usr/bin/hypermesh-visor-headless
+    file_info:
+      mode: 0755
+  - src: /bundle/conductor
+    dst: /usr/lib/hypermesh-visor-headless/conductor
+    file_info:
+      mode: 0755
+  - src: /bundle/conductor-LICENSE
+    dst: /usr/share/doc/hypermesh-visor-headless/conductor-LICENSE
+    file_info:
+      mode: 0644
+  - src: docs/headless.md
+    dst: /usr/share/doc/hypermesh-visor-headless/README.md
+    file_info:
+      mode: 0644
+  - src: LICENSE
+    dst: /usr/share/doc/hypermesh-visor-headless/LICENSE
+    file_info:
+      mode: 0644
