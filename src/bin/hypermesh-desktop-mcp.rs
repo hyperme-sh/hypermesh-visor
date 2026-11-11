@@ -69,6 +69,7 @@ fn main() {
     let session = std::env::var("HYPERMESH_SESSION_ID").unwrap_or_default();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let mut owned_tasks = std::collections::VecDeque::<String>::new();
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let line = line.trim();
@@ -99,6 +100,42 @@ fn main() {
                     // A tool invocation is a request, never an executable notification.
                     if let Some(id) = msg.get("id").filter(|id| id.is_string() || id.is_number()) {
                         let result = handle_call(&visor, &session, msg.get("params"));
+                        if let Ok(result) = &result {
+                            let name = msg.pointer("/params/name").and_then(Value::as_str);
+                            if matches!(name, Some("task_submit" | "task_status" | "task_cancel"))
+                                && result["isError"] == false
+                            {
+                                if let Some(text) =
+                                    result.pointer("/content/0/text").and_then(Value::as_str)
+                                {
+                                    if let Ok(task) = serde_json::from_str::<Value>(text) {
+                                        if let Some(id) = task
+                                            .get("id")
+                                            .and_then(Value::as_str)
+                                            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                                        {
+                                            let terminal = task
+                                                .get("status")
+                                                .and_then(Value::as_str)
+                                                .is_some_and(|status| {
+                                                    ["completed", "failed", "cancelled"]
+                                                        .contains(&status)
+                                                });
+                                            if terminal {
+                                                owned_tasks.retain(|known| known != id);
+                                            } else if name == Some("task_submit")
+                                                && !owned_tasks.iter().any(|known| known == id)
+                                            {
+                                                if owned_tasks.len() == 16 {
+                                                    owned_tasks.pop_front();
+                                                }
+                                                owned_tasks.push_back(id.to_owned());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         let envelope = match result {
                             Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
                             Err(message) => json!({"jsonrpc":"2.0", "id":id,
@@ -125,6 +162,21 @@ fn main() {
             }
         }
     }
+    // Cancel only jobs submitted by this connection. Abrupt process loss is
+    // additionally bounded by the daemon's task deadline.
+    std::thread::scope(|scope| {
+        for id in &owned_tasks {
+            let visor = &visor;
+            let session = &session;
+            scope.spawn(move || {
+                let _ = handle_call(
+                    visor,
+                    session,
+                    Some(&json!({"name":"task_cancel","arguments":{"task_id":id}})),
+                );
+            });
+        }
+    });
 }
 
 fn reply(stdout: &mut impl Write, id: Option<Value>, result: Value) {
@@ -139,7 +191,7 @@ fn reply(stdout: &mut impl Write, id: Option<Value>, result: Value) {
 fn tool_list() -> Value {
     let coordinate = json!({"type":"integer", "minimum":0, "maximum":MAX_COORD});
     let delta = json!({"type":"integer","minimum":-SCROLL_MAX_TICKS,"maximum":SCROLL_MAX_TICKS});
-    json!({"tools":[
+    let mut catalog = json!({"tools":[
         {"name":"capabilities", "description":"Read the authenticated visor capability contract; does not grant desktop access", "inputSchema":
             {"type":"object", "properties":{}, "additionalProperties":false}},
         {"name":"view", "description":"Capture the desktop as a PNG image", "inputSchema":
@@ -156,7 +208,27 @@ fn tool_list() -> Value {
         {"name":"type_text", "description":"Type text; the visor also validates key support and the planned keystroke limit", "inputSchema":
             {"type":"object", "properties":{"text":{"type":"string","minLength":1,"maxLength":MAX_TEXT_CHARS}},
              "required":["text"],"additionalProperties":false}}
-    ]})
+    ]});
+    let steps: Vec<Value> = catalog["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|tool| tool["name"] != "capabilities")
+        .map(|tool| {
+            json!({"type":"object","properties":{
+            "tool":{"const":tool["name"]},"arguments":tool["inputSchema"]},
+            "required":["tool","arguments"],"additionalProperties":false})
+        })
+        .collect();
+    catalog["tools"].as_array_mut().unwrap().extend([
+        json!({"name":"task_submit","description":"Queue up to 16 desktop steps for the assigned session; preserves user pause",
+            "inputSchema":{"type":"object","properties":{"steps":{"type":"array","minItems":1,"maxItems":16,"items":{"oneOf":steps}}},"required":["steps"],"additionalProperties":false}}),
+        json!({"name":"task_status","description":"Read status and bounded results for a task in the assigned session",
+            "inputSchema":{"type":"object","properties":{"task_id":{"type":"string","format":"uuid"}},"required":["task_id"],"additionalProperties":false}}),
+        json!({"name":"task_cancel","description":"Cancel a queued task or request interruption of its active input; inspect status until terminal",
+            "inputSchema":{"type":"object","properties":{"task_id":{"type":"string","format":"uuid"}},"required":["task_id"],"additionalProperties":false}}),
+    ]);
+    catalog
 }
 
 fn handle_call(
@@ -197,6 +269,8 @@ fn tool_request(
 ) -> Result<(&'static str, String, Option<String>), String> {
     let allowed: &[&str] = match tool {
         "capabilities" | "view" => &[],
+        "task_submit" => &["steps"],
+        "task_status" | "task_cancel" => &["task_id"],
         "mouse_move" => &["x", "y"],
         "mouse_click" => &["x", "y", "button"],
         "mouse_scroll" => &["x", "y", "delta_x", "delta_y"],
@@ -219,6 +293,65 @@ fn tool_request(
             .ok_or_else(|| format!("{name} must be an integer from 0 to {MAX_COORD}"))
     };
     match tool {
+        "task_submit" => {
+            let steps = args
+                .get("steps")
+                .and_then(Value::as_array)
+                .filter(|steps| (1..=16).contains(&steps.len()))
+                .ok_or("steps must contain 1 to 16 operations")?;
+            for step in steps {
+                let object = step.as_object().ok_or("each step must be an object")?;
+                if object
+                    .keys()
+                    .any(|key| !["tool", "arguments"].contains(&key.as_str()))
+                {
+                    return Err("unexpected step field".into());
+                }
+                let name = object
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .ok_or("step tool is required")?;
+                if ![
+                    "view",
+                    "mouse_move",
+                    "mouse_click",
+                    "mouse_scroll",
+                    "type_text",
+                ]
+                .contains(&name)
+                {
+                    return Err("unsupported task tool".into());
+                }
+                tool_request(
+                    &session.to_string(),
+                    name,
+                    object
+                        .get("arguments")
+                        .ok_or("step arguments are required")?,
+                )?;
+            }
+            Ok((
+                "POST",
+                format!("/session/{session}/tasks"),
+                Some(json!({"steps":steps}).to_string()),
+            ))
+        }
+        "task_status" | "task_cancel" => {
+            let task = args
+                .get("task_id")
+                .and_then(Value::as_str)
+                .ok_or("task_id is required")?;
+            let task = uuid::Uuid::parse_str(task).map_err(|_| "task_id must be a UUID")?;
+            Ok((
+                if tool == "task_cancel" {
+                    "DELETE"
+                } else {
+                    "GET"
+                },
+                format!("/session/{session}/tasks/{task}"),
+                None,
+            ))
+        }
         "view" => Ok(("POST", format!("/session/{session}/view"), None)),
         "mouse_move" | "mouse_click" => {
             let x = coord("x")?;
@@ -293,7 +426,10 @@ fn tool_result(tool: &str, response: VisorResponse) -> Value {
             .unwrap_or_default();
         return failure(format!("{tool} status {}{detail}", response.status));
     }
-    if tool == "capabilities" {
+    if matches!(
+        tool,
+        "capabilities" | "task_submit" | "task_status" | "task_cancel"
+    ) {
         let is_json = response
             .mime
             .split(';')
@@ -301,10 +437,34 @@ fn tool_result(tool: &str, response: VisorResponse) -> Value {
             .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"));
         let contract = serde_json::from_slice::<Value>(&response.body);
         return match contract {
-            Ok(contract) if is_json && contract.is_object() => {
-                json!({"content":[{"type":"text","text":contract.to_string()}],"isError":false})
+            Ok(mut contract) if is_json && contract.is_object() => {
+                let mut content = vec![json!({"type":"text","text":""})];
+                if tool == "task_status" {
+                    if let Some(results) = contract.get_mut("results").and_then(Value::as_array_mut)
+                    {
+                        for result in results {
+                            if result["type"] == "image" && result["mimeType"] == "image/png" {
+                                let valid = result
+                                    .get("data")
+                                    .and_then(Value::as_str)
+                                    .and_then(|data| {
+                                        base64::engine::general_purpose::STANDARD.decode(data).ok()
+                                    })
+                                    .is_some_and(|bytes| bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+                                if !valid {
+                                    return failure("task returned an invalid PNG result".into());
+                                }
+                                let index = content.len();
+                                content.push(result.clone());
+                                *result = json!({"type":"image","mimeType":"image/png","content_index":index});
+                            }
+                        }
+                    }
+                }
+                content[0]["text"] = json!(contract.to_string());
+                json!({"content":content,"isError":false})
             }
-            _ => failure("capabilities returned an invalid JSON object".into()),
+            _ => failure(format!("{tool} returned an invalid JSON object")),
         };
     }
     if tool == "view" {

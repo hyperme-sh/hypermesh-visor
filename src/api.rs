@@ -40,7 +40,10 @@ use crate::session::{Session, Verb};
 use crate::stream::{self, StreamError};
 use crate::vault::{SecretRequest, Vault, VaultError};
 
+mod tasks;
+
 pub struct AppState {
+    tasks: tasks::Queue,
     sessions: Mutex<HashMap<Uuid, Session>>,
     desktop: Arc<dyn Desktop>,
     watch_poll: Duration,
@@ -157,6 +160,7 @@ impl AppState {
         let gate = automation::Gate::default();
         let published = gate.snapshot_handle();
         Self {
+            tasks: tasks::Queue::new(),
             sessions: Mutex::new(HashMap::new()),
             desktop,
             watch_poll,
@@ -638,6 +642,8 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/companion/notice", post(companion_notice))
         .route("/session", post(open_session))
         .route("/session/:id", delete(close_session))
+        .route("/session/:id/tasks", post(tasks::submit))
+        .route("/session/:id/tasks/:task", get(tasks::status).delete(tasks::cancel))
         .route("/session/:id/view", post(view))
         .route("/session/:id/watch", get(watch))
         .route("/session/:id/feed/snapshot", get(session_feed_snapshot))
@@ -1664,6 +1670,7 @@ async fn close_session(
     if lock(&state.sessions).remove(&id).is_none() {
         return Err(ApiError::missing());
     }
+    state.tasks.close(id);
     lock(&state.frames).remove(&id);
     lock(&state.automation).note_session_closed(id);
     let state2 = Arc::clone(&state);
@@ -2175,6 +2182,11 @@ async fn mouse(
     Path(id): Path<String>,
     Json(op): Json<MouseOp>,
 ) -> Result<StatusCode, ApiError> {
+    mouse_with_cancel(state, id, op, None).await
+}
+
+async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
+                           task_cancel: Option<Arc<AtomicBool>>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     let backend = state.desktop.backend_name();
     if !mouse_in_bounds(backend, &op) {
@@ -2229,7 +2241,8 @@ async fn mouse(
                 return Err(ApiError::bad("pointer coordinate is out of range"));
             }
         }
-        let cancelled = || injection_cancelled(epoch, gate_word(&state2));
+        let cancelled = || injection_cancelled(epoch, gate_word(&state2))
+            || task_cancel.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst));
         if cancelled() || stretch_ended(&state2) {
             return Err(ApiError::conflict("automation paused"));
         }
@@ -2255,8 +2268,13 @@ async fn mouse(
 async fn type_keys(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(mut body): Json<TypeBody>,
+    Json(body): Json<TypeBody>,
 ) -> Result<StatusCode, ApiError> {
+    type_with_cancel(state, id, body, None).await
+}
+
+async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
+                          task_cancel: Option<Arc<AtomicBool>>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
     let epoch = automation::unpack_snap(gate_word(&state)).0;
@@ -2318,7 +2336,8 @@ async fn type_keys(
         if !state2.has_session(id) {
             return Err(ApiError::missing());
         }
-        let cancelled = || injection_cancelled(epoch, gate_word(&state2));
+        let cancelled = || injection_cancelled(epoch, gate_word(&state2))
+            || task_cancel.as_ref().is_some_and(|flag| flag.load(Ordering::SeqCst));
         if cancelled() || stretch_ended(&state2) {
             return Err(ApiError::conflict("automation paused"));
         }
@@ -7230,5 +7249,290 @@ while True:
         let audit: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(audit[0]["outcome"], "forwarded");
         assert_eq!(audit[0]["model"], crate::prompt::DEFAULT_CATALOG_ID);
+    }
+
+    fn task_fixture() -> (Arc<AppState>, Arc<FakeDesktop>, Uuid) {
+        let desktop = FakeDesktop::new();
+        let state = Arc::new(AppState::new(desktop.clone(), Duration::from_millis(5)));
+        let session = Uuid::new_v4();
+        let harness = Harness {
+            purpose: "task contract".into(),
+            recipes: vec![],
+            agent: Agent {
+                name: "fixture".into(),
+                instructions: "".into(),
+            },
+            skills: vec![],
+        };
+        lock(&state.sessions).insert(
+            session,
+            Session::create(
+                session,
+                harness,
+                Vault::open(&[], std::env::temp_dir().join("unused-task-vault")).unwrap(),
+                mcp::McpBundle::default(),
+            ),
+        );
+        (state, desktop, session)
+    }
+
+    async fn task_request(
+        state: Arc<AppState>,
+        method: &str,
+        path: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router(state).oneshot(request).await.unwrap();
+        let code = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+            .await
+            .unwrap();
+        (
+            code,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    async fn task_terminal(state: Arc<AppState>, path: &str) -> serde_json::Value {
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (code, result) =
+                    task_request(state.clone(), "GET", path, serde_json::Value::Null).await;
+                assert_eq!(code, StatusCode::OK);
+                if ["completed", "failed", "cancelled"]
+                    .contains(&result["status"].as_str().unwrap())
+                {
+                    return result;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("task did not finish")
+    }
+
+    #[tokio::test]
+    async fn queued_task_contract_retains_results_and_closing_session_revokes_them() {
+        let (state, desktop, session) = task_fixture();
+        let (code, created) = task_request(
+            state.clone(),
+            "POST",
+            &format!("/session/{session}/tasks"),
+            serde_json::json!({"steps":[{"tool":"view","arguments":{}}]}),
+        )
+        .await;
+        assert_eq!(code, StatusCode::ACCEPTED);
+        let path = format!(
+            "/session/{session}/tasks/{}",
+            created["id"].as_str().unwrap()
+        );
+        let result = task_terminal(state.clone(), &path).await;
+        assert_eq!(result["status"], "completed");
+        assert_eq!(result["completed_steps"], 1);
+        assert_eq!(result["results"][0]["type"], "image");
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 1);
+        let other = Uuid::new_v4();
+        lock(&state.sessions).insert(
+            other,
+            Session::create(
+                other,
+                Harness {
+                    purpose: "other session".into(),
+                    recipes: vec![],
+                    agent: Agent {
+                        name: "other".into(),
+                        instructions: "".into(),
+                    },
+                    skills: vec![],
+                },
+                Vault::open(&[], std::env::temp_dir().join("unused-other-vault")).unwrap(),
+                mcp::McpBundle::default(),
+            ),
+        );
+        let other_path = path.replace(&session.to_string(), &other.to_string());
+        assert_eq!(
+            task_request(
+                state.clone(),
+                "DELETE",
+                &other_path,
+                serde_json::Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+        let (code, _) = task_request(
+            state.clone(),
+            "GET",
+            &path.replace(&session.to_string(), &other.to_string()),
+            serde_json::Value::Null,
+        )
+        .await;
+        assert_eq!(code, StatusCode::NOT_FOUND);
+        assert_eq!(
+            task_request(
+                state.clone(),
+                "DELETE",
+                &format!("/session/{session}"),
+                serde_json::Value::Null
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            task_request(state, "GET", &path, serde_json::Value::Null)
+                .await
+                .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_task_contract_rejects_invalid_steps_before_execution_and_requires_bearer() {
+        use tower::ServiceExt;
+        let (state, desktop, session) = task_fixture();
+        for steps in [
+            serde_json::json!([]),
+            serde_json::json!([{"tool":"resume","arguments":{}}]),
+            serde_json::json!([{"tool":"mouse_move","arguments":{"x":-1,"y":2}}]),
+            serde_json::json!([{"tool":"view","arguments":{"extra":true}}]),
+            serde_json::json!([{"tool":"type_text","arguments":{"text":""}}]),
+        ] {
+            assert_eq!(
+                task_request(
+                    state.clone(),
+                    "POST",
+                    &format!("/session/{session}/tasks"),
+                    serde_json::json!({"steps":steps})
+                )
+                .await
+                .0,
+                StatusCode::BAD_REQUEST
+            );
+        }
+        let response = tcp_router(state, "private-token".into())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/session/{session}/tasks"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"steps":[{"tool":"view","arguments":{}}]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn queued_task_contract_cannot_resume_a_user_pause() {
+        let (state, desktop, session) = task_fixture();
+        assert_eq!(
+            task_request(
+                state.clone(),
+                "POST",
+                "/companion/automation",
+                serde_json::json!({"action":"pause"})
+            )
+            .await
+            .0,
+            StatusCode::NO_CONTENT
+        );
+        let (_, created) = task_request(
+            state.clone(),
+            "POST",
+            &format!("/session/{session}/tasks"),
+            serde_json::json!({"steps":[{"tool":"type_text","arguments":{"text":"hello"}}]}),
+        )
+        .await;
+        let path = format!(
+            "/session/{session}/tasks/{}",
+            created["id"].as_str().unwrap()
+        );
+        assert_eq!(
+            task_terminal(state.clone(), &path).await["status"],
+            "failed"
+        );
+        assert!(lock(&desktop.typed).is_empty());
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+    }
+
+    #[tokio::test]
+    async fn queued_task_contract_cancelled_waiters_cannot_bypass_capacity() {
+        let (state, _desktop, session) = task_fixture();
+        let injection = lock(&state.injection);
+        let mut paths = Vec::new();
+        for _ in 0..16 {
+            let (code, created) = task_request(
+                state.clone(),
+                "POST",
+                &format!("/session/{session}/tasks"),
+                serde_json::json!({"steps":[{"tool":"type_text","arguments":{"text":"x"}}]}),
+            )
+            .await;
+            assert_eq!(code, StatusCode::ACCEPTED);
+            paths.push(format!(
+                "/session/{session}/tasks/{}",
+                created["id"].as_str().unwrap()
+            ));
+        }
+        task_request(state.clone(), "DELETE", &paths[5], serde_json::Value::Null).await;
+        let (code, _) = task_request(
+            state.clone(),
+            "POST",
+            &format!("/session/{session}/tasks"),
+            serde_json::json!({"steps":[{"tool":"view","arguments":{}}]}),
+        )
+        .await;
+        drop(injection);
+        assert_eq!(code, StatusCode::CONFLICT);
+        for path in paths {
+            task_terminal(state.clone(), &path).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_task_contract_cancels_active_typing_and_skips_remaining_steps() {
+        let (state, desktop, session) = task_fixture();
+        desktop.block_type.store(true, Ordering::SeqCst);
+        struct Unblock(Arc<FakeDesktop>);
+        impl Drop for Unblock {
+            fn drop(&mut self) {
+                self.0.block_type.store(false, Ordering::SeqCst);
+            }
+        }
+        let unblock = Unblock(desktop.clone());
+        let (_,created)=task_request(state.clone(),"POST",&format!("/session/{session}/tasks"),
+            serde_json::json!({"steps":[{"tool":"type_text","arguments":{"text":"a".repeat(512)}},{"tool":"view","arguments":{}}]})).await;
+        let path = format!(
+            "/session/{session}/tasks/{}",
+            created["id"].as_str().unwrap()
+        );
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while lock(&desktop.typed).is_empty() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        let (_, requested) =
+            task_request(state.clone(), "DELETE", &path, serde_json::Value::Null).await;
+        assert_eq!(requested["cancel_requested"], true);
+        assert_eq!(requested["status"], "running");
+        drop(unblock);
+        let finished = task_terminal(state, &path).await;
+        assert_eq!(finished["status"], "cancelled");
+        assert_eq!(finished["completed_steps"], 0);
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+        assert!(lock(&desktop.typed).len() < 1024);
     }
 }
