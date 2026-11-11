@@ -19,3 +19,5 @@ creation. They do not launch full display or container suites. Installed-package
 release checks retain their version-tag trigger. No workflow is dispatched by an
 agent to substitute for the nightly schedule. Results do not add a human approval
 prerequisite or change version/tag authority.
+
+See the [open issue coverage map](issue-coverage.md) for platform and service gaps.
