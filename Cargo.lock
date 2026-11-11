@@ -811,6 +811,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "keyring",
+ "libc",
  "serde_json",
  "sha2",
  "ureq",

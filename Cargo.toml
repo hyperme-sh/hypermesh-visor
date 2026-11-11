@@ -13,6 +13,17 @@ publish = false
 [[bin]]
 name = "hypermesh-desktop-mcp"
 path = "src/bin/hypermesh-desktop-mcp.rs"
+required-features = ["desktop"]
+
+[[test]]
+name = "inverse_mcp"
+path = "tests/inverse_mcp.rs"
+required-features = ["desktop"]
+
+[features]
+default = ["desktop"]
+desktop = ["dep:x11rb", "dep:zbus", "hypermesh-session/os-keyring"]
+headless = []
 
 [dependencies]
 axum = "0.7"
@@ -21,7 +32,7 @@ bytes = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server", "client"] }
 hyper-util = { version = "0.1.3", features = ["tokio", "server", "service", "http1"] }
-hypermesh-session = { path = "session" }
+hypermesh-session = { path = "session", default-features = false }
 libc = "0.2"
 libloading = "0.8"
 png = "0.17"
@@ -34,8 +45,8 @@ tower = { version = "0.5", features = ["util"] }
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
-x11rb = { version = "0.13", features = ["xtest"] }
-zbus = "4.4"
+x11rb = { version = "0.13", features = ["xtest"], optional = true }
+zbus = { version = "4.4", optional = true }
 zeroize = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
