@@ -64,6 +64,10 @@ jobs:
         run: |
           test "$(uname -m)" = "$EXPECTED_ARCH"
           docker build --file ci/headless/Dockerfile --build-arg "EXPECTED_ARCH=$EXPECTED_ARCH" --build-arg "SOURCE_REVISION=$GITHUB_SHA" --output "type=local,dest=$RUNNER_TEMP/headless" .
+      - name: Build Alpine runtime image
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: docker build --file ci/headless/Dockerfile --target runtime --build-arg "EXPECTED_ARCH=$EXPECTED_ARCH" --build-arg "SOURCE_REVISION=$GITHUB_SHA" --tag visor-headless-ci .
       - uses: actions/upload-artifact@v4
         with:
           name: headless-musl-${{ matrix.arch }}
