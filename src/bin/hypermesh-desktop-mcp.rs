@@ -1,6 +1,6 @@
 //! Inverse MCP: expose visor desktop verbs as MCP tools for external agents.
 //!
-//! Stdio JSON-RPC. Tools: view, mouse_move, mouse_click, mouse_scroll, type_text.
+//! Stdio JSON-RPC. Tools: capabilities, view, mouse_move, mouse_click, mouse_scroll, type_text.
 //! Talks to the visor's control socket by default. `HYPERMESH_VISOR_URL` selects
 //! the opt-in TCP listener, with `HYPERMESH_VISOR_TOKEN` or the `api.token` file.
 
@@ -140,6 +140,8 @@ fn tool_list() -> Value {
     let coordinate = json!({"type":"integer", "minimum":0, "maximum":MAX_COORD});
     let delta = json!({"type":"integer","minimum":-SCROLL_MAX_TICKS,"maximum":SCROLL_MAX_TICKS});
     json!({"tools":[
+        {"name":"capabilities", "description":"Read the authenticated visor capability contract; does not grant desktop access", "inputSchema":
+            {"type":"object", "properties":{}, "additionalProperties":false}},
         {"name":"view", "description":"Capture the desktop as a PNG image", "inputSchema":
             {"type":"object", "properties":{}, "additionalProperties":false}},
         {"name":"mouse_move", "description":"Move the pointer in root-window pixels", "inputSchema":
@@ -194,7 +196,7 @@ fn tool_request(
     args: &Value,
 ) -> Result<(&'static str, String, Option<String>), String> {
     let allowed: &[&str] = match tool {
-        "view" => &[],
+        "capabilities" | "view" => &[],
         "mouse_move" => &["x", "y"],
         "mouse_click" => &["x", "y", "button"],
         "mouse_scroll" => &["x", "y", "delta_x", "delta_y"],
@@ -204,6 +206,9 @@ fn tool_request(
     let args = args.as_object().ok_or("arguments must be an object")?;
     if args.keys().any(|key| !allowed.contains(&key.as_str())) {
         return Err("unexpected argument".into());
+    }
+    if tool == "capabilities" {
+        return Ok(("GET", "/capabilities".into(), None));
     }
     let session =
         uuid::Uuid::parse_str(session).map_err(|_| "HYPERMESH_SESSION_ID must be a UUID")?;
@@ -287,6 +292,20 @@ fn tool_result(tool: &str, response: VisorResponse) -> Value {
             .map(|s| format!(": {}", s.chars().take(2048).collect::<String>()))
             .unwrap_or_default();
         return failure(format!("{tool} status {}{detail}", response.status));
+    }
+    if tool == "capabilities" {
+        let is_json = response
+            .mime
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"));
+        let contract = serde_json::from_slice::<Value>(&response.body);
+        return match contract {
+            Ok(contract) if is_json && contract.is_object() => {
+                json!({"content":[{"type":"text","text":contract.to_string()}],"isError":false})
+            }
+            _ => failure("capabilities returned an invalid JSON object".into()),
+        };
     }
     if tool == "view" {
         if !response
@@ -400,4 +419,18 @@ fn unix_exchange(
         .await
         .map_err(|_| "visor request timed out".to_string())?
     })
+}
+
+#[cfg(test)]
+mod capability_contract_tests {
+    use super::*;
+
+    #[test]
+    fn discovery_needs_no_session_but_never_accepts_override_arguments() {
+        let (method, path, body) = tool_request("", "capabilities", &json!({})).unwrap();
+        assert_eq!((method, path.as_str()), ("GET", "/capabilities"));
+        assert!(body.is_none());
+        assert!(tool_request("", "view", &json!({})).is_err());
+        assert!(tool_request("", "capabilities", &json!({"session":"other"})).is_err());
+    }
 }

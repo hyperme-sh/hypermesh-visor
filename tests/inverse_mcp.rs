@@ -179,6 +179,56 @@ fn roundtrip(
 }
 
 #[test]
+fn capabilities_preserve_authenticated_contract_over_both_transports() {
+    let contract = json!({"schema_version": 1, "verbs": [], "limits": {"max": 128}});
+    for unix in [false, true] {
+        let (response, wire) = roundtrip(
+            unix,
+            200,
+            "application/json; charset=utf-8",
+            serde_json::to_vec(&contract).unwrap(),
+            true,
+            call("capabilities", json!({})),
+        );
+        assert!(wire.starts_with("GET /capabilities HTTP/1.1"));
+        if !unix {
+            assert!(wire
+                .to_lowercase()
+                .contains("authorization: bearer test-bearer"));
+        }
+        assert_eq!(response["result"]["isError"], false);
+        let actual: Value =
+            serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(actual, contract);
+        let (denied, _) = roundtrip(
+            unix,
+            401,
+            "application/json",
+            br#"{"error":"unauthorized"}"#.to_vec(),
+            false,
+            call("capabilities", json!({})),
+        );
+        assert_eq!(denied["result"]["isError"], true);
+    }
+    for (mime, body) in [
+        ("text/html", "{}"),
+        ("application/json", "[]"),
+        ("application/json", "broken"),
+    ] {
+        let (response, _) = roundtrip(
+            false,
+            200,
+            mime,
+            body.as_bytes().to_vec(),
+            false,
+            call("capabilities", json!({})),
+        );
+        assert_eq!(response["result"]["isError"], true);
+    }
+}
+
+#[test]
 fn screenshots_preserve_png_bytes_over_both_transports_and_framings() {
     for unix in [false, true] {
         for chunked in [false, true] {
@@ -253,6 +303,7 @@ fn invalid_arguments_never_reach_the_transport() {
     requests.extend([
         call("type_text", json!({})),
         call("view", json!({"extra":true})),
+        call("capabilities", json!({"session":"override"})),
         call("resume", json!({})),
         call("read_file", json!({})),
         json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":null}),
@@ -364,14 +415,14 @@ fn tool_notifications_cannot_execute_and_schema_matches_validation() {
     let responses = run("http://127.0.0.1:0", false, SESSION, &messages);
     assert_eq!(responses.len(), 1);
     let tools = responses[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 5);
-    assert_eq!(tools[1]["inputSchema"]["properties"]["x"]["maximum"], 32767);
+    assert_eq!(tools.len(), 6);
+    assert_eq!(tools[2]["inputSchema"]["properties"]["x"]["maximum"], 32767);
     assert_eq!(
-        tools[2]["inputSchema"]["properties"]["button"]["enum"],
+        tools[3]["inputSchema"]["properties"]["button"]["enum"],
         json!(["left", "right", "middle"])
     );
     assert_eq!(
-        tools[4]["inputSchema"]["properties"]["text"]["maxLength"],
+        tools[5]["inputSchema"]["properties"]["text"]["maxLength"],
         4096
     );
     assert!(tools
