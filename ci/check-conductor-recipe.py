@@ -76,6 +76,24 @@ def check(binary, folder, server):
             check_managed(visor, binary, folder, config, stop, server)
 
 
+def process_identity(pid):
+    # comm may contain spaces or parentheses; starttime is field 22.
+    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return fields[0], fields[19]
+
+
+def process_exited(pid, started):
+    try:
+        state, current = process_identity(pid)
+    except FileNotFoundError:
+        return True
+    except PermissionError:
+        # Loss of access alone must never count as successful shutdown.
+        return False
+    # Zombies have already released descriptors. PID reuse is a different process.
+    return current != started or state in ("Z", "X", "x")
+
+
 def check_managed(visor, conductor, folder, config, stop, server):
     lease = str(uuid.uuid4())
     journal = folder / (lease + ".jsonl")
@@ -93,6 +111,7 @@ def check_managed(visor, conductor, folder, config, stop, server):
                 time.sleep(.05)
             pid, = Path(f"/proc/{child.pid}/task/{child.pid}/children").read_text().split()
             assert Path(f"/proc/{pid}/exe").resolve() == conductor
+            _, started = process_identity(pid)
             listener = os.readlink(f"/proc/{pid}/fd/0")
             assert listener.startswith("socket:[")
             assert listener in [os.readlink(fd) for fd in Path(f"/proc/{child.pid}/fd").iterdir()]
@@ -132,12 +151,11 @@ def check_managed(visor, conductor, folder, config, stop, server):
             else:
                 child.send_signal(stop)
                 child.wait(timeout=10)
-            child_fd = Path(f"/proc/{pid}/fd/0")
             for _ in range(100):
-                if not child_fd.exists():
+                if process_exited(pid, started):
                     break
                 time.sleep(.05)
-            assert not child_fd.exists(), "Conductor retained the listener after Visor exited"
+            assert process_exited(pid, started), "Conductor did not exit after Visor exited"
         finally:
             if child.poll() is None:
                 child.kill()

@@ -15,6 +15,7 @@ use hyper_util::rt::TokioIo;
 use hypermesh_visor::SCROLL_MAX_TICKS;
 use serde_json::{json, Value};
 
+const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TEXT_CHARS: usize = 4096;
 const MAX_COORD: i64 = 32767;
@@ -69,19 +70,74 @@ fn main() {
     let session = std::env::var("HYPERMESH_SESSION_ID").unwrap_or_default();
     let stdin = io::stdin();
     let mut stdout = io::stdout();
+    let mut initialized = false;
+    let mut ready = false;
     let mut owned_tasks = std::collections::VecDeque::<String>::new();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
+    let mut input = stdin.lock();
+    loop {
+        let mut line = String::new();
+        match (&mut input)
+            .take((MAX_REQUEST_BYTES + 1) as u64)
+            .read_line(&mut line)
+        {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if line.len() > MAX_REQUEST_BYTES {
+            rpc_error(&mut stdout, Value::Null, -32600, "request exceeds 512 KiB");
+            break;
+        }
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         let Ok(msg) = serde_json::from_str::<Value>(line) else {
+            rpc_error(&mut stdout, Value::Null, -32700, "parse error");
             continue;
         };
+        let id = msg
+            .get("id")
+            .filter(|id| id.is_string() || id.is_i64() || id.is_u64())
+            .cloned();
+        if !msg.is_object()
+            || msg["jsonrpc"] != "2.0"
+            || !msg["method"].is_string()
+            || (msg.get("id").is_some() && id.is_none())
+        {
+            rpc_error(
+                &mut stdout,
+                id.unwrap_or(Value::Null),
+                -32600,
+                "invalid request",
+            );
+            continue;
+        }
+        // Notifications never receive responses and cannot invoke tools.
+        if id.is_none() {
+            if msg["method"] == "notifications/initialized" && initialized {
+                ready = true;
+            }
+            // Cancellation for completed/non-cancellable calls is ignored. Queued
+            // desktop jobs have explicit session-bound task_cancel semantics.
+            continue;
+        }
         if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
             match method {
                 "initialize" => {
+                    if initialized {
+                        rpc_error(&mut stdout, id.unwrap(), -32600, "already initialized");
+                        continue;
+                    }
+                    if !valid_initialize(msg.get("params")) {
+                        rpc_error(
+                            &mut stdout,
+                            id.unwrap(),
+                            -32602,
+                            "invalid initialize parameters",
+                        );
+                        continue;
+                    }
+                    initialized = true;
                     reply(
                         &mut stdout,
                         msg.get("id").cloned(),
@@ -92,7 +148,15 @@ fn main() {
                         }),
                     );
                 }
-                "notifications/initialized" => {}
+                "ping" => reply(&mut stdout, id, json!({})),
+                _ if !ready => {
+                    rpc_error(
+                        &mut stdout,
+                        id.unwrap(),
+                        -32002,
+                        "initialize and send notifications/initialized first",
+                    );
+                }
                 "tools/list" => {
                     reply(&mut stdout, msg.get("id").cloned(), tool_list());
                 }
@@ -177,6 +241,30 @@ fn main() {
             });
         }
     });
+}
+
+fn rpc_error(stdout: &mut impl Write, id: Value, code: i64, message: &str) {
+    let body = json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}});
+    let _ = writeln!(stdout, "{body}");
+    let _ = stdout.flush();
+}
+
+fn valid_initialize(params: Option<&Value>) -> bool {
+    let Some(params) = params.and_then(Value::as_object) else {
+        return false;
+    };
+    params
+        .get("protocolVersion")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+        && params.get("capabilities").is_some_and(Value::is_object)
+        && params.get("clientInfo").is_some_and(|client| {
+            client
+                .get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|s| !s.is_empty())
+                && client.get("version").and_then(Value::as_str).is_some()
+        })
 }
 
 fn reply(stdout: &mut impl Write, id: Option<Value>, result: Value) {
