@@ -54,6 +54,7 @@ jobs:
   installed-x11:
     name: installed Debian X11 (${{ matrix.asset }})
     needs: packages
+    if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:

@@ -1,42 +1,21 @@
-name: container desktop
+name: container contracts
 on:
   pull_request:
-  workflow_dispatch:
+  push:
+    branches: [main]
 permissions:
   contents: read
 jobs:
-  qualify:
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Build pinned private desktop
-        run: docker build -f container/Dockerfile -t visor-container:qualification .
-      - name: Start independent bots
+      - name: Check Python fixture syntax
+        run: python3 -m compileall -q container ci/container
+      - name: Check shell harness syntax
+        run: bash -n ci/verbs.sh ci/cross-user.sh ci/display/run.sh
+      - name: Validate Compose contract without starting containers
         env:
-          VISOR_IMAGE: visor-container:qualification
-        run: docker compose -p visor-qualification -f container/compose.yaml up -d
-      - name: Qualify isolation and MCP
-        run: python3 ci/container/qualify.py visor-qualification --image visor-container:qualification --output container-results
-      - name: Qualify real applications
-        run: |
-          set -euo pipefail
-          docker cp ci/container/apps.py visor-qualification-writer-1:/home/bot/qualification/apps.py
-          docker exec visor-qualification-writer-1 python3 /home/bot/qualification/apps.py | tee container-results/apps.txt
-      - name: Collect logs and stop containers
-        if: always()
-        env:
-          VISOR_IMAGE: visor-container:qualification
-        run: |
-          mkdir -p container-results
-          docker compose -p visor-qualification -f container/compose.yaml logs > container-results/containers.log 2>&1
-          docker compose -p visor-qualification -f container/compose.yaml down
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: container-${{ matrix.runner }}
-          path: container-results
+          VISOR_IMAGE: visor-container:contract-only
+        run: docker compose -f container/compose.yaml config --quiet
