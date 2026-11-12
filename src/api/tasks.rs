@@ -85,6 +85,7 @@ fn action(step: Step) -> Result<Action, ApiError> {
         "view" => &[],
         "mouse_move" => &["x", "y"],
         "mouse_click" => &["x", "y", "button"],
+        "mouse_drag" => &["x", "y", "to_x", "to_y", "button"],
         "mouse_scroll" => &["x", "y", "delta_x", "delta_y"],
         "type_text" => &["text"],
         _ => return Err(ApiError::bad("unsupported task tool")),
@@ -132,6 +133,22 @@ fn action(step: Step) -> Result<Action, ApiError> {
             Action::Mouse(MouseOp::Click {
                 x: coordinate("x")?,
                 y: coordinate("y")?,
+                button,
+            })
+        }
+        "mouse_drag" => {
+            let button = match args.get("button").and_then(Value::as_str) {
+                None if !args.contains_key("button") => Button::Left,
+                Some("left") => Button::Left,
+                Some("right") => Button::Right,
+                Some("middle") => Button::Middle,
+                _ => return Err(ApiError::bad("invalid button")),
+            };
+            Action::Mouse(MouseOp::Drag {
+                x: coordinate("x")?,
+                y: coordinate("y")?,
+                to_x: coordinate("to_x")?,
+                to_y: coordinate("to_y")?,
                 button,
             })
         }
@@ -352,6 +369,50 @@ async fn execute(
                 .map_err(|_| ApiError::bad("invalid type request"))?;
             type_with_cancel(state, session.to_string(), body, Some(cancel)).await?;
             Ok(json!({"type":"text","text":"typing completed"}))
+        }
+    }
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::*;
+    #[test]
+    fn queued_drag_uses_the_existing_mouse_operation_and_validates_all_endpoints() {
+        let args = json!({"x":1,"y":2,"to_x":300,"to_y":400});
+        let parsed = action(Step {
+            tool: "mouse_drag".into(),
+            arguments: args.clone(),
+        })
+        .unwrap_or_else(|_| panic!("valid drag rejected"));
+        assert!(matches!(
+            parsed,
+            Action::Mouse(MouseOp::Drag {
+                x: 1,
+                y: 2,
+                to_x: 300,
+                to_y: 400,
+                button: Button::Left
+            })
+        ));
+        for key in ["x", "y", "to_x", "to_y"] {
+            for bad in [json!(-1), json!(32768), json!(null), json!(1.5)] {
+                let mut invalid = args.clone();
+                invalid[key] = bad;
+                assert!(action(Step {
+                    tool: "mouse_drag".into(),
+                    arguments: invalid
+                })
+                .is_err());
+            }
+        }
+        for bad in [json!("Left"), json!("wheel"), json!(null)] {
+            let mut invalid = args.clone();
+            invalid["button"] = bad;
+            assert!(action(Step {
+                tool: "mouse_drag".into(),
+                arguments: invalid
+            })
+            .is_err());
         }
     }
 }

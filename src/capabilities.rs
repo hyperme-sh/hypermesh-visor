@@ -70,7 +70,7 @@ pub(crate) fn describe(backend: &str) -> Value {
             "attached_tools": "/session/{id}/mcp",
             "refresh_tools": "/session/{id}/mcp/refresh",
             "refresh_actions": ["refresh", "reconnect"],
-            "inverse_tools": if cfg!(feature = "desktop") { json!(["capabilities", "view", "mouse_move", "mouse_click", "mouse_scroll", "type_text", "task_submit", "task_status", "task_cancel"]) } else { json!([]) }
+            "inverse_tools": if cfg!(feature = "desktop") { json!(["capabilities", "view", "mouse_move", "mouse_click", "mouse_scroll", "mouse_drag", "type_text", "task_submit", "task_status", "task_cancel"]) } else { json!([]) }
         }
     })
 }
@@ -106,11 +106,16 @@ mod tests {
         assert_eq!(value["desktop"]["view"], "disabled");
         assert_eq!(value["desktop"]["watch"], "disabled");
         assert_eq!(value["desktop"]["listen"], "unavailable");
-        assert!(value["desktop"]["capture_disabled_reason"].as_str().unwrap().contains("authenticated daemon"));
-        assert!(value["desktop"]["input_disabled_reason"].as_str().unwrap().contains("authenticated daemon"));
+        assert!(value["desktop"]["capture_disabled_reason"]
+            .as_str()
+            .unwrap()
+            .contains("authenticated daemon"));
+        assert!(value["desktop"]["input_disabled_reason"]
+            .as_str()
+            .unwrap()
+            .contains("authenticated daemon"));
         assert_eq!(value["desktop"]["coordinates"]["space"], "unspecified");
         assert_eq!(value["desktop"]["coordinates"]["display_selection"], false);
         assert_eq!(value["authorization_granted"], false);
     }
-
 }

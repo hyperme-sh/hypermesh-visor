@@ -323,6 +323,12 @@ fn tool_list() -> Value {
             {"type":"object", "properties":{"text":{"type":"string","minLength":1,"maxLength":MAX_TEXT_CHARS}},
              "required":["text"],"additionalProperties":false}}
     ]});
+    catalog["tools"].as_array_mut().unwrap().push(json!({
+        "name":"mouse_drag", "description":"Drag between root-window pixel coordinates using the existing user-pause gate",
+        "inputSchema":{"type":"object","properties":{"x":coordinate,"y":coordinate,"to_x":coordinate,"to_y":coordinate,
+            "button":{"type":"string","enum":["left","right","middle"],"default":"left"}},
+            "required":["x","y","to_x","to_y"],"additionalProperties":false}
+    }));
     let steps: Vec<Value> = catalog["tools"]
         .as_array()
         .unwrap()
@@ -416,6 +422,7 @@ fn tool_request(
         "task_status" | "task_cancel" => &["task_id"],
         "mouse_move" => &["x", "y"],
         "mouse_click" => &["x", "y", "button"],
+        "mouse_drag" => &["x", "y", "to_x", "to_y", "button"],
         "mouse_scroll" => &["x", "y", "delta_x", "delta_y"],
         "type_text" => &["text"],
         _ => return Err("unknown tool".into()),
@@ -458,6 +465,7 @@ fn tool_request(
                     "view",
                     "mouse_move",
                     "mouse_click",
+                    "mouse_drag",
                     "mouse_scroll",
                     "type_text",
                 ]
@@ -496,12 +504,15 @@ fn tool_request(
             ))
         }
         "view" => Ok(("POST", format!("/session/{session}/view"), None)),
-        "mouse_move" | "mouse_click" => {
+        "mouse_move" | "mouse_click" | "mouse_drag" => {
             let x = coord("x")?;
             let y = coord("y")?;
-            let mut body =
-                json!({"action":if tool == "mouse_move" {"move"} else {"click"},"x":x,"y":y});
-            if tool == "mouse_click" {
+            let mut body = json!({"action":if tool == "mouse_move" {"move"} else if tool == "mouse_drag" {"drag"} else {"click"},"x":x,"y":y});
+            if tool == "mouse_drag" {
+                body["to_x"] = json!(coord("to_x")?);
+                body["to_y"] = json!(coord("to_y")?);
+            }
+            if tool != "mouse_move" {
                 let button = match args.get("button") {
                     None => "left",
                     Some(value) => value
@@ -626,6 +637,7 @@ fn tool_result(tool: &str, response: VisorResponse) -> Value {
     let text = match tool {
         "mouse_move" => "moved",
         "mouse_click" => "clicked",
+        "mouse_drag" => "dragged",
         "mouse_scroll" => "scrolled",
         "type_text" => "typed",
         _ => "done",
@@ -727,6 +739,30 @@ fn unix_exchange(
 #[cfg(test)]
 mod capability_contract_tests {
     use super::*;
+
+    #[test]
+    fn queued_drag_schema_and_request_preserve_valid_endpoints() {
+        let args = json!({"steps":[{"tool":"mouse_drag","arguments":{"x":0,"y":1,"to_x":32767,"to_y":2}}]});
+        let (method, path, body) =
+            tool_request("00000000-0000-0000-0000-000000000001", "task_submit", &args).unwrap();
+        assert_eq!(method, "POST");
+        assert!(path.ends_with("/tasks"));
+        assert_eq!(serde_json::from_str::<Value>(&body.unwrap()).unwrap(), args);
+        let catalog = tool_list();
+        let submit = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "task_submit")
+            .unwrap();
+        assert!(submit
+            .pointer("/inputSchema/properties/steps/items/oneOf")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|step| step.pointer("/properties/tool/const") == Some(&json!("mouse_drag"))));
+    }
 
     #[test]
     fn discovery_needs_no_session_but_never_accepts_override_arguments() {

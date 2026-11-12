@@ -433,7 +433,7 @@ fn tool_notifications_cannot_execute_and_schema_matches_validation() {
     let responses = run("http://127.0.0.1:0", false, SESSION, &messages);
     assert_eq!(responses.len(), 1);
     let tools = responses[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     assert_eq!(tools[2]["inputSchema"]["properties"]["x"]["maximum"], 32767);
     assert_eq!(
         tools[3]["inputSchema"]["properties"]["button"]["enum"],
@@ -752,7 +752,7 @@ fn initialization_negotiates_before_tools_and_notifications_never_reply() {
     assert_eq!(replies[2]["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(replies[3]["result"], json!({}));
     assert_eq!(replies[4]["error"]["code"], -32002);
-    assert_eq!(replies[5]["result"]["tools"].as_array().unwrap().len(), 9);
+    assert_eq!(replies[5]["result"]["tools"].as_array().unwrap().len(), 10);
     assert_eq!(replies[6]["error"]["code"], -32600);
     assert_eq!(replies[7]["error"]["code"], -32600);
 }
@@ -767,4 +767,64 @@ fn oversized_stdio_request_is_bounded_and_rejected_without_transport() {
     );
     assert_eq!(replies.len(), 1);
     assert_eq!(replies[0]["error"]["code"], -32600);
+}
+
+#[test]
+fn drag_preserves_coordinates_button_and_denials_over_both_transports() {
+    for unix in [false, true] {
+        for status in [200, 403, 409] {
+            let (response, wire) = roundtrip(
+                unix,
+                status,
+                "application/json",
+                br#"{"error":"input paused after 2 pointer steps"}"#.to_vec(),
+                false,
+                call(
+                    "mouse_drag",
+                    json!({"x":1,"y":2,"to_x":300,"to_y":400,"button":"right"}),
+                ),
+            );
+            assert!(wire.starts_with(&format!("POST /session/{SESSION}/mouse HTTP/1.1")));
+            let body: Value = serde_json::from_str(wire.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(
+                body,
+                json!({"action":"drag","x":1,"y":2,"to_x":300,"to_y":400,"button":"right"})
+            );
+            assert_eq!(response["result"]["isError"], status != 200);
+            if status == 409 {
+                assert!(response["result"]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("2 pointer steps"));
+            }
+        }
+    }
+}
+
+#[test]
+fn invalid_drag_and_queued_drag_are_rejected_before_transport() {
+    let valid = json!({"x":1,"y":2,"to_x":3,"to_y":4});
+    let mut requests = Vec::new();
+    for key in ["x", "y", "to_x", "to_y"] {
+        let mut missing = valid.clone();
+        missing.as_object_mut().unwrap().remove(key);
+        requests.push(call("mouse_drag", missing));
+        for bad in [json!(-1), json!(32768), json!(1.5), json!(null), json!("3")] {
+            let mut args = valid.clone();
+            args[key] = bad;
+            requests.push(call("mouse_drag", args.clone()));
+            requests.push(call(
+                "task_submit",
+                json!({"steps":[{"tool":"mouse_drag","arguments":args}]}),
+            ));
+        }
+    }
+    for bad in [json!("Left"), json!("wheel"), json!(null)] {
+        let mut args = valid.clone();
+        args["button"] = bad;
+        requests.push(call("mouse_drag", args));
+    }
+    for response in run("http://127.0.0.1:0", false, SESSION, &requests) {
+        assert_eq!(response["error"]["code"], -32602);
+    }
 }
