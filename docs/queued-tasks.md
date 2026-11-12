@@ -7,7 +7,7 @@ prompt or create a new model executor.
 
 `POST /session/{session}/tasks` accepts `steps`, an array of 1–16 objects with
 `tool` and `arguments`. Supported tools are `view`, `mouse_move`, `mouse_click`,
-`mouse_scroll`, `mouse_drag` and `type_text`, with their inverse-MCP argument schemas. Unknown
+`mouse_scroll`, `mouse_drag`, `key_chord` and `type_text`, with their inverse-MCP argument schemas. Unknown
 operations, extra fields and invalid arguments fail before queue insertion.
 The response is HTTP 202 with a task ID and `queued` status.
 
@@ -74,3 +74,11 @@ after a protocol error and requests cleanup of its queued jobs.
 all integers from 0 to 32767. Its optional `button` is `left`, `right` or
 `middle` and defaults to `left`. Queued drags use the same mouse handler,
 physical-user pause and held-button release behavior as direct HTTP drags.
+
+`key_chord` accepts `keys`, an array of 1–8 supported names, for example
+`["ctrl", "shift", "s"]` or `["enter"]`. It presses in array order and releases
+in reverse order within one type request. Duplicate names and equivalent aliases
+such as `ctrl`/`control` are rejected. Each name is limited to 32 bytes. This tool
+has no persistent key-down mode; physical input, pause and task cancellation use
+the existing typing gate and held-key cleanup. Use explicit modifier names;
+keyboard layout and application shortcuts still determine the result.

@@ -433,7 +433,7 @@ fn tool_notifications_cannot_execute_and_schema_matches_validation() {
     let responses = run("http://127.0.0.1:0", false, SESSION, &messages);
     assert_eq!(responses.len(), 1);
     let tools = responses[0]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 10);
+    assert_eq!(tools.len(), 11);
     assert_eq!(tools[2]["inputSchema"]["properties"]["x"]["maximum"], 32767);
     assert_eq!(
         tools[3]["inputSchema"]["properties"]["button"]["enum"],
@@ -752,7 +752,7 @@ fn initialization_negotiates_before_tools_and_notifications_never_reply() {
     assert_eq!(replies[2]["result"]["protocolVersion"], "2024-11-05");
     assert_eq!(replies[3]["result"], json!({}));
     assert_eq!(replies[4]["error"]["code"], -32002);
-    assert_eq!(replies[5]["result"]["tools"].as_array().unwrap().len(), 10);
+    assert_eq!(replies[5]["result"]["tools"].as_array().unwrap().len(), 11);
     assert_eq!(replies[6]["error"]["code"], -32600);
     assert_eq!(replies[7]["error"]["code"], -32600);
 }
@@ -826,5 +826,45 @@ fn invalid_drag_and_queued_drag_are_rejected_before_transport() {
     }
     for response in run("http://127.0.0.1:0", false, SESSION, &requests) {
         assert_eq!(response["error"]["code"], -32602);
+    }
+}
+
+#[test]
+fn named_key_chords_preserve_balanced_http_requests_and_denials() {
+    for unix in [false, true] {
+        for status in [200, 403, 409] {
+            let (response, wire) = roundtrip(
+                unix,
+                status,
+                "application/json",
+                br#"{"error":"paused"}"#.to_vec(),
+                false,
+                call("key_chord", json!({"keys":["ctrl","s"]})),
+            );
+            assert!(wire.starts_with(&format!("POST /session/{SESSION}/type HTTP/1.1")));
+            let body: Value = serde_json::from_str(wire.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(
+                body,
+                json!({"keys":[{"key":"ctrl","action":"down"},{"key":"s","action":"down"},{"key":"s","action":"up"},{"key":"ctrl","action":"up"}]})
+            );
+            assert_eq!(response["result"]["isError"], status != 200);
+        }
+    }
+    let mut requests = Vec::new();
+    for keys in [
+        json!([]),
+        json!(["ctrl", "control"]),
+        json!(["unknown"]),
+        json!([null]),
+        json!(vec!["a"; 9]),
+    ] {
+        requests.push(call("key_chord", json!({"keys":keys})));
+        requests.push(call(
+            "task_submit",
+            json!({"steps":[{"tool":"key_chord","arguments":{"keys":keys}}]}),
+        ));
+    }
+    for result in run("http://127.0.0.1:0", false, SESSION, &requests) {
+        assert_eq!(result["error"]["code"], -32602);
     }
 }

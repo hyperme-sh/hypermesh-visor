@@ -329,6 +329,11 @@ fn tool_list() -> Value {
             "button":{"type":"string","enum":["left","right","middle"],"default":"left"}},
             "required":["x","y","to_x","to_y"],"additionalProperties":false}
     }));
+    catalog["tools"].as_array_mut().unwrap().push(json!({
+        "name":"key_chord", "description":"Press 1 to 8 named keys together, then release them in reverse order; preserves user pause",
+        "inputSchema":{"type":"object","properties":{"keys":{"type":"array","minItems":1,"maxItems":8,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":32}}},
+        "required":["keys"],"additionalProperties":false}
+    }));
     let steps: Vec<Value> = catalog["tools"]
         .as_array()
         .unwrap()
@@ -425,6 +430,7 @@ fn tool_request(
         "mouse_drag" => &["x", "y", "to_x", "to_y", "button"],
         "mouse_scroll" => &["x", "y", "delta_x", "delta_y"],
         "type_text" => &["text"],
+        "key_chord" => &["keys"],
         _ => return Err("unknown tool".into()),
     };
     let args = args.as_object().ok_or("arguments must be an object")?;
@@ -468,6 +474,7 @@ fn tool_request(
                     "mouse_drag",
                     "mouse_scroll",
                     "type_text",
+                    "key_chord",
                 ]
                 .contains(&name)
                 {
@@ -544,6 +551,15 @@ fn tool_request(
                 "POST",
                 format!("/session/{session}/mouse"),
                 Some(json!({"action":"scroll","x":x,"y":y,"delta_x":dx,"delta_y":dy}).to_string()),
+            ))
+        }
+        "key_chord" => {
+            let body =
+                hypermesh_visor::key_chord_request(args.get("keys").ok_or("keys are required")?)?;
+            Ok((
+                "POST",
+                format!("/session/{session}/type"),
+                Some(body.to_string()),
             ))
         }
         "type_text" => {
@@ -640,6 +656,7 @@ fn tool_result(tool: &str, response: VisorResponse) -> Value {
         "mouse_drag" => "dragged",
         "mouse_scroll" => "scrolled",
         "type_text" => "typed",
+        "key_chord" => "pressed and released keys",
         _ => "done",
     };
     json!({"content":[{"type":"text","text":text}],"isError":false})
