@@ -23,7 +23,14 @@ docker compose -p visor -f container/compose.yaml down
 Use an immutable registry digest when distributing an image. The local build above
 uses its immutable local image ID. The daemon's control socket is private to its
 container; run clients using `docker compose exec -T`. The inverse MCP executable
-is `/usr/local/bin/hypermesh-desktop-mcp`. The Go CLI is not bundled yet.
+is `/usr/local/bin/hypermesh-desktop-mcp`. The bundled Go CLI is
+`/usr/local/bin/hypermesh`; it uses the container's private runtime directory and
+control socket by default. For example, `docker compose -p visor -f
+container/compose.yaml exec -T writer hypermesh --help` lists its commands.
+Run a bot's CLI in that bot's container, never by sharing its socket or home.
+The CLI is built from the vendored source recorded in
+`/usr/share/doc/hypermesh-cli/VENDOR_REV`, with a read-only module lock and no CGO.
+Native image builds run its unit/contract tests and executable help check.
 
 Homes survive container recreation. The shared exchange is **ephemeral**, limited
 to 256 MiB, and may disappear when unmounted. For durable sharing, provision a

@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1
 ARG RUNTIME_BASE=debian:trixie-slim@sha256:f6b08b09a05725f9431502d3b5714f5c4576e82c1a84fa1debe0c24a7e0c3ec4
+FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS cli
+WORKDIR /cli
+COPY third_party/hypermesh-cli ./
+RUN CGO_ENABLED=0 go test -mod=readonly ./... && \
+    CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath -o /out/hypermesh ./cmd/hypermesh && \
+    /out/hypermesh --help
 FROM rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS toolchain
 FROM toolchain AS build
 WORKDIR /src
@@ -26,6 +32,8 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     groupadd --gid 2000 resources && useradd --uid 1000 --create-home --shell /bin/bash bot && \
     usermod -a -G resources bot && install -d -o bot -g bot -m 0700 /run/visor /home/bot/.config /home/bot/.local/state /home/bot/workspace
 COPY --from=build /src/target/release/hypermesh-visor /src/target/release/hypermesh-companion /src/target/release/hypermesh-desktop-mcp /usr/local/bin/
+COPY --from=cli /out/hypermesh /usr/local/bin/hypermesh
+COPY third_party/hypermesh-cli/VENDOR_REV /usr/share/doc/hypermesh-cli/VENDOR_REV
 RUN install -d -o bot -g resources -m 2770 /resources/share
 COPY container/entrypoint.py /usr/local/bin/visor-container
 COPY container/resource.py /usr/local/bin/visor-resource
