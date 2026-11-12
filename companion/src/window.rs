@@ -36,6 +36,7 @@ struct App {
     sprites: Sprites,
     pose: Pose,
     menu: bool,
+    compact: bool,
     eyes_follow: bool,
     bug_cursor: bool,
     sleep_after_ms: u64,
@@ -88,6 +89,7 @@ pub fn run() -> Result<(), String> {
         sprites,
         pose: Pose::Idle,
         menu: false,
+        compact: settings::compact_mode(&config),
         eyes_follow: settings::eyes_follow_pointer(&config),
         bug_cursor: settings::bug_cursor(&config),
         sleep_after_ms: settings::sleep_after_secs(&config).saturating_mul(1000),
@@ -128,23 +130,37 @@ fn show(mut app: App) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     let window = conn.generate_id().map_err(|err| err.to_string())?;
     let status = app.status.lock().unwrap().clone();
-    let mut scene = draw::render(
-        &app.sprites,
-        &app.pose,
-        Mascot::Disconnected,
-        0,
-        app.menu,
-        false,
-        Some(status.as_str()),
-        app.eyes_follow,
-        app.bug_cursor,
-        None,
-        None,
-        u32::from(screen.height_in_pixels)
-            .saturating_sub(draw::VIEW_MARGIN)
-            .max(1),
-        0,
-    );
+    let mut scene = if app.compact {
+        draw::render_compact(
+            &app.sprites,
+            &app.pose,
+            Mascot::Disconnected,
+            0,
+            &status,
+            false,
+            u32::from(screen.height_in_pixels)
+                .saturating_sub(draw::VIEW_MARGIN)
+                .max(1),
+        )
+    } else {
+        draw::render(
+            &app.sprites,
+            &app.pose,
+            Mascot::Disconnected,
+            0,
+            app.menu,
+            false,
+            Some(status.as_str()),
+            app.eyes_follow,
+            app.bug_cursor,
+            None,
+            None,
+            u32::from(screen.height_in_pixels)
+                .saturating_sub(draw::VIEW_MARGIN)
+                .max(1),
+            0,
+        )
+    };
     let (x, y) = place(
         screen.width_in_pixels,
         screen.height_in_pixels,
@@ -425,34 +441,50 @@ fn show(mut app: App) -> Result<(), String> {
         let (frame_ms, count, looped) = app.sprites.timing(mascot);
         app.reel.advance(dt, frame_ms, count, looped);
         let status = display_status(&app);
-        let pointer = if app.eyes_follow && matches!(app.pose, Pose::Active { .. }) {
+        let pointer = if app.compact || app.eyes_follow && matches!(app.pose, Pose::Active { .. }) {
             pointer_in_window(&conn, window)
         } else {
             None
         };
-        scene = draw::render(
-            &app.sprites,
-            &app.pose,
-            mascot,
-            app.reel.frame(),
-            app.menu && !app.machine.asking(),
-            app.machine.asking(),
-            Some(status.as_str()),
-            app.eyes_follow,
-            app.bug_cursor,
-            if wayland && app.menu {
-                Some(automation::WAYLAND_AUTOMATION_NOTE)
-            } else if !wayland && !watch.accepts_raw_keyboard() && app.menu {
-                Some(automation::KEYBOARD_INTERRUPT_NOTE)
-            } else {
-                None
-            },
-            pointer,
-            u32::from(screen.height_in_pixels)
-                .saturating_sub(draw::VIEW_MARGIN)
-                .max(1),
-            app.scroll,
-        );
+        scene = if app.compact && !app.menu && !app.machine.asking() {
+            let hover = pointer
+                .is_some_and(|(x, y)| x >= 0 && y >= 0 && x < size.0 as i32 && y < size.1 as i32);
+            draw::render_compact(
+                &app.sprites,
+                &app.pose,
+                mascot,
+                app.reel.frame(),
+                &status,
+                hover,
+                u32::from(screen.height_in_pixels)
+                    .saturating_sub(draw::VIEW_MARGIN)
+                    .max(1),
+            )
+        } else {
+            draw::render(
+                &app.sprites,
+                &app.pose,
+                mascot,
+                app.reel.frame(),
+                app.menu && !app.machine.asking(),
+                app.machine.asking(),
+                Some(status.as_str()),
+                app.eyes_follow,
+                app.bug_cursor,
+                if wayland && app.menu {
+                    Some(automation::WAYLAND_AUTOMATION_NOTE)
+                } else if !wayland && !watch.accepts_raw_keyboard() && app.menu {
+                    Some(automation::KEYBOARD_INTERRUPT_NOTE)
+                } else {
+                    None
+                },
+                pointer,
+                u32::from(screen.height_in_pixels)
+                    .saturating_sub(draw::VIEW_MARGIN)
+                    .max(1),
+                app.scroll,
+            )
+        };
         app.scroll = draw::clamp_scroll(app.scroll, scene.scroll_max);
         if (scene.width, scene.height) != size {
             let (x, y) = place(
@@ -700,6 +732,16 @@ fn on_click(
             app.bug_cursor = !app.bug_cursor;
             if let Err(err) = settings::set_bug_cursor(&credentials::config_dir(), app.bug_cursor) {
                 *app.status.lock().unwrap() = err;
+            }
+        }
+        Action::ToggleCompact => {
+            let compact = !app.compact;
+            match settings::set_compact_mode(&app.config, compact) {
+                Ok(()) => {
+                    app.compact = compact;
+                    app.menu = false;
+                }
+                Err(err) => *app.status.lock().unwrap() = err,
             }
         }
         Action::OpenCli => {
