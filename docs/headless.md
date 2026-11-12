@@ -56,3 +56,10 @@ Alpine. It installs the APK, runs as UID 1000, and contains no Rust/Go toolchain
 desktop stack or D-Bus service. Its local sockets are under `/run/visor`; private
 state is under `/var/lib/visor`. Deployment configuration owns any state mounts
 and grants; the image does not expose a TCP port or mount host resources.
+
+For a future owner-authorized version tag, the release workflow also builds the
+native headless bundles on both architectures, verifies their source revisions
+and checksums, and includes them beside the desktop assets. Architecture-specific
+build metadata avoids filename collisions, and the combined checksum file covers
+all published bytes. Current CI artifacts are still not a published release;
+this wiring does not create a tag, authorize a version, or alter desktop packages.
