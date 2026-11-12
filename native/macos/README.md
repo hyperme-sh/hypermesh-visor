@@ -44,10 +44,15 @@ access does not confer the app's internal companion authority.
 
 The permission-bearing app refuses stdio MCP child processes until an isolated
 worker is implemented. HTTP MCP adapters remain available. Capture and input
-currently address the primary display in logical pixels. Modifier shortcuts use
+use the active displays in one logical-pixel rectangle, including displays left
+of or above the primary monitor. Coordinates start at the rectangle's top-left;
+gaps are black in captures and refuse pointer moves. Display layout changes pause
+access and require Allow again. Captures are sequential across displays, not an
+atomic snapshot. Layouts are bounded to 16 displays, 16,384 pixels per axis and
+16,777,216 total logical pixels. Modifier shortcuts use
 explicit US ANSI key identities; unsupported Unicode shortcuts fail. Plain text
 uses Unicode events. Audio capture is unavailable.
 
 The existing X11 companion is separate. Native animated companion parity,
-multi-display behavior, isolated stdio workers and distribution packaging remain
+isolated stdio workers and broader distribution support remain
 follow-up work. No native desktop run is implied by the unit and contract results.

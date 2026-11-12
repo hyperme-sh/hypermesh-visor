@@ -19,20 +19,69 @@ func integer(_ value: Any?) throws -> Int {
     guard let number = value as? NSNumber else { throw NativeError.invalid }
     return number.intValue
 }
+struct DesktopInterruption {
+    let message: String
+    let permanent: Bool
+}
+func desktopInterruption(permissionsAndMonitor: Bool, layoutMatches: Bool) -> DesktopInterruption? {
+    if !permissionsAndMonitor { return DesktopInterruption(message: "Permission or input monitor lost", permanent: true) }
+    if !layoutMatches { return DesktopInterruption(message: "Display layout changed; select Allow to use the new layout", permanent: false) }
+    return nil
+}
+
+struct DisplayGeometry: Equatable {
+    let id: CGDirectDisplayID
+    let bounds: CGRect
+}
+struct DesktopLayout: Equatable {
+    let displays: [DisplayGeometry]
+    let bounds: CGRect
+    init(_ displays: [DisplayGeometry]) throws {
+        guard !displays.isEmpty, displays.count <= 16,
+              Set(displays.map { $0.id }).count == displays.count else { throw NativeError.unavailable }
+        var union = CGRect.null
+        for display in displays {
+            let b = display.bounds
+            guard [b.minX, b.minY, b.width, b.height].allSatisfy({ $0.isFinite && $0.rounded() == $0 }),
+                  b.width > 0, b.height > 0 else { throw NativeError.unavailable }
+            union = union.union(b)
+        }
+        guard union.width <= 16384, union.height <= 16384,
+              union.width * union.height <= 16_777_216 else { throw NativeError.unavailable }
+        self.displays = displays.sorted { $0.id < $1.id }; bounds = union
+    }
+    func point(x: Int, y: Int) throws -> CGPoint {
+        guard x >= 0, y >= 0, Double(x) < bounds.width, Double(y) < bounds.height else { throw NativeError.invalid }
+        let point = CGPoint(x: bounds.minX + Double(x), y: bounds.minY + Double(y))
+        guard displays.contains(where: { $0.bounds.contains(point) }) else { throw NativeError.invalid }
+        return point
+    }
+    // CoreGraphics drawing uses upward y; desktop coordinates use downward y.
+    func imageRect(_ display: DisplayGeometry) -> CGRect {
+        CGRect(x: display.bounds.minX - bounds.minX, y: bounds.maxY - display.bounds.maxY,
+               width: display.bounds.width, height: display.bounds.height)
+    }
+}
+func desktopLayout() throws -> DesktopLayout {
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0, count <= 16 else { throw NativeError.unavailable }
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetActiveDisplayList(count, &ids, &count) == .success, Int(count) <= ids.count else { throw NativeError.unavailable }
+    return try DesktopLayout(ids.prefix(Int(count)).map { DisplayGeometry(id: $0, bounds: CGDisplayBounds($0)) })
+}
+
 func moveEvent(point: CGPoint, buttons: Set<UInt32>) -> CGEvent? {
     let button = [UInt32(0), 1, 2].first(where: { buttons.contains($0) })
     let type: CGEventType = button == 0 ? .leftMouseDragged : button == 1 ? .rightMouseDragged : button == 2 ? .otherMouseDragged : .mouseMoved
     return CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point,
                    mouseButton: CGMouseButton(rawValue: button ?? 0)!)
 }
-func pointer(_ step: [String: Any]) throws {
+func pointer(_ step: [String: Any], layout: DesktopLayout) throws {
     let point = sequencePoint ?? CGEvent(source: nil)?.location ?? .zero
     switch step["kind"] as? String {
     case "move":
         let x = try integer(step["x"]), y = try integer(step["y"])
-        let bounds = CGDisplayBounds(CGMainDisplayID())
-        guard x >= 0, y >= 0, Double(x) < bounds.width, Double(y) < bounds.height else { throw NativeError.invalid }
-        let target = CGPoint(x: bounds.minX + Double(x), y: bounds.minY + Double(y))
+        let target = try layout.point(x: x, y: y)
         try post(moveEvent(point: target, buttons: heldButtons))
         sequencePoint = target
     case "button":
@@ -130,7 +179,7 @@ func pacedInput<T>(_ items: [T], checkpoint: () throws -> Void, send: (T) throws
 func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async throws -> [String: Any] {
     switch request["action"] as? String {
     case "info":
-        let bounds = CGDisplayBounds(CGMainDisplayID())
+        let bounds = try desktopLayout().bounds
         let point = CGEvent(source:nil)?.location ?? .zero
         var result: [String: Any] = ["width":Int(bounds.width),"height":Int(bounds.height),
             "x":Int(point.x-bounds.minX),"y":Int(point.y-bounds.minY),
@@ -142,18 +191,31 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
         return result
     case "view":
         guard CGPreflightScreenCaptureAccess() else { throw NativeError.denied }
+        let layout = try desktopLayout()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: {$0.displayID == CGMainDisplayID()}) else { throw NativeError.unavailable }
-        let bounds = CGDisplayBounds(display.displayID)
-        let configuration = SCStreamConfiguration()
-        configuration.width = Int(bounds.width); configuration.height = Int(bounds.height)
-        configuration.showsCursor = true
-        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
-        guard let png = NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { throw NativeError.unavailable }
+        guard let canvas = CGContext(data: nil, width: Int(layout.bounds.width), height: Int(layout.bounds.height),
+                                     bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw NativeError.unavailable }
+        canvas.setFillColor(CGColor(gray: 0, alpha: 1)); canvas.fill(CGRect(origin: .zero, size: layout.bounds.size))
+        for geometry in layout.displays {
+            try checkpoint()
+            guard let display = content.displays.first(where: {$0.displayID == geometry.id}) else { throw NativeError.unavailable }
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(geometry.bounds.width); configuration.height = Int(geometry.bounds.height)
+            configuration.showsCursor = true
+            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
+            try checkpoint()
+            canvas.draw(image, in: layout.imageRect(geometry))
+        }
+        guard try desktopLayout() == layout, let image = canvas.makeImage(),
+              let png = NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { throw NativeError.unavailable }
         return ["png":png.base64EncodedString()]
     case "pointer":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let steps = request["steps"] as? [[String:Any]], steps.count <= 4096 else { throw NativeError.denied }
-        try await pacedInput(steps, checkpoint: checkpoint, send: pointer)
+        // Keep one coordinate origin for the sequence. Checkpoints reject a changed layout;
+        // never reinterpret an earlier frame's coordinates against a newly attached display.
+        let layout = try desktopLayout()
+        try await pacedInput(steps, checkpoint: checkpoint, send: { try pointer($0, layout: layout) })
         return [:]
     case "keyboard":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let strokes = request["strokes"] as? [[String:Any]], strokes.count <= 4096 else { throw NativeError.denied }
@@ -237,26 +299,80 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
     controller.show()
     withExtendedLifetime(controller) { app.run() }
 }
+func verifyNativeUnit(_ condition: @autoclosure () -> Bool, line: UInt = #line) throws {
+    if !condition() {
+        FileHandle.standardError.write(Data("FAIL native unit at Desktop.swift:\(line)\n".utf8))
+        throw NativeError.invalid
+    }
+}
 func selfTest() throws {
+    try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: true, layoutMatches: true) == nil)
+    try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: true, layoutMatches: false)?.permanent == false)
+    for layoutMatches in [true, false] {
+        try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: false, layoutMatches: layoutMatches)?.permanent == true)
+    }
+    print("PASS layout-only interruption is recoverable; monitor loss remains permanent")
+    let primary = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+    let left = DisplayGeometry(id: 2, bounds: CGRect(x: -1280, y: -200, width: 1280, height: 1024))
+    let layout = try DesktopLayout([primary, left])
+    try verifyNativeUnit(layout.bounds == CGRect(x: -1280, y: -200, width: 3200, height: 1280))
+    let topLeft = try layout.point(x: 0, y: 0)
+    try verifyNativeUnit(topLeft == CGPoint(x: -1280, y: -200))
+    let primaryOrigin = try layout.point(x: 1280, y: 200)
+    try verifyNativeUnit(primaryOrigin == .zero)
+    try verifyNativeUnit(layout.imageRect(left) == CGRect(x: 0, y: 256, width: 1280, height: 1024))
+    try verifyNativeUnit(layout.imageRect(primary) == CGRect(x: 1280, y: 0, width: 1920, height: 1080))
+    for (x, y) in [(0, 1279), (1280, 0), (-1, 0), (3200, 200)] {
+        do { _ = try layout.point(x: x, y: y); preconditionFailure("gap or outside point accepted") } catch NativeError.invalid { }
+    }
+    do { _ = try DesktopLayout([DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 10000, height: 10000))]); preconditionFailure("oversized layout accepted") } catch NativeError.unavailable { }
+    let reordered = try DesktopLayout([left, primary])
+    try verifyNativeUnit(reordered == layout)
+    let below = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 2, height: 2))
+    let above = DisplayGeometry(id: 2, bounds: CGRect(x: 0, y: -2, width: 2, height: 2))
+    let vertical = try DesktopLayout([below, above])
+    let canvas = CGContext(data: nil, width: 2, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+                          space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    canvas.setFillColor(CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, components: [1, 0, 0, 1])!); canvas.fill(vertical.imageRect(below))
+    let rows = Data([0,255,0,255, 0,255,0,255, 0,0,255,255, 0,0,255,255])
+    let fixture = CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+                          space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                          provider: CGDataProvider(data: rows as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+    canvas.draw(fixture, in: vertical.imageRect(above))
+    let encoded = NSBitmapImageRep(cgImage: canvas.makeImage()!).representation(using: .png, properties: [:])!
+    let bitmap = NSBitmapImageRep(data: encoded)!
+    let reference = NSBitmapImageRep(data: NSBitmapImageRep(cgImage: fixture).representation(using: .png, properties: [:])!)!
+    func pixel(_ rep: NSBitmapImageRep, _ y: Int) -> [Int] {
+        var samples = [Int](repeating: 0, count: rep.samplesPerPixel)
+        rep.getPixel(&samples, atX: 0, y: y)
+        return samples
+    }
+    // Compare encoded pixels, not NSColor's display-dependent floating-point conversion.
+    let top = pixel(bitmap, 0), second = pixel(bitmap, 1), bottom = pixel(bitmap, 3)
+    FileHandle.standardError.write(Data("Synthetic PNG rows: \(top), \(second), \(bottom); source: \(pixel(reference, 0)), \(pixel(reference, 1))\n".utf8))
+    try verifyNativeUnit(top == pixel(reference, 0))
+    try verifyNativeUnit(second == pixel(reference, 1))
+    try verifyNativeUnit(top != second && bottom != top && bottom != second)
+    print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
-        precondition(event.type == expected)
-        precondition(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(button))
+        try verifyNativeUnit(event.type == expected)
+        try verifyNativeUnit(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(button))
     }
-    precondition(moveEvent(point: .zero, buttons: [])!.type == .mouseMoved)
+    try verifyNativeUnit(moveEvent(point: .zero, buttons: [])!.type == .mouseMoved)
     for (character, expected) in [("1",18),(" ",49),("-",27),("/",44),(";",41),("a",0)] {
         let (event, _) = try keyEvent(["keysym":Int(character.unicodeScalars.first!.value),"down":true], held:[55])
-        precondition(event.getIntegerValueField(.keyboardEventKeycode) == expected)
-        precondition(event.flags.contains(.maskCommand))
+        try verifyNativeUnit(event.getIntegerValueField(.keyboardEventKeycode) == expected)
+        try verifyNativeUnit(event.flags.contains(.maskCommand))
     }
     let (shifted, _) = try keyEvent(["keysym":Int(Character("!").asciiValue!),"down":true], held:[55])
-    precondition(shifted.getIntegerValueField(.keyboardEventKeycode) == 18 && shifted.flags.contains(.maskShift))
+    try verifyNativeUnit(shifted.getIntegerValueField(.keyboardEventKeycode) == 18 && shifted.flags.contains(.maskShift))
     let emoji = 0x01000000 + 0x1f642
     let (text, _) = try keyEvent(["keysym":emoji,"down":true], held:[])
     var count = 0
     var chars = [UniChar](repeating:0,count:8)
     text.keyboardGetUnicodeString(maxStringLength:8,actualStringLength:&count,unicodeString:&chars)
-    precondition(String(utf16CodeUnits:chars,count:count) == "🙂")
+    try verifyNativeUnit(String(utf16CodeUnits:chars,count:count) == "🙂")
     do {
         _ = try keyEvent(["keysym":emoji,"down":true], held:[55])
         preconditionFailure("unsupported physical shortcut accepted")
