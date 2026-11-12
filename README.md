@@ -35,7 +35,7 @@ work; the headless option does not enable desktop automation.
 Useful links: [downloads](https://hyperme.sh/visor),
 [published Linux installation](docs/linux-v0.1.0.md),
 [release packages](#release-packages), [capability reference](docs/verb-contract.md),
-[MCP setup](docs/mcp-discovery.md), [container deployment](container/README.md),
+[MCP setup](docs/mcp-discovery.md), [container deployment](container/README.md), [remote bot polling](docs/remote-bots.md),
 [headless builds](docs/headless.md), and
 [report a problem](https://github.com/hyperme-sh/hypermesh-visor/issues/new).
 

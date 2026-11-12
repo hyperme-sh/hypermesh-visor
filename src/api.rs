@@ -41,6 +41,7 @@ use crate::stream::{self, StreamError};
 use crate::vault::{SecretRequest, Vault, VaultError};
 
 mod tasks;
+mod remote_bot;
 mod mcp_resources;
 mod mcp_prompts;
 
@@ -923,6 +924,7 @@ pub async fn serve_until(
     state: Arc<AppState>,
     dependency: impl std::future::Future<Output = std::io::Result<()>> + Send + 'static,
 ) -> std::io::Result<()> {
+    let remote_bot = remote_bot::configured().map_err(std::io::Error::other)?;
     let runtime = crate::companion_sock::runtime_dir()?;
     crate::companion_sock::prepare_dir(&runtime)?;
     let companion_path = crate::companion_sock::socket_file(&runtime);
@@ -984,6 +986,9 @@ pub async fn serve_until(
             .await
     });
     let mut jobs = vec![companion, control];
+    if let Some(client) = remote_bot {
+        jobs.push(tokio::spawn(remote_bot::run(client, Arc::clone(&state), cancel_rx.clone())));
+    }
     if let (Some(listener), Some(token)) = (tcp_listener, token) {
         let app = tcp_router(Arc::clone(&state), token);
         let mut tcp_stop = cancel_rx.clone();
@@ -2219,11 +2224,11 @@ async fn mouse(
     Path(id): Path<String>,
     Json(op): Json<MouseOp>,
 ) -> Result<StatusCode, ApiError> {
-    mouse_with_cancel(state, id, op, None).await
+    mouse_with_cancel(state, id, op, None, None).await
 }
 
 async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
-                           task_cancel: Option<Arc<AtomicBool>>) -> Result<StatusCode, ApiError> {
+                           task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<u64>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     let backend = state.desktop.backend_name();
     if !mouse_in_bounds(backend, &op) {
@@ -2246,7 +2251,7 @@ async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
     // Captured before the phase check. A pause that publishes a new epoch
     // after this read cannot be adopted as the baseline inside the desktop task.
-    let epoch = automation::unpack_snap(gate_word(&state)).0;
+    let epoch = task_epoch.unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
     if backend == "wayland" {
         return Err(ApiError::not_implemented(
             crate::desktop::WAYLAND_AUTOMATION,
@@ -2307,14 +2312,14 @@ async fn type_keys(
     Path(id): Path<String>,
     Json(body): Json<TypeBody>,
 ) -> Result<StatusCode, ApiError> {
-    type_with_cancel(state, id, body, None).await
+    type_with_cancel(state, id, body, None, None).await
 }
 
 async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
-                          task_cancel: Option<Arc<AtomicBool>>) -> Result<StatusCode, ApiError> {
+                          task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<u64>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
-    let epoch = automation::unpack_snap(gate_word(&state)).0;
+    let epoch = task_epoch.unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
     if state.desktop.backend_name() == "wayland" {
         return Err(ApiError::not_implemented(
             crate::desktop::WAYLAND_AUTOMATION,
@@ -7705,4 +7710,49 @@ while True:
         assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
         assert!(lock(&desktop.typed).len() < 1024);
     }
+    #[tokio::test]
+    async fn remote_deadline_cancels_work_while_it_waits_in_the_local_queue() {
+        let (state, desktop, session) = task_fixture();
+        let injection = lock(&state.injection);
+        let (_, first) = task_request(state.clone(), "POST", &format!("/session/{session}/tasks"),
+            serde_json::json!({"steps":[{"tool":"type_text","arguments":{"text":"x"}}]})).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let body = serde_json::from_value(serde_json::json!({"steps":[{"tool":"view","arguments":{}}]})).unwrap();
+        let (_, Json(remote)) = tasks::submit_bounded(state.clone(), session.to_string(), body, Duration::from_millis(10), None).await
+            .unwrap_or_else(|_| panic!("bounded task rejected"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(injection);
+        task_terminal(state.clone(), &format!("/session/{session}/tasks/{}", first["id"].as_str().unwrap())).await;
+        let done = task_terminal(state, &format!("/session/{session}/tasks/{}", remote["id"].as_str().unwrap())).await;
+        assert_eq!(done["status"], "cancelled");
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn remote_task_cannot_run_after_its_local_consent_epoch_changes() {
+        let (state, desktop, session) = task_fixture();
+        let old_consent = gate_word(&state);
+        lock(&state.automation).pause();
+        let body = serde_json::from_value(serde_json::json!({"steps":[{"tool":"view","arguments":{}}]})).unwrap();
+        let (_, Json(remote)) = tasks::submit_bounded(state.clone(), session.to_string(), body,
+            Duration::from_secs(1), Some(old_consent)).await.unwrap_or_else(|_| panic!("submission failed"));
+        let done = task_terminal(state, &format!("/session/{session}/tasks/{}", remote["id"].as_str().unwrap())).await;
+        assert_eq!(done["status"], "cancelled");
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn remote_input_handlers_reject_the_task_epoch_after_a_local_stop() {
+        let (state, desktop, session) = task_fixture();
+        let epoch = lock(&state.automation).epoch();
+        lock(&state.automation).stop();
+        let op = MouseOp::Move { x: 1, y: 1, clickable: false };
+        assert!(mouse_with_cancel(state.clone(), session.to_string(), op, None, Some(epoch)).await.is_err());
+        let body = serde_json::from_value(serde_json::json!({"text":"must not type"})).unwrap();
+        assert!(type_with_cancel(state.clone(), session.to_string(), body, None, Some(epoch)).await.is_err());
+        assert!(lock(&desktop.mice).is_empty());
+        assert!(lock(&desktop.typed).is_empty());
+        assert_eq!(lock(&state.automation).phase(), Phase::Off);
+    }
+
 }
