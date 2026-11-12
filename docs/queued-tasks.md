@@ -43,6 +43,11 @@ All bind to `HYPERMESH_SESSION_ID`. Status includes images as MCP image blocks;
 the JSON result summary identifies each image's `content_index`. Normal stdio
 disconnect requests cancellation only for tasks created by that connection.
 Abrupt process loss still relies on the daemon deadline or session closure.
+The adapter tracks at most 16 tasks whose terminal status it has not observed.
+At that limit, `task_submit` returns a tool error without submitting work or
+forgetting an older task. Poll `task_status` or use `task_cancel` and confirm a
+terminal status to free a slot; requesting cancellation of a running task alone
+does not free its slot. This limit is separate from the daemon's active queue.
 `capabilities` returns the authenticated daemon contract without requiring a
 session or granting desktop access.
 

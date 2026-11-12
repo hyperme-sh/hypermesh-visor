@@ -19,6 +19,7 @@ const MAX_REQUEST_BYTES: usize = 512 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TEXT_CHARS: usize = 4096;
 const MAX_COORD: i64 = 32767;
+const MAX_OWNED_TASKS: usize = 16;
 
 struct VisorResponse {
     status: u16,
@@ -163,7 +164,17 @@ fn main() {
                 "tools/call" => {
                     // A tool invocation is a request, never an executable notification.
                     if let Some(id) = msg.get("id").filter(|id| id.is_string() || id.is_number()) {
-                        let result = handle_call(&visor, &session, msg.get("params"));
+                        let result = if msg.pointer("/params/name").and_then(Value::as_str)
+                            == Some("task_submit")
+                            && owned_tasks.len() >= MAX_OWNED_TASKS
+                        {
+                            // Never discard ownership of a possibly active job. The
+                            // daemon's queue limit does not bound jobs this client has
+                            // submitted over time, including externally cancelled jobs.
+                            Ok(failure("task ownership limit reached; use task_status or task_cancel to confirm a tracked task is terminal before submitting another".to_owned()))
+                        } else {
+                            handle_call(&visor, &session, msg.get("params"))
+                        };
                         if let Ok(result) = &result {
                             let name = msg.pointer("/params/name").and_then(Value::as_str);
                             if matches!(name, Some("task_submit" | "task_status" | "task_cancel"))
@@ -190,9 +201,6 @@ fn main() {
                                             } else if name == Some("task_submit")
                                                 && !owned_tasks.iter().any(|known| known == id)
                                             {
-                                                if owned_tasks.len() == 16 {
-                                                    owned_tasks.pop_front();
-                                                }
                                                 owned_tasks.push_back(id.to_owned());
                                             }
                                         }

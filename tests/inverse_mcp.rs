@@ -560,6 +560,87 @@ fn mcp_disconnect_cancels_only_its_submitted_task() {
 }
 
 #[test]
+fn task_ownership_limit_never_forgets_active_jobs_and_terminal_status_frees_capacity() {
+    let tasks: Vec<String> = (0..17).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let expected = tasks.clone();
+    let server = std::thread::spawn(move || {
+        for task in &expected[..16] {
+            let (stream, _) = accept_bounded!(listener);
+            let wire = exchange(
+                stream,
+                202,
+                "application/json",
+                serde_json::to_vec(&json!({"id":task,"status":"queued"}))
+                    .unwrap()
+                    .as_slice(),
+                false,
+            );
+            assert!(wire.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
+        }
+        // The seventeenth submission must be refused before contacting the daemon.
+        // Confirm a later task finished while the oldest remains active.
+        let (stream, _) = accept_bounded!(listener);
+        let wire = exchange(
+            stream,
+            200,
+            "application/json",
+            serde_json::to_vec(&json!({"id":expected[15],"status":"completed"}))
+                .unwrap()
+                .as_slice(),
+            false,
+        );
+        assert!(wire.starts_with(&format!(
+            "GET /session/{SESSION}/tasks/{} HTTP/1.1",
+            expected[15]
+        )));
+        let (stream, _) = accept_bounded!(listener);
+        let wire = exchange(
+            stream,
+            202,
+            "application/json",
+            serde_json::to_vec(&json!({"id":expected[16],"status":"queued"}))
+                .unwrap()
+                .as_slice(),
+            false,
+        );
+        assert!(wire.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
+        let mut cancelled = Vec::new();
+        for _ in 0..16 {
+            let (stream, _) = accept_bounded!(listener);
+            let wire = exchange(stream, 200, "application/json", b"{}", false);
+            cancelled.push(wire.lines().next().unwrap().to_owned());
+        }
+        for (index, task) in expected.iter().enumerate() {
+            assert_eq!(
+                cancelled.contains(&format!("DELETE /session/{SESSION}/tasks/{task} HTTP/1.1")),
+                index != 15
+            );
+        }
+    });
+    let submit = call(
+        "task_submit",
+        json!({"steps":[{"tool":"view","arguments":{}}]}),
+    );
+    let mut requests = vec![submit.clone(); 17];
+    requests.push(call("task_status", json!({"task_id":tasks[15]})));
+    requests.push(submit);
+    let responses = run(&format!("http://{address}"), false, SESSION, &requests);
+    server.join().unwrap();
+    assert_eq!(responses.len(), 19);
+    assert!(responses[..16]
+        .iter()
+        .all(|r| r["result"]["isError"] == false));
+    assert_eq!(responses[16]["result"]["isError"], true);
+    assert!(responses[16]["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("ownership limit"));
+    assert_eq!(responses[18]["result"]["isError"], false);
+}
+
+#[test]
 fn initialization_negotiates_before_tools_and_notifications_never_reply() {
     let messages = [
         call("view", json!({})),
