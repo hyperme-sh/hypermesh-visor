@@ -74,7 +74,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         started = true
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         for state in ["idle", "automation", "disconnected"] {
-            mascotFrames[state] = (0..<8).compactMap { frame in
+            let count = state == "disconnected" ? 6 : 8
+            mascotFrames[state] = (0..<count).compactMap { frame in
                 guard let path = Bundle.main.path(forResource: "\(state)_\(frame)_128", ofType: "png", inDirectory: "companion"),
                       let image = NSImage(contentsOfFile: path) else { return nil }
                 image.size = NSSize(width: 22, height: 22)
@@ -127,7 +128,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         menuAllow?.isEnabled = access.enabled
         menuAllow?.title = access.title
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
-        if let frames = mascotFrames[state], frames.count == 8 {
+        if let frames = mascotFrames[state], frames.count == (state == "disconnected" ? 6 : 8) {
             let frame = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : mascotTick % frames.count
             statusItem?.button?.image = frames[frame]
             statusItem?.button?.title = ""
@@ -141,7 +142,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     private func poll() {
         guard started && !polling else { return }
-        mascotTick = (mascotTick + 1) % 8
+        mascotTick = (mascotTick + 1) % 24
         polling = true
         let generation = epoch
         control("poll") { result in

@@ -77,7 +77,7 @@ Managed `HYPERMESH_CONDUCTOR_CONFIG` and supervisor URL settings are refused by
 the permission-bearing app. Native bundled-child startup still needs an isolated
 worker; explicit external routing does not complete default bundled delivery in #90.
 
-The native menu-bar companion uses the bundled eight-frame mascot for idle,
+The native menu-bar companion uses the bundled animated mascot for idle,
 automation and disconnected states. Reduce Motion selects a still frame. Hover
 shows session/engine state and the latest reported input/output token counts
 when available; missing counts stay absent. Its menu retains explicit local

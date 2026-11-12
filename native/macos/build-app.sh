@@ -7,7 +7,9 @@ deployment=$(/usr/bin/sw_vers -productVersion)
 MACOSX_DEPLOYMENT_TARGET="$deployment" cargo rustc --locked --lib --crate-type staticlib
 mkdir -p "$output/Contents/MacOS" "$output/Contents/Resources/companion"
 for state in idle automation disconnected; do
-  for frame in {0..7}; do
+  count=8
+  if [[ "$state" == disconnected ]]; then count=6; fi
+  for ((frame=0; frame<count; frame++)); do
     cp "companion/assets/states/${state}_${frame}_128.png" "$output/Contents/Resources/companion/"
   done
 done
