@@ -125,8 +125,9 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             self.sessionOpen = body["open"] as? Bool ?? false
             self.currentPhase = automation["phase"] as? String ?? "off"
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
-            if self.allowed && !self.permissionsAndMonitor() { self.pause("Permission or input monitor lost", lost: true) }
-            if self.allowed && !self.layoutMatchesApproval() { self.pause("Display layout changed; select Allow to use the new layout") }
+            if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
+                self.pause(interruption.message, lost: interruption.permanent)
+            }
             self.update()
         }
     }

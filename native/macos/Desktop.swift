@@ -19,6 +19,16 @@ func integer(_ value: Any?) throws -> Int {
     guard let number = value as? NSNumber else { throw NativeError.invalid }
     return number.intValue
 }
+struct DesktopInterruption {
+    let message: String
+    let permanent: Bool
+}
+func desktopInterruption(permissionsAndMonitor: Bool, layoutMatches: Bool) -> DesktopInterruption? {
+    if !permissionsAndMonitor { return DesktopInterruption(message: "Permission or input monitor lost", permanent: true) }
+    if !layoutMatches { return DesktopInterruption(message: "Display layout changed; select Allow to use the new layout", permanent: false) }
+    return nil
+}
+
 struct DisplayGeometry: Equatable {
     let id: CGDirectDisplayID
     let bounds: CGRect
@@ -287,6 +297,12 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
     withExtendedLifetime(controller) { app.run() }
 }
 func selfTest() throws {
+    precondition(desktopInterruption(permissionsAndMonitor: true, layoutMatches: true) == nil)
+    precondition(desktopInterruption(permissionsAndMonitor: true, layoutMatches: false)?.permanent == false)
+    for layoutMatches in [true, false] {
+        precondition(desktopInterruption(permissionsAndMonitor: false, layoutMatches: layoutMatches)?.permanent == true)
+    }
+    print("PASS layout-only interruption is recoverable; monitor loss remains permanent")
     let primary = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080))
     let left = DisplayGeometry(id: 2, bounds: CGRect(x: -1280, y: -200, width: 1280, height: 1024))
     let layout = try DesktopLayout([primary, left])
