@@ -153,7 +153,7 @@ fn main() {
                         msg.get("id").cloned(),
                         json!({
                             "protocolVersion": "2024-11-05",
-                            "capabilities": {"tools": {}},
+                            "capabilities": {"tools": {}, "resources": {}},
                             "serverInfo": {"name": "hypermesh-desktop", "version": "0.1.0"}
                         }),
                     );
@@ -170,6 +170,38 @@ fn main() {
                 "tools/list" => {
                     reply(&mut stdout, msg.get("id").cloned(), tool_list());
                 }
+                "resources/list" | "resources/templates/list" => {
+                    if !resource_list_params(msg.get("params")) {
+                        rpc_error(
+                            &mut stdout,
+                            id.unwrap(),
+                            -32602,
+                            "invalid resource list parameters",
+                        );
+                        continue;
+                    }
+                    let result = if method == "resources/list" {
+                        let resources: Vec<Value> = owned_tasks.iter().filter_map(|task| {
+                            task_resource_uri(&session, task).map(|uri| json!({"uri":uri,"name":"Desktop task","mimeType":"application/json"}))
+                        }).collect();
+                        json!({"resources":resources})
+                    } else {
+                        let templates: Vec<Value> = uuid::Uuid::parse_str(&session).ok().map(|session| {
+                            json!({"uriTemplate":format!("visor-task://{session}/{{task_id}}"),"name":"Desktop task status and results","mimeType":"application/json"})
+                        }).into_iter().collect();
+                        json!({"resourceTemplates":templates})
+                    };
+                    reply(&mut stdout, id, result);
+                }
+                "resources/read" => match read_task_resource(&visor, &session, msg.get("params")) {
+                    Ok((result, terminal)) => {
+                        if let Some(task) = terminal {
+                            owned_tasks.retain(|known| known != &task);
+                        }
+                        reply(&mut stdout, id, result);
+                    }
+                    Err((code, message)) => rpc_error(&mut stdout, id.unwrap(), code, message),
+                },
                 "tools/call" => {
                     // A tool invocation is a request, never an executable notification.
                     if let Some(id) = msg.get("id").filter(|id| id.is_string() || id.is_number()) {
@@ -356,6 +388,101 @@ fn tool_list() -> Value {
     catalog
 }
 
+fn resource_list_params(params: Option<&Value>) -> bool {
+    match params {
+        None => true,
+        Some(Value::Object(params)) => params
+            .iter()
+            .all(|(key, value)| key == "_meta" && value.is_object()),
+        _ => false,
+    }
+}
+
+fn task_resource_uri(session: &str, task: &str) -> Option<String> {
+    Some(format!(
+        "visor-task://{}/{}",
+        uuid::Uuid::parse_str(session).ok()?,
+        uuid::Uuid::parse_str(task).ok()?
+    ))
+}
+
+fn read_task_resource(
+    visor: &VisorEndpoint,
+    session: &str,
+    params: Option<&Value>,
+) -> Result<(Value, Option<String>), (i64, &'static str)> {
+    let invalid = (-32602, "invalid task resource URI or parameters");
+    let params = params.and_then(Value::as_object).ok_or(invalid)?;
+    if params
+        .iter()
+        .any(|(key, value)| key != "uri" && !(key == "_meta" && value.is_object()))
+    {
+        return Err(invalid);
+    }
+    let uri = params.get("uri").and_then(Value::as_str).ok_or(invalid)?;
+    let session = uuid::Uuid::parse_str(session).map_err(|_| invalid)?;
+    let task = uri
+        .strip_prefix(&format!("visor-task://{session}/"))
+        .ok_or(invalid)?;
+    let task = uuid::Uuid::parse_str(task)
+        .map_err(|_| invalid)?
+        .to_string();
+    if task_resource_uri(&session.to_string(), &task).as_deref() != Some(uri) {
+        return Err(invalid);
+    }
+    let response = visor_exchange(
+        visor,
+        "GET",
+        &format!("/session/{session}/tasks/{task}"),
+        None,
+    )
+    .map_err(|_| (-32603, "task resource transport failed"))?;
+    match response.status {
+        404 => return Err((-32002, "task resource not found")),
+        401 | 403 => return Err((-32001, "task resource access denied")),
+        200 => {}
+        _ => return Err((-32603, "task resource unavailable")),
+    }
+    if !response
+        .mime
+        .split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+    {
+        return Err((-32603, "invalid task resource response"));
+    }
+    let body: Value = serde_json::from_slice(&response.body)
+        .map_err(|_| (-32603, "invalid task resource response"))?;
+    if body["id"] != task || !body.is_object() {
+        return Err((-32603, "invalid task resource response"));
+    }
+    let terminal = body["status"]
+        .as_str()
+        .filter(|state| ["completed", "failed", "cancelled"].contains(state))
+        .map(|_| task);
+    Ok((
+        json!({"contents":[{"uri":uri,"mimeType":"application/json","text":body.to_string()}]}),
+        terminal,
+    ))
+}
+
+fn visor_exchange(
+    visor: &VisorEndpoint,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> Result<VisorResponse, String> {
+    match visor {
+        VisorEndpoint::Unix(socket) => unix_exchange(socket, method, path, body),
+        VisorEndpoint::Http { base, token } => http_exchange(
+            &format!("{}{path}", base.trim_end_matches('/')),
+            method,
+            body,
+            token.as_deref(),
+        ),
+    }
+}
+
 fn handle_call(
     visor: &VisorEndpoint,
     session: &str,
@@ -375,15 +502,7 @@ fn handle_call(
     let args = params.get("arguments").unwrap_or(&empty);
     // Validate before connecting, so malformed input can never drive the desktop.
     let (method, path, body) = tool_request(session, tool, args)?;
-    let response = match visor {
-        VisorEndpoint::Unix(socket) => unix_exchange(socket, method, &path, body.as_deref()),
-        VisorEndpoint::Http { base, token } => http_exchange(
-            &format!("{}{path}", base.trim_end_matches('/')),
-            method,
-            body.as_deref(),
-            token.as_deref(),
-        ),
-    };
+    let response = visor_exchange(visor, method, &path, body.as_deref());
     let mut missing_task = None;
     let content = match response {
         Ok(response) => {
