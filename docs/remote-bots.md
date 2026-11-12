@@ -37,8 +37,8 @@ lost completion acknowledgments are not replayed.
 The native/local companion must grant consent. Remote resume never starts local
 automation or lifts a physical-input pause. Container mode must be explicitly
 selected at enrollment and in this config; it also requires local consent and
-does not bypass the companion safety controls. Fully unattended container
-startup policy and the owner enrollment UI remain unfinished under #30.
+does not bypass the companion safety controls. The owner UI is available at
+`/dashboard/hypermesh/bots` (Portal #114), through Edge #59.
 
 Polling uses two-second request timeouts and does not follow redirects. Each
 claim carries an absolute authorization deadline, capped at 15 seconds. The
@@ -52,3 +52,28 @@ submission failure pauses automation and triggers the daemon's coordinated
 shutdown. Restart and renew local consent to reconnect. There is no automatic
 retry of desktop work. This behavior is opt-in; without the config variable no
 bot service requests are made.
+
+## Dedicated unattended containers
+
+`container/compose.remote.yaml` opts a dedicated private desktop into one local
+startup consent. It has no host devices, host sockets or published ports.
+Registration alone never enables this mode. Set `VISOR_IMAGE` to the moving
+`ghcr.io/hyperme-sh/hypermesh-visor:test` channel, or a verified downloaded image.
+Provide `VISOR_BOT_CONFIG_FILE` and `VISOR_BOT_TOKEN_FILE` as absolute paths to
+files owned by UID 1000 with mode `0600`. Enroll the bot with mode `container`;
+set config `mode` to `container`, `credential_file` to `/run/secrets/bot-token`,
+and the initial `session_id` to the all-zero UUID above.
+
+On an explicit container launch, `HYPERMESH_CONTAINER_UNATTENDED=1` copies the
+read-only config into private temporary storage, creates one local session and
+requests start once through the local companion socket. The session UUID is
+printed in the container log for assignment in Your bots. Old assignments are
+not claimed after a new session is created. Keep the credential file private;
+it is never printed or sent to the local session API.
+
+The companion continues monitoring the desktop. A pause is never automatically
+resumed. Remote pause/stop cannot be undone by another remote task. This Compose
+configuration disables automatic restart: after failure, the owner must launch
+the container again and assign the newly created session. With the flag absent
+or `0`, startup retains the normal explicit local consent requirement. Any other
+flag value or a non-container enrollment config is refused.

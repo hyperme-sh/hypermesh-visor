@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import uuid
+import visor_unattended
 
 os.umask(0o077)
 stop = threading.Event()
@@ -59,11 +60,16 @@ try:
     start('window-manager', ['openbox', '--sm-disable'])
     start('audio', ['pulseaudio', '--daemonize=no', '--exit-idle-time=-1', '--disallow-exit', '-n',
                     '--load=module-native-protocol-unix socket=/run/visor/pulse/native', '--load=module-null-sink sink_name=visor'])
+    unattended = visor_unattended.prepare(os.environ, root)
     start('visor', ['/usr/local/bin/hypermesh-visor'])
     wait_until(lambda: Path('/run/visor/hypermesh/companion.sock').is_socket(), 'visor unavailable')
     start('companion', ['/usr/local/bin/hypermesh-companion'])
+    if unattended is not None:
+        session = visor_unattended.activate(unattended)
+        print(f'container bot session {session}; assign this session in Your bots', flush=True)
     ready.write_text('ready\n')
-    print('private desktop ready; automation remains off until explicitly started', flush=True)
+    if unattended is None:
+        print('private desktop ready; automation remains off until explicitly started', flush=True)
     while not stop.wait(0.2):
         if any(process.poll() is not None for _, process in children):
             raise RuntimeError('essential desktop process exited')

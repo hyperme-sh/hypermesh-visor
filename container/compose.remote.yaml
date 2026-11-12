@@ -1,0 +1,33 @@
+services:
+  bot:
+    image: ${VISOR_IMAGE:?Set VISOR_IMAGE to the TEST channel or a verified image reference}
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 2g
+    cpus: 2
+    shm_size: 256m
+    # Each explicit launch grants startup consent once. Failure must not silently
+    # recreate a session or undo a local pause through automatic restart.
+    restart: "no"
+    stop_grace_period: 15s
+    environment:
+      HYPERMESH_CONTAINER_UNATTENDED: "1"
+      HYPERMESH_BOT_CONFIG: /run/secrets/bot-config
+    secrets:
+      - bot-config
+      - bot-token
+    volumes:
+      - bot-home:/home/bot
+    tmpfs:
+      - /run/visor:uid=1000,gid=1000,mode=0700,size=64m
+      - /tmp:mode=1777,size=256m
+secrets:
+  bot-config:
+    file: ${VISOR_BOT_CONFIG_FILE:?Provide the private container bot configuration file}
+  bot-token:
+    file: ${VISOR_BOT_TOKEN_FILE:?Provide the private scoped bot credential file}
+volumes:
+  bot-home:

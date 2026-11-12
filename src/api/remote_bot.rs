@@ -180,6 +180,13 @@ fn remaining(deadline: f64, now: f64) -> Result<Duration, String> {
     Ok(Duration::from_secs_f64(seconds))
 }
 
+fn may_claim(status: &Value, session: Uuid, consent: bool) -> bool {
+    consent
+        && !session.is_nil()
+        && status["desired"] == "running"
+        && status["assignment"]["session_id"].as_str() == Some(session.to_string().as_str())
+}
+
 pub(super) async fn run(
     client: Arc<Client>,
     state: Arc<AppState>,
@@ -251,7 +258,7 @@ async fn poll(
                 client.post("complete", json!({"connection_id":client.connection,"task_id":cloud_id,"status":local["status"]})).await?;
                 active = None;
             }
-        } else if consent && status["desired"] == "running" {
+        } else if may_claim(&status, session, consent) {
             let reply = client
                 .post("claim", json!({"connection_id":client.connection}))
                 .await?;
@@ -324,6 +331,19 @@ mod tests {
             validate_origin("https://example.test:8443/").unwrap(),
             "https://example.test:8443"
         );
+    }
+    #[test]
+    fn restarted_container_waits_for_new_assignment_and_local_consent() {
+        let old = Uuid::new_v4();
+        let current = Uuid::new_v4();
+        let mut status = json!({"desired":"running", "assignment":{"session_id":old}});
+        assert!(!may_claim(&status, current, true));
+        status["assignment"]["session_id"] = json!(current);
+        assert!(!may_claim(&status, current, false));
+        assert!(may_claim(&status, current, true));
+        status["desired"] = json!("paused");
+        assert!(!may_claim(&status, current, true));
+        assert!(!may_claim(&json!({"desired":"running"}), current, true));
     }
     #[test]
     fn deadline_is_bounded_and_never_extended() {

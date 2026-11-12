@@ -159,6 +159,7 @@ pub struct Machine {
     phase: Phase,
     last_input_ms: u64,
     resume_after_ms: u64,
+    auto_resume: bool,
     asking: bool,
     /// A local resume is waiting for the visor to leave `paused`. A poll that
     /// still says paused must not undo it.
@@ -184,6 +185,7 @@ impl Machine {
             phase: Phase::Off,
             last_input_ms: 0,
             resume_after_ms: resume_after_ms.max(1),
+            auto_resume: true,
             asking: false,
             holding_resume: false,
             last_resume_seq: 0,
@@ -191,6 +193,11 @@ impl Machine {
             pause_epoch: 0,
             seen_instance: None,
         }
+    }
+
+    pub fn without_idle_resume(mut self) -> Self {
+        self.auto_resume = false;
+        self
     }
 
     pub fn phase(&self) -> Phase {
@@ -365,7 +372,7 @@ impl Machine {
 
     /// Resume when the wait has elapsed with no user input.
     pub fn poll(&mut self, now_ms: u64) -> Effect {
-        if self.phase != Phase::Paused {
+        if self.phase != Phase::Paused || !self.auto_resume {
             return Effect::None;
         }
         if now_ms.saturating_sub(self.last_input_ms) >= self.resume_after_ms {
@@ -922,6 +929,17 @@ mod tests {
             elapsed_ms: elapsed,
             clickable,
         }
+    }
+
+    #[test]
+    fn unattended_pause_requires_explicit_local_continue() {
+        let mut machine = Machine::new(1).without_idle_resume();
+        machine.see_visor(VisorPhase::Running, 0, 1);
+        machine.user_input(1);
+        assert_eq!(machine.poll(u64::MAX), Effect::None);
+        assert_eq!(machine.phase(), Phase::Paused);
+        machine.ask(2);
+        assert_eq!(machine.continue_now(3), Effect::Resume);
     }
 
     #[test]
