@@ -1500,6 +1500,15 @@ async fn mcp_call(
         // The placeholder serializes operations on this attachment. Other sessions
         // and session close remain available while the remote server is working.
         let result = attached.call_tool(&call_tool, arguments);
+        // A dispatched operation must be audited even if its client disconnected
+        // or its owning session closed before the remote response arrived.
+        lock(&call_state.mcp_audit).record(McpAuditRow {
+            server: call_server.clone(),
+            tool: call_tool.clone(),
+            decision: "approve".into(),
+            outcome: if result.is_ok() { "ok" } else { "failed" }.into(),
+        });
+        call_state.note(id, "mcp", &format!("{call_server} {call_tool} approve"));
         {
             let mut sessions = lock(&call_state.sessions);
             let session = sessions.get_mut(&id).ok_or_else(ApiError::missing)?;
@@ -1509,13 +1518,6 @@ async fn mcp_call(
     }).await.map_err(|_| ApiError::internal("MCP call task failed"))??;
     match call_result {
         Ok(result) => {
-            lock(&state.mcp_audit).record(McpAuditRow {
-                server: server.clone(),
-                tool: tool.clone(),
-                decision: "approve".into(),
-                outcome: "ok".into(),
-            });
-            state.note(id, "mcp", &format!("{server} {tool} approve"));
             Ok(Json(McpCallResponse {
                 server,
                 tool,
@@ -1525,13 +1527,6 @@ async fn mcp_call(
             }))
         }
         Err(err) => {
-            lock(&state.mcp_audit).record(McpAuditRow {
-                server: server.clone(),
-                tool: tool.clone(),
-                decision: "approve".into(),
-                outcome: "failed".into(),
-            });
-            state.note(id, "mcp", &format!("{server} {tool} approve"));
             Err(ApiError::from_mcp(err))
         }
     }
@@ -4233,6 +4228,14 @@ for line in sys.stdin:
         assert_eq!(status, 404);
         assert!(!String::from_utf8_lossy(&response).contains("private result"));
         assert_eq!(std::fs::read_to_string(dir.join("calls")).unwrap(), "called\n");
+        let (_, _, audit) = send(addr, "GET", "/mcp-audit", None).await;
+        let audit: serde_json::Value = serde_json::from_slice(&audit).unwrap();
+        assert_eq!(audit.as_array().unwrap().len(), 1);
+        assert_eq!(audit[0]["server"], "fixture");
+        assert_eq!(audit[0]["tool"], "slow");
+        assert_eq!(audit[0]["decision"], "approve");
+        assert_eq!(audit[0]["outcome"], "ok");
+        assert!(!audit.to_string().contains("private result"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
