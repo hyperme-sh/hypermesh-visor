@@ -948,6 +948,49 @@ fn resource_discovery_is_bounded_and_foreign_or_malformed_uris_never_connect() {
 
 #[test]
 fn reading_a_terminal_resource_reclaims_connection_tracking() {
+    resource_tracking_case(
+        200,
+        "application/json",
+        br#"{"id":"00000000-0000-0000-0000-000000000002","status":"completed","results":[]}"#,
+        true,
+    );
+}
+
+#[test]
+fn only_confirmed_missing_resource_reads_reclaim_tracking() {
+    resource_tracking_case(
+        404,
+        "application/json; charset=utf-8",
+        br#"{"error":"session closed or unknown"}"#,
+        true,
+    );
+    resource_tracking_case(
+        404,
+        "text/html",
+        br#"{"error":"session closed or unknown"}"#,
+        false,
+    );
+    resource_tracking_case(
+        404,
+        "application/json",
+        br#"{"error":"proxy not found"}"#,
+        false,
+    );
+    resource_tracking_case(
+        403,
+        "application/json",
+        br#"{"error":"session closed or unknown"}"#,
+        false,
+    );
+    resource_tracking_case(
+        500,
+        "application/json",
+        br#"{"error":"session closed or unknown"}"#,
+        false,
+    );
+}
+
+fn resource_tracking_case(status: u16, mime: &'static str, body: &'static [u8], reclaimed: bool) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let task = "00000000-0000-0000-0000-000000000002";
@@ -965,16 +1008,21 @@ fn reading_a_terminal_resource_reclaims_connection_tracking() {
         );
         assert!(wire.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
         let (stream, _) = accept_bounded!(listener);
-        let wire = exchange(
-            stream,
-            200,
-            "application/json",
-            serde_json::to_string(&json!({"id":task,"status":"completed","results":[]}))
-                .unwrap()
-                .as_bytes(),
-            false,
-        );
+        let wire = exchange(stream, status, mime, body, false);
         assert!(wire.starts_with(&format!("GET /session/{SESSION}/tasks/{task} HTTP/1.1")));
+        if !reclaimed {
+            let (stream, _) = accept_bounded!(listener);
+            let wire = exchange(
+                stream,
+                200,
+                "application/json",
+                serde_json::to_string(&json!({"id":task,"status":"cancelled"}))
+                    .unwrap()
+                    .as_bytes(),
+                false,
+            );
+            assert!(wire.starts_with(&format!("DELETE /session/{SESSION}/tasks/{task} HTTP/1.1")));
+        }
     });
     let replies = run(
         &endpoint,
@@ -992,5 +1040,14 @@ fn reading_a_terminal_resource_reclaims_connection_tracking() {
     );
     server.join().unwrap();
     assert_eq!(replies[1]["result"]["resources"][0]["uri"], uri);
-    assert_eq!(replies[3]["result"], json!({"resources":[]}));
+    assert_eq!(
+        replies[3]["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        reclaimed
+    );
+    if status == 404 {
+        assert_eq!(replies[2]["error"]["code"], -32002);
+    }
 }

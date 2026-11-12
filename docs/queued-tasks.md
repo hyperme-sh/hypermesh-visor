@@ -95,8 +95,10 @@ No filesystem paths, arbitrary URLs, other sessions or new transport are exposed
 
 A completed task can still be read by URI after it leaves the connection's
 tracking list, until the daemon evicts it or the session closes. Reading a
-terminal task frees its tracking slot. Missing tasks return a resource-not-found
-error; denied or failed reads do not expose backend diagnostics. Resource lists
-have no pagination cursor because tracking is bounded. Subscriptions and
+terminal task frees its tracking slot. A verified daemon response confirming a
+missing task also frees its slot while
+returning a resource-not-found error. Unverified proxy responses, denials and
+transport failures retain tracking and do not expose backend diagnostics.
+Resource lists have no pagination cursor because tracking is bounded. Subscriptions and
 list-change notifications are not advertised; clients refresh explicitly.
 The shape follows the [MCP resource contract](https://modelcontextprotocol.io/specification/2024-11-05/server/resources).

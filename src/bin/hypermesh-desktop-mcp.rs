@@ -200,7 +200,12 @@ fn main() {
                         }
                         reply(&mut stdout, id, result);
                     }
-                    Err((code, message)) => rpc_error(&mut stdout, id.unwrap(), code, message),
+                    Err((code, message, missing)) => {
+                        if let Some(task) = missing {
+                            owned_tasks.retain(|known| known != &task.to_string());
+                        }
+                        rpc_error(&mut stdout, id.unwrap(), code, message);
+                    }
                 },
                 "tools/call" => {
                     // A tool invocation is a request, never an executable notification.
@@ -410,8 +415,8 @@ fn read_task_resource(
     visor: &VisorEndpoint,
     session: &str,
     params: Option<&Value>,
-) -> Result<(Value, Option<String>), (i64, &'static str)> {
-    let invalid = (-32602, "invalid task resource URI or parameters");
+) -> Result<(Value, Option<String>), (i64, &'static str, Option<uuid::Uuid>)> {
+    let invalid = (-32602, "invalid task resource URI or parameters", None);
     let params = params.and_then(Value::as_object).ok_or(invalid)?;
     if params
         .iter()
@@ -424,9 +429,8 @@ fn read_task_resource(
     let task = uri
         .strip_prefix(&format!("visor-task://{session}/"))
         .ok_or(invalid)?;
-    let task = uuid::Uuid::parse_str(task)
-        .map_err(|_| invalid)?
-        .to_string();
+    let task_id = uuid::Uuid::parse_str(task).map_err(|_| invalid)?;
+    let task = task_id.to_string();
     if task_resource_uri(&session.to_string(), &task).as_deref() != Some(uri) {
         return Err(invalid);
     }
@@ -436,12 +440,18 @@ fn read_task_resource(
         &format!("/session/{session}/tasks/{task}"),
         None,
     )
-    .map_err(|_| (-32603, "task resource transport failed"))?;
+    .map_err(|_| (-32603, "task resource transport failed", None))?;
     match response.status {
-        404 => return Err((-32002, "task resource not found")),
-        401 | 403 => return Err((-32001, "task resource access denied")),
+        404 => {
+            return Err((
+                -32002,
+                "task resource not found",
+                confirmed_missing_task(&response).then_some(task_id),
+            ))
+        }
+        401 | 403 => return Err((-32001, "task resource access denied", None)),
         200 => {}
-        _ => return Err((-32603, "task resource unavailable")),
+        _ => return Err((-32603, "task resource unavailable", None)),
     }
     if !response
         .mime
@@ -449,12 +459,12 @@ fn read_task_resource(
         .next()
         .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
     {
-        return Err((-32603, "invalid task resource response"));
+        return Err((-32603, "invalid task resource response", None));
     }
     let body: Value = serde_json::from_slice(&response.body)
-        .map_err(|_| (-32603, "invalid task resource response"))?;
+        .map_err(|_| (-32603, "invalid task resource response", None))?;
     if body["id"] != task || !body.is_object() {
-        return Err((-32603, "invalid task resource response"));
+        return Err((-32603, "invalid task resource response", None));
     }
     let terminal = body["status"]
         .as_str()
@@ -483,6 +493,18 @@ fn visor_exchange(
     }
 }
 
+fn confirmed_missing_task(response: &VisorResponse) -> bool {
+    response.status == 404
+        && response
+            .mime
+            .split(';')
+            .next()
+            .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+        && serde_json::from_slice::<Value>(&response.body)
+            .ok()
+            .is_some_and(|body| body["error"] == "session closed or unknown")
+}
+
 fn handle_call(
     visor: &VisorEndpoint,
     session: &str,
@@ -509,17 +531,7 @@ fn handle_call(
             // The daemon evicts only terminal records. A confirmed absent record
             // (or closed session) cannot contain active work owned by this client.
             // Do not reclaim on proxy 404s, denial, or uncertain transport errors.
-            if matches!(tool, "task_status" | "task_cancel")
-                && response.status == 404
-                && response
-                    .mime
-                    .split(';')
-                    .next()
-                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
-                && serde_json::from_slice::<Value>(&response.body)
-                    .ok()
-                    .is_some_and(|body| body["error"] == "session closed or unknown")
-            {
+            if matches!(tool, "task_status" | "task_cancel") && confirmed_missing_task(&response) {
                 missing_task = args["task_id"]
                     .as_str()
                     .and_then(|id| uuid::Uuid::parse_str(id).ok())
