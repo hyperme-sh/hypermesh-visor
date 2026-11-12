@@ -303,6 +303,17 @@ func selfTest() throws {
     do { _ = try DesktopLayout([DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 10000, height: 10000))]); preconditionFailure("oversized layout accepted") } catch NativeError.unavailable { }
     let reordered = try DesktopLayout([left, primary])
     precondition(reordered == layout)
+    let below = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 2, height: 2))
+    let above = DisplayGeometry(id: 2, bounds: CGRect(x: 0, y: -2, width: 2, height: 2))
+    let vertical = try DesktopLayout([below, above])
+    let canvas = CGContext(data: nil, width: 2, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
+                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    canvas.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1)); canvas.fill(vertical.imageRect(below))
+    canvas.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1)); canvas.fill(vertical.imageRect(above))
+    let bitmap = NSBitmapImageRep(cgImage: canvas.makeImage()!)
+    let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
+    let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.deviceRGB)!
+    precondition(top.greenComponent > 0.99 && bottom.redComponent > 0.99)
     print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
