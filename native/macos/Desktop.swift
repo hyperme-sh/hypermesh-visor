@@ -296,29 +296,35 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
     controller.show()
     withExtendedLifetime(controller) { app.run() }
 }
+func verifyNativeUnit(_ condition: @autoclosure () -> Bool, line: UInt = #line) throws {
+    if !condition() {
+        FileHandle.standardError.write(Data("FAIL native unit at Desktop.swift:\(line)\n".utf8))
+        throw NativeError.invalid
+    }
+}
 func selfTest() throws {
-    precondition(desktopInterruption(permissionsAndMonitor: true, layoutMatches: true) == nil)
-    precondition(desktopInterruption(permissionsAndMonitor: true, layoutMatches: false)?.permanent == false)
+    try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: true, layoutMatches: true) == nil)
+    try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: true, layoutMatches: false)?.permanent == false)
     for layoutMatches in [true, false] {
-        precondition(desktopInterruption(permissionsAndMonitor: false, layoutMatches: layoutMatches)?.permanent == true)
+        try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: false, layoutMatches: layoutMatches)?.permanent == true)
     }
     print("PASS layout-only interruption is recoverable; monitor loss remains permanent")
     let primary = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080))
     let left = DisplayGeometry(id: 2, bounds: CGRect(x: -1280, y: -200, width: 1280, height: 1024))
     let layout = try DesktopLayout([primary, left])
-    precondition(layout.bounds == CGRect(x: -1280, y: -200, width: 3200, height: 1280))
+    try verifyNativeUnit(layout.bounds == CGRect(x: -1280, y: -200, width: 3200, height: 1280))
     let topLeft = try layout.point(x: 0, y: 0)
-    precondition(topLeft == CGPoint(x: -1280, y: -200))
+    try verifyNativeUnit(topLeft == CGPoint(x: -1280, y: -200))
     let primaryOrigin = try layout.point(x: 1280, y: 200)
-    precondition(primaryOrigin == .zero)
-    precondition(layout.imageRect(left) == CGRect(x: 0, y: 256, width: 1280, height: 1024))
-    precondition(layout.imageRect(primary) == CGRect(x: 1280, y: 0, width: 1920, height: 1080))
+    try verifyNativeUnit(primaryOrigin == .zero)
+    try verifyNativeUnit(layout.imageRect(left) == CGRect(x: 0, y: 256, width: 1280, height: 1024))
+    try verifyNativeUnit(layout.imageRect(primary) == CGRect(x: 1280, y: 0, width: 1920, height: 1080))
     for (x, y) in [(0, 1279), (1280, 0), (-1, 0), (3200, 200)] {
         do { _ = try layout.point(x: x, y: y); preconditionFailure("gap or outside point accepted") } catch NativeError.invalid { }
     }
     do { _ = try DesktopLayout([DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 10000, height: 10000))]); preconditionFailure("oversized layout accepted") } catch NativeError.unavailable { }
     let reordered = try DesktopLayout([left, primary])
-    precondition(reordered == layout)
+    try verifyNativeUnit(reordered == layout)
     let below = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 2, height: 2))
     let above = DisplayGeometry(id: 2, bounds: CGRect(x: 0, y: -2, width: 2, height: 2))
     let vertical = try DesktopLayout([below, above])
@@ -329,27 +335,27 @@ func selfTest() throws {
     let bitmap = NSBitmapImageRep(cgImage: canvas.makeImage()!)
     let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
     let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.deviceRGB)!
-    precondition(top.greenComponent > 0.99 && bottom.redComponent > 0.99)
+    try verifyNativeUnit(top.greenComponent > 0.99 && bottom.redComponent > 0.99)
     print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
-        precondition(event.type == expected)
-        precondition(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(button))
+        try verifyNativeUnit(event.type == expected)
+        try verifyNativeUnit(event.getIntegerValueField(.mouseEventButtonNumber) == Int64(button))
     }
-    precondition(moveEvent(point: .zero, buttons: [])!.type == .mouseMoved)
+    try verifyNativeUnit(moveEvent(point: .zero, buttons: [])!.type == .mouseMoved)
     for (character, expected) in [("1",18),(" ",49),("-",27),("/",44),(";",41),("a",0)] {
         let (event, _) = try keyEvent(["keysym":Int(character.unicodeScalars.first!.value),"down":true], held:[55])
-        precondition(event.getIntegerValueField(.keyboardEventKeycode) == expected)
-        precondition(event.flags.contains(.maskCommand))
+        try verifyNativeUnit(event.getIntegerValueField(.keyboardEventKeycode) == expected)
+        try verifyNativeUnit(event.flags.contains(.maskCommand))
     }
     let (shifted, _) = try keyEvent(["keysym":Int(Character("!").asciiValue!),"down":true], held:[55])
-    precondition(shifted.getIntegerValueField(.keyboardEventKeycode) == 18 && shifted.flags.contains(.maskShift))
+    try verifyNativeUnit(shifted.getIntegerValueField(.keyboardEventKeycode) == 18 && shifted.flags.contains(.maskShift))
     let emoji = 0x01000000 + 0x1f642
     let (text, _) = try keyEvent(["keysym":emoji,"down":true], held:[])
     var count = 0
     var chars = [UniChar](repeating:0,count:8)
     text.keyboardGetUnicodeString(maxStringLength:8,actualStringLength:&count,unicodeString:&chars)
-    precondition(String(utf16CodeUnits:chars,count:count) == "🙂")
+    try verifyNativeUnit(String(utf16CodeUnits:chars,count:count) == "🙂")
     do {
         _ = try keyEvent(["keysym":emoji,"down":true], held:[55])
         preconditionFailure("unsupported physical shortcut accepted")
