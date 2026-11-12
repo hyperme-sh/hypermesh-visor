@@ -42,6 +42,8 @@ pub struct Session {
     secret_handles: Vec<String>,
     activity: Vec<Activity>,
     last_focus: Option<String>,
+    usage_generation: Uuid,
+    last_response_usage: Option<crate::ResponseUsage>,
 }
 
 /// One line of terminal or IDE activity. `text` is already redacted.
@@ -81,7 +83,29 @@ impl Session {
             secret_handles: Vec::new(),
             activity: Vec::new(),
             last_focus: None,
+            usage_generation: Uuid::new_v4(),
+            last_response_usage: None,
         }
+    }
+
+    pub(crate) fn begin_response_usage(&mut self) -> Uuid {
+        self.usage_generation = Uuid::new_v4();
+        self.last_response_usage = None;
+        self.usage_generation
+    }
+
+    pub(crate) fn finish_response_usage(
+        &mut self,
+        generation: Uuid,
+        usage: Option<crate::ResponseUsage>,
+    ) {
+        if self.usage_generation == generation {
+            self.last_response_usage = usage;
+        }
+    }
+
+    pub(crate) fn last_response_usage(&self) -> Option<crate::ResponseUsage> {
+        self.last_response_usage
     }
 
     pub fn id(&self) -> Uuid {

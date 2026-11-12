@@ -43,11 +43,23 @@ impl fmt::Debug for ForwardedPrompt {
     }
 }
 
-/// One door the orchestrator can call. A mixture-of-experts wrapper is also a door.
-///
-/// Implementations must not log `api_key`.
+/// Text and optional counts for one returned response.
+pub struct PromptCompletion {
+    pub text: String,
+    pub usage: Option<crate::ResponseUsage>,
+}
+impl PromptCompletion {
+    pub(crate) fn unmeasured(text: String) -> Self {
+        Self { text, usage: None }
+    }
+}
+
+/// One door the orchestrator can call. Implementations must not log `api_key`.
 pub trait PromptDoor: Send + Sync {
     fn forward(&self, call: &ForwardedPrompt) -> Result<String, String>;
+    fn forward_reported(&self, call: &ForwardedPrompt) -> Result<PromptCompletion, String> {
+        self.forward(call).map(PromptCompletion::unmeasured)
+    }
 }
 
 /// Used by the desktop daemon. It refuses the call instead of inventing a reply.
@@ -163,6 +175,9 @@ impl ConductorDoor {
 
 impl PromptDoor for ConductorDoor {
     fn forward(&self, call: &ForwardedPrompt) -> Result<String, String> {
+        self.forward_reported(call).map(|reply| reply.text)
+    }
+    fn forward_reported(&self, call: &ForwardedPrompt) -> Result<PromptCompletion, String> {
         let attribution =
             crate::telemetry::UpstreamScope::enter(crate::telemetry::Service::Conductor);
         let model = call
@@ -198,7 +213,13 @@ impl PromptDoor for ConductorDoor {
             Err(_) => return Err("Conductor request failed".into()),
         };
         attribution.response(&response);
-        let result = read_limited(response).and_then(|body| completion_text(&body));
+        let result = read_limited(response).and_then(|body| {
+            let text = completion_text(&body)?;
+            let usage = serde_json::from_str(&body)
+                .ok()
+                .and_then(|value| crate::ResponseUsage::from_openai(&value));
+            Ok(PromptCompletion { text, usage })
+        });
         if result.is_err() {
             crate::telemetry::report(crate::telemetry::Failure::UpstreamResponse);
         }
@@ -433,6 +454,7 @@ impl PromptPass {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         self.submit_inner(prompt, api_key, model)
+            .map(|reply| reply.text)
     }
 
     #[cfg(test)]
@@ -448,21 +470,26 @@ impl PromptPass {
         file_texts: &[String],
         api_key: &str,
         secret_values: &[String],
-    ) {
+    ) -> Option<crate::ResponseUsage> {
         let _guard = self
             .gate
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         self.arm_needles(secret_values);
+        let mut usage = None;
         for (prompt, model) in prompts {
             self.flag_inbox(prompt);
-            let _ = self.submit_inner(prompt, api_key, model.as_deref());
+            usage = self
+                .submit_inner(prompt, api_key, model.as_deref())
+                .ok()
+                .and_then(|reply| reply.usage);
         }
         for text in file_texts {
             self.flag_inbox(text);
         }
         self.flush_flags();
         self.clear_needles();
+        usage
     }
 
     fn submit_inner(
@@ -470,7 +497,7 @@ impl PromptPass {
         prompt: &str,
         api_key: &str,
         model: Option<&str>,
-    ) -> Result<String, PromptError> {
+    ) -> Result<PromptCompletion, PromptError> {
         let sent = prompt.trim().to_string();
         let requested = normalize_model(model);
         let key = match validate_api_key(api_key) {
@@ -515,9 +542,18 @@ impl PromptPass {
                 other_expert,
             } => match result {
                 Ok(response) => {
-                    let stored =
-                        self.store_success(&sent, &key, selected, door, response, other_expert);
-                    Ok(stored)
+                    let stored = self.store_success(
+                        &sent,
+                        &key,
+                        selected,
+                        door,
+                        response.text,
+                        other_expert,
+                    );
+                    Ok(PromptCompletion {
+                        text: stored,
+                        usage: response.usage,
+                    })
                 }
                 Err(message) => {
                     let message = self.redact_text(&message, &key);

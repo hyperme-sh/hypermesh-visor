@@ -139,6 +139,7 @@ fn show(mut app: App) -> Result<(), String> {
             Mascot::Disconnected,
             0,
             &status,
+            None,
             false,
             u32::from(screen.height_in_pixels)
                 .saturating_sub(draw::VIEW_MARGIN)
@@ -457,6 +458,7 @@ fn show(mut app: App) -> Result<(), String> {
                 mascot,
                 app.reel.frame(),
                 &status,
+                snap.last_response_usage.as_ref(),
                 hover,
                 u32::from(screen.height_in_pixels)
                     .saturating_sub(draw::VIEW_MARGIN)
