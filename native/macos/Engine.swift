@@ -125,7 +125,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             self.sessionOpen = body["open"] as? Bool ?? false
             self.currentPhase = automation["phase"] as? String ?? "off"
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
-            if self.allowed && !self.permissionsAndMonitor() { self.pause("Permission, display layout or input monitor changed", lost: true) }
+            if self.allowed && !self.permissionsAndMonitor() { self.pause("Permission or input monitor lost", lost: true) }
+            if self.allowed && !self.layoutMatchesApproval() { self.pause("Display layout changed; select Allow to use the new layout") }
             self.update()
         }
     }
@@ -137,7 +138,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                        ("Input Monitoring", CGPreflightListenEventAccess())].filter { !$0.1 }.map { $0.0 }
         guard missing.isEmpty else { message = "Permission unavailable: " + missing.joined(separator: ", ") + ". Check System Settings, then retry."; update(); return }
         approvedLayout = try? desktopLayout()
-        guard permissionsAndMonitor() else { message = "Desktop layout or input monitor unavailable. Check connected displays and restart Visor if needed."; update(); return }
+        guard permissionsAndMonitor(), layoutMatchesApproval() else { message = "Desktop layout or input monitor unavailable. Check connected displays and restart Visor if needed."; update(); return }
         epoch &+= 1
         let generation = epoch
         control(currentPhase == "paused" ? "resume" : "start") { result in
@@ -155,8 +156,11 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     private func permissionsAndMonitor() -> Bool {
         guard let tap else { return false }
-        guard let approvedLayout, let currentLayout = try? desktopLayout(), currentLayout == approvedLayout else { return false }
         return CGPreflightScreenCaptureAccess() && CGPreflightPostEventAccess() && CGPreflightListenEventAccess() && CGEvent.tapIsEnabled(tap: tap)
+    }
+    private func layoutMatchesApproval() -> Bool {
+        guard let approvedLayout, let currentLayout = try? desktopLayout() else { return false }
+        return currentLayout == approvedLayout
     }
     private func installMonitor() {
         guard tap == nil, CGPreflightListenEventAccess() else { return }
@@ -184,12 +188,12 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         guard started, !Task.isCancelled else { throw NativeError.denied }
         if request["action"] as? String == "release" { releaseHeld(); return [:] }
         if request["action"] as? String != "info" {
-            guard allowed, permissionsAndMonitor() else { throw NativeError.denied }
+            guard allowed, permissionsAndMonitor(), layoutMatchesApproval() else { throw NativeError.denied }
         }
         let generation = epoch
         let result = try await handle(request) {
             guard self.allowed, self.epoch == generation, !Task.isCancelled,
-                  self.permissionsAndMonitor() else { throw NativeError.denied }
+                  self.permissionsAndMonitor(), self.layoutMatchesApproval() else { throw NativeError.denied }
         }
         if request["action"] as? String != "info" {
             guard allowed, epoch == generation, !Task.isCancelled else { throw NativeError.denied }
