@@ -30,8 +30,10 @@ files measure wait from the test starting, not cold startup.
 
 Trixie provides the current stable Debian package baseline and a smaller image
 in this comparison. Bookworm also works but begins with an older package set.
-The base manifests support amd64 and arm64; native ARM qualification is performed
-by the new container workflow, not inferred from the amd64 results here.
+The base manifests support amd64 and arm64. The base selection is complete;
+native ARM64 container coverage remains part of #27 and is not inferred from
+the amd64 comparison. PR CI validates the Compose contract and fixture syntax;
+full container checks belong to the central nightly batch.
 
 ## Other candidates and tradeoffs
 
