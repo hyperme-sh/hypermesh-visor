@@ -948,13 +948,7 @@ fn open_terminal_command(cmd: &[String]) -> std::io::Result<()> {
 fn shell_join(parts: &[String]) -> String {
     parts
         .iter()
-        .map(|p| {
-            if p.chars().any(|c| c.is_whitespace()) {
-                format!("'{p}'")
-            } else {
-                p.clone()
-            }
-        })
+        .map(|p| format!("'{}'", p.replace('\'', "'\"'\"'")))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -1121,5 +1115,33 @@ fn pack(
         pixel.to_le_bytes()
     } else {
         pixel.to_be_bytes()
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    #[test]
+    fn shell_arguments_round_trip_without_expansion() {
+        let args = vec![
+            "".into(),
+            "/tmp/Hypermesh's Companion/$HOME;*.sh".into(),
+            "line\nbreak".into(),
+        ];
+        let output = std::process::Command::new("sh")
+            .args([
+                "-c",
+                &format!("printf '%s\\0' {}", super::shell_join(&args)),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            output.stdout,
+            args.join("\0")
+                .into_bytes()
+                .into_iter()
+                .chain([0])
+                .collect::<Vec<_>>()
+        );
     }
 }

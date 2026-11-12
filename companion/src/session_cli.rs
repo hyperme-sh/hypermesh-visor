@@ -1,5 +1,5 @@
 //! Interactive prompt entry for one existing session. No automatic retries.
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, IsTerminal, Read, Write};
 
 const MAX_PROMPT_BYTES: usize = 16 * 1024;
 
@@ -58,17 +58,121 @@ pub fn run(
 }
 
 pub fn start(session: &str) -> Result<(), String> {
+    let terminal = std::io::stdin().is_terminal();
+    let _mode = if terminal {
+        Some(TerminalMode::enter()?)
+    } else {
+        None
+    };
+    let input = TerminalInput {
+        input: std::io::stdin(),
+        terminal,
+        pending: Vec::new(),
+        offset: 0,
+    };
     run(
-        std::io::stdin().lock(),
+        std::io::BufReader::new(input),
         &mut std::io::stdout(),
         session,
         |args, prompt| dispatch(std::path::Path::new("hypermesh"), args, prompt),
     )
 }
 
+// Disable the kernel's bounded canonical line buffer. Restore it on every return.
+struct TerminalMode(libc::termios);
+impl TerminalMode {
+    fn enter() -> Result<Self, String> {
+        unsafe {
+            let mut saved = std::mem::zeroed();
+            if libc::tcgetattr(0, &mut saved) != 0 {
+                return Err("cannot read terminal mode".into());
+            }
+            let mut mode = saved;
+            mode.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+            mode.c_cc[libc::VMIN] = 1;
+            mode.c_cc[libc::VTIME] = 0;
+            if libc::tcsetattr(0, libc::TCSANOW, &mode) != 0 {
+                return Err("cannot set terminal mode".into());
+            }
+            Ok(Self(saved))
+        }
+    }
+}
+impl Drop for TerminalMode {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(0, libc::TCSANOW, &self.0);
+        }
+    }
+}
+
+struct TerminalInput<R> {
+    input: R,
+    terminal: bool,
+    pending: Vec<u8>,
+    offset: usize,
+}
+impl<R: Read> Read for TerminalInput<R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if !self.terminal {
+            return self.input.read(output);
+        }
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.offset == self.pending.len() {
+            self.pending.clear();
+            self.offset = 0;
+            let mut echo = std::io::stdout();
+            loop {
+                let mut byte = [0];
+                if self.input.read(&mut byte)? == 0 {
+                    break;
+                }
+                match byte[0] {
+                    3 | 4 => {
+                        self.pending.clear();
+                        return Ok(0);
+                    }
+                    8 | 127 => {
+                        if self.pending.pop().is_some() {
+                            while self.pending.last().is_some_and(|b| b & 0xc0 == 0x80) {
+                                self.pending.pop();
+                            }
+                            if self.pending.last().is_some_and(|b| b & 0xc0 == 0xc0) {
+                                self.pending.pop();
+                            }
+                            echo.write_all(b"\x08 \x08")?;
+                        }
+                    }
+                    b'\n' | b'\r' => {
+                        self.pending.push(b'\n');
+                        echo.write_all(b"\n")?;
+                        break;
+                    }
+                    b => {
+                        self.pending.push(b);
+                        echo.write_all(&[b])?;
+                    }
+                }
+                echo.flush()?;
+                // Pass an oversized line to run(), which refuses it without dispatch.
+                if self.pending.len() > MAX_PROMPT_BYTES {
+                    break;
+                }
+            }
+        }
+        let count = output.len().min(self.pending.len() - self.offset);
+        output[..count].copy_from_slice(&self.pending[self.offset..self.offset + count]);
+        self.offset += count;
+        Ok(count)
+    }
+}
+
 fn dispatch(program: &std::path::Path, args: &[String], prompt: &str) -> Result<(), String> {
     let mut child = std::process::Command::new(program)
         .args(args)
+        .env_remove("HYPERMESH_VISOR_URL")
         .stdin(std::process::Stdio::piped())
         .spawn()
         .map_err(|_| "could not start the Hypermesh CLI".to_owned())?;
@@ -121,6 +225,35 @@ mod tests {
         assert_eq!(recorded, serde_json::json!([args, prompt]));
         assert!(dispatch(&program, &args, "fail").is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn terminal_reader_preserves_long_lines_and_rejects_oversized_input() {
+        for length in [5000, 17000] {
+            let input = TerminalInput {
+                input: std::io::Cursor::new(format!("{}\n", "x".repeat(length))),
+                terminal: true,
+                pending: Vec::new(),
+                offset: 0,
+            };
+            let mut calls = Vec::new();
+            let result = run(
+                std::io::BufReader::new(input),
+                &mut Vec::new(),
+                SESSION,
+                |_, prompt| {
+                    calls.push(prompt.to_owned());
+                    Ok(())
+                },
+            );
+            if length == 5000 {
+                result.unwrap();
+                assert_eq!(calls, ["x".repeat(length)]);
+            } else {
+                assert!(result.is_err());
+                assert!(calls.is_empty());
+            }
+        }
     }
 
     #[test]
