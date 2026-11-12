@@ -342,8 +342,8 @@ func selfTest() throws {
     let encoded = NSBitmapImageRep(cgImage: canvas.makeImage()!).representation(using: .png, properties: [:])!
     let bitmap = NSBitmapImageRep(data: encoded)!
     let reference = NSBitmapImageRep(data: NSBitmapImageRep(cgImage: fixture).representation(using: .png, properties: [:])!)!
-    func pixel(_ rep: NSBitmapImageRep, _ y: Int) -> [UInt] {
-        var samples = [UInt](repeating: 0, count: rep.samplesPerPixel)
+    func pixel(_ rep: NSBitmapImageRep, _ y: Int) -> [Int] {
+        var samples = [Int](repeating: 0, count: rep.samplesPerPixel)
         rep.getPixel(&samples, atX: 0, y: y)
         return samples
     }
