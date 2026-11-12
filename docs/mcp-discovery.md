@@ -859,3 +859,26 @@ Schemas are limited to 64 KiB, 4,096 nodes and 32 levels; validated instances to
 1 MiB, 16,384 nodes and 32 levels. Regex compilation and backtracking are bounded.
 Schema checks do not grant permission, interpret tool descriptions as policy or
 replace the explicit caller decision.
+
+
+## Explicit prompt templates
+
+`POST /session/{id}/mcp/prompts` lists or retrieves templates from an attached
+server that advertises `prompts`, including a server with no tools. Specify
+`server`, `action` (`list` or `get`), and `decision` (`approve` or `deny`). Denial
+sends nothing. Listing accepts an optional opaque `params.cursor` (4096 bytes).
+Getting requires `params.name` (1–1024 bytes) and optionally `params.arguments`,
+a map of at most 128 string values. The complete parameters are capped at 64 KiB.
+
+```json
+{"server":"editor","action":"get","decision":"approve","params":{"name":"review","arguments":{"code":"example"}}}
+```
+
+Each response is capped at 1 MiB and 256 templates or messages. Argument metadata,
+message roles and content shapes are checked; images/audio and embedded blobs
+require valid base64. Text, images, audio, embedded resources and resource links
+are returned as untrusted data. Visor does not run templates, send them to a
+model, fetch links, automatically follow pages, or change session instructions.
+The same transport authorization, busy-attachment behavior and close-during-call
+handling as resource access apply. Audit rows include the operation and outcome,
+not template names, arguments, cursors or content. Errors omit remote payloads.

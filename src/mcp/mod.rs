@@ -10,6 +10,7 @@ mod discovery;
 mod http;
 mod protocol;
 mod resources;
+mod prompts;
 mod schema;
 mod subscription;
 pub mod trust;
