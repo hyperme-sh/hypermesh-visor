@@ -4,8 +4,13 @@
 //! Talks to the visor's control socket by default. `HYPERMESH_VISOR_URL` selects
 //! the opt-in TCP listener, with `HYPERMESH_VISOR_TOKEN` or the `api.token` file.
 
+use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc, Arc, Weak,
+};
 use std::time::Duration;
 
 use base64::Engine;
@@ -20,6 +25,143 @@ const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TEXT_CHARS: usize = 4096;
 const MAX_COORD: i64 = 32767;
 const MAX_OWNED_TASKS: usize = 16;
+
+const MAX_PENDING_REQUESTS: usize = 128;
+thread_local! {
+    static REQUEST_CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+}
+
+struct CancellationScope(Option<Arc<AtomicBool>>);
+impl CancellationScope {
+    fn enter(cancel: Option<Arc<AtomicBool>>) -> Self {
+        Self(REQUEST_CANCEL.with(|current| current.replace(cancel)))
+    }
+}
+impl Drop for CancellationScope {
+    fn drop(&mut self) {
+        REQUEST_CANCEL.with(|current| {
+            current.replace(self.0.take());
+        });
+    }
+}
+fn request_cancelled() -> bool {
+    REQUEST_CANCEL.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    })
+}
+struct Incoming {
+    line: String,
+    cancel: Arc<AtomicBool>,
+}
+
+fn incoming_requests() -> (mpsc::Receiver<Incoming>, Arc<AtomicBool>) {
+    let (tx, rx) = mpsc::sync_channel(MAX_PENDING_REQUESTS);
+    let overflow = Arc::new(AtomicBool::new(false));
+    let stopped = overflow.clone();
+    std::thread::spawn(move || {
+        let stdin = io::stdin();
+        read_requests(stdin.lock(), tx, stopped);
+    });
+    (rx, overflow)
+}
+
+fn read_requests(
+    mut input: impl BufRead,
+    tx: mpsc::SyncSender<Incoming>,
+    stopped: Arc<AtomicBool>,
+) {
+    let mut pending = Vec::<(Value, Weak<AtomicBool>)>::new();
+    loop {
+        let mut line = String::new();
+        match (&mut input)
+            .take((MAX_REQUEST_BYTES + 1) as u64)
+            .read_line(&mut line)
+        {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        pending.retain(|(_, flag)| flag.strong_count() > 0);
+        let parsed = serde_json::from_str::<Value>(&line).ok();
+        let valid_id = |id: &Value| id.is_string() || id.is_i64() || id.is_u64();
+        if let Some(message) = &parsed {
+            if message["jsonrpc"] == "2.0"
+                && message["method"] == "notifications/cancelled"
+                && message.get("id").is_none()
+            {
+                if let Some(params) = message.get("params").and_then(Value::as_object) {
+                    if message.get("result").is_none()
+                        && message.get("error").is_none()
+                        && params.get("reason").is_none_or(Value::is_string)
+                    {
+                        if let Some(id) = params.get("requestId").filter(|id| valid_id(id)) {
+                            if let Some(flag) = pending.iter().find_map(|(known, flag)| {
+                                (known == id).then(|| flag.upgrade()).flatten()
+                            }) {
+                                flag.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
+                }
+                continue;
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        if let Some(message) = &parsed {
+            if message["jsonrpc"] == "2.0"
+                && message["method"].is_string()
+                && message["method"] != "initialize"
+            {
+                if let Some(id) = message.get("id").filter(|id| valid_id(id)) {
+                    pending.push((id.clone(), Arc::downgrade(&cancel)));
+                }
+            }
+        }
+        let oversized = line.len() > MAX_REQUEST_BYTES;
+        if tx.try_send(Incoming { line, cancel }).is_err() {
+            stopped.store(true, Ordering::SeqCst);
+            for (_, flag) in pending {
+                if let Some(flag) = flag.upgrade() {
+                    flag.store(true, Ordering::SeqCst);
+                }
+            }
+            break;
+        }
+        if oversized {
+            break;
+        }
+    }
+}
+
+struct ConnectionOutput<W> {
+    inner: W,
+    failed: bool,
+}
+impl<W: Write> Write for ConnectionOutput<W> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let result = self.inner.write(bytes);
+        self.failed |= result.is_err() || matches!(result, Ok(0)) && !bytes.is_empty();
+        result
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        let result = self.inner.flush();
+        self.failed |= result.is_err();
+        result
+    }
+}
+
+fn send(stdout: &mut impl Write, body: Value) {
+    if request_cancelled() {
+        return;
+    }
+    let _ = writeln!(stdout, "{body}");
+    let _ = stdout.flush();
+}
 
 struct VisorResponse {
     status: u16,
@@ -78,21 +220,34 @@ fn main() {
         }
     };
     let session = std::env::var("HYPERMESH_SESSION_ID").unwrap_or_default();
-    let stdin = io::stdin();
-    let mut stdout = io::stdout();
+    let (incoming, overflow) = incoming_requests();
+    let mut stdout = ConnectionOutput {
+        inner: io::stdout(),
+        failed: false,
+    };
     let mut initialized = false;
     let mut ready = false;
     let mut owned_tasks = std::collections::VecDeque::<String>::new();
-    let mut input = stdin.lock();
     loop {
-        let mut line = String::new();
-        match (&mut input)
-            .take((MAX_REQUEST_BYTES + 1) as u64)
-            .read_line(&mut line)
-        {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
+        if stdout.failed {
+            break;
         }
+        let Ok(Incoming { line, cancel }) = incoming.recv() else {
+            break;
+        };
+        if overflow.load(Ordering::SeqCst) {
+            rpc_error(
+                &mut stdout,
+                Value::Null,
+                -32000,
+                "too many pending requests",
+            );
+            break;
+        }
+        if cancel.load(Ordering::SeqCst) {
+            continue;
+        }
+        let _cancellation = CancellationScope::enter(Some(cancel));
         if line.len() > MAX_REQUEST_BYTES {
             rpc_error(&mut stdout, Value::Null, -32600, "request exceeds 512 KiB");
             break;
@@ -127,8 +282,7 @@ fn main() {
             if msg["method"] == "notifications/initialized" && initialized {
                 ready = true;
             }
-            // Cancellation for completed/non-cancellable calls is ignored. Queued
-            // desktop jobs have explicit session-bound task_cancel semantics.
+            // The input reader handles cancellation without waiting for transport I/O.
             continue;
         }
         if let Some(method) = msg.get("method").and_then(|m| m.as_str()) {
@@ -225,41 +379,8 @@ fn main() {
                             handle_call(&visor, &session, msg.get("params"))
                         };
                         if let Ok(result) = &result {
-                            if let Some(id) = &result.missing_task {
-                                owned_tasks.retain(|known| known != id);
-                            }
-                            let result = &result.content;
                             let name = msg.pointer("/params/name").and_then(Value::as_str);
-                            if matches!(name, Some("task_submit" | "task_status" | "task_cancel"))
-                                && result["isError"] == false
-                            {
-                                if let Some(text) =
-                                    result.pointer("/content/0/text").and_then(Value::as_str)
-                                {
-                                    if let Ok(task) = serde_json::from_str::<Value>(text) {
-                                        if let Some(id) = task
-                                            .get("id")
-                                            .and_then(Value::as_str)
-                                            .filter(|id| uuid::Uuid::parse_str(id).is_ok())
-                                        {
-                                            let terminal = task
-                                                .get("status")
-                                                .and_then(Value::as_str)
-                                                .is_some_and(|status| {
-                                                    ["completed", "failed", "cancelled"]
-                                                        .contains(&status)
-                                                });
-                                            if terminal {
-                                                owned_tasks.retain(|known| known != id);
-                                            } else if name == Some("task_submit")
-                                                && !owned_tasks.iter().any(|known| known == id)
-                                            {
-                                                owned_tasks.push_back(id.to_owned());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            finish_task_call(&mut owned_tasks, name, result, &visor, &session);
                         }
                         let envelope = match result {
                             Ok(result) => {
@@ -268,22 +389,16 @@ fn main() {
                             Err(message) => json!({"jsonrpc":"2.0", "id":id,
                                 "error":{"code":-32602,"message":message}}),
                         };
-                        let _ = writeln!(stdout, "{envelope}");
-                        let _ = stdout.flush();
+                        send(&mut stdout, envelope);
                     }
                 }
                 _ => {
                     if msg.get("id").is_some() {
-                        let _ = writeln!(
-                            stdout,
-                            "{}",
-                            json!({
-                                "jsonrpc": "2.0",
-                                "id": msg.get("id"),
-                                "error": {"code": -32601, "message": "method not found"}
-                            })
+                        send(
+                            &mut stdout,
+                            json!({"jsonrpc":"2.0", "id":msg.get("id"),
+                            "error":{"code":-32601,"message":"method not found"}}),
                         );
-                        let _ = stdout.flush();
                     }
                 }
             }
@@ -308,8 +423,7 @@ fn main() {
 
 fn rpc_error(stdout: &mut impl Write, id: Value, code: i64, message: &str) {
     let body = json!({"jsonrpc":"2.0", "id":id, "error":{"code":code,"message":message}});
-    let _ = writeln!(stdout, "{body}");
-    let _ = stdout.flush();
+    send(stdout, body);
 }
 
 fn valid_initialize(params: Option<&Value>) -> bool {
@@ -335,8 +449,7 @@ fn reply(stdout: &mut impl Write, id: Option<Value>, result: Value) {
     if let Some(id) = id {
         body["id"] = id;
     }
-    let _ = writeln!(stdout, "{body}");
-    let _ = stdout.flush();
+    send(stdout, body);
 }
 
 fn tool_list() -> Value {
@@ -493,6 +606,62 @@ fn visor_exchange(
     }
 }
 
+fn finish_task_call(
+    owned: &mut std::collections::VecDeque<String>,
+    name: Option<&str>,
+    result: &CallResult,
+    visor: &VisorEndpoint,
+    session: &str,
+) {
+    let submitted = track_task_result(owned, name, result);
+    if request_cancelled() {
+        if let Some(task) = submitted {
+            // Recover the POST identity before requesting targeted cleanup.
+            let _cleanup = CancellationScope::enter(None);
+            if let Ok(result) = handle_call(
+                visor,
+                session,
+                Some(&json!({"name":"task_cancel","arguments":{"task_id":task}})),
+            ) {
+                track_task_result(owned, Some("task_cancel"), &result);
+            }
+        }
+    }
+}
+
+fn track_task_result(
+    owned: &mut std::collections::VecDeque<String>,
+    name: Option<&str>,
+    result: &CallResult,
+) -> Option<String> {
+    if let Some(id) = &result.missing_task {
+        owned.retain(|known| known != id);
+    }
+    if !matches!(name, Some("task_submit" | "task_status" | "task_cancel"))
+        || result.content["isError"] != false
+    {
+        return None;
+    }
+    let text = result.content.pointer("/content/0/text")?.as_str()?;
+    let task: Value = serde_json::from_str(text).ok()?;
+    let id = uuid::Uuid::parse_str(task.get("id")?.as_str()?)
+        .ok()?
+        .to_string();
+    let terminal = task
+        .get("status")
+        .and_then(Value::as_str)
+        .is_some_and(|status| ["completed", "failed", "cancelled"].contains(&status));
+    if terminal {
+        owned.retain(|known| known != &id);
+    } else if name == Some("task_submit") {
+        if !owned.contains(&id) {
+            owned.push_back(id.clone());
+        }
+        return Some(id);
+    }
+    None
+}
+
 fn confirmed_missing_task(response: &VisorResponse) -> bool {
     response.status == 404
         && response
@@ -524,6 +693,12 @@ fn handle_call(
     let args = params.get("arguments").unwrap_or(&empty);
     // Validate before connecting, so malformed input can never drive the desktop.
     let (method, path, body) = tool_request(session, tool, args)?;
+    if request_cancelled() {
+        return Err("request cancelled".into());
+    }
+    // A submitted task needs its returned ID for targeted cleanup. Never abandon
+    // a non-idempotent submission merely because its MCP request was cancelled.
+    let _submission = (tool == "task_submit").then(|| CancellationScope::enter(None));
     let response = visor_exchange(visor, method, &path, body.as_deref());
     let mut missing_task = None;
     let content = match response {
@@ -793,42 +968,121 @@ fn tool_result(tool: &str, response: VisorResponse) -> Value {
     json!({"content":[{"type":"text","text":text}],"isError":false})
 }
 
+fn with_transport<F>(future: F) -> Result<VisorResponse, String>
+where
+    F: std::future::Future<Output = Result<VisorResponse, String>>,
+{
+    let cancel = REQUEST_CANCEL.with(|current| current.borrow().clone());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|_| "visor runtime failed")?;
+    runtime.block_on(async {
+        tokio::select! {
+            biased;
+            _ = async {
+                if let Some(cancel) = cancel {
+                    loop {
+                        if cancel.load(Ordering::SeqCst) { break; }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                } else { std::future::pending::<()>().await; }
+            } => Err("request cancelled".into()),
+            result = tokio::time::timeout(Duration::from_secs(30), future) => result.map_err(|_| "visor request timed out".to_string())?,
+        }
+    })
+}
+
+async fn exchange_stream<S>(
+    stream: S,
+    method: &str,
+    path: &str,
+    host: &str,
+    body: Option<&str>,
+    token: Option<&str>,
+) -> Result<VisorResponse, String>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+        .await
+        .map_err(|_| "visor HTTP handshake failed")?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let mut request = hyper::Request::builder()
+        .method(method)
+        .uri(path)
+        .header("host", host)
+        .header("content-type", "application/json");
+    if let Some(token) = token {
+        request = request.header("authorization", format!("Bearer {token}"));
+    }
+    let request = request
+        .body(Full::new(Bytes::from(body.unwrap_or("").to_owned())))
+        .map_err(|_| "invalid visor request")?;
+    let response = sender
+        .send_request(request)
+        .await
+        .map_err(|_| "visor HTTP transport failed")?;
+    let status = response.status().as_u16();
+    let mime = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let body = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
+        .collect()
+        .await
+        .map_err(|_| "visor response is incomplete or exceeds 32 MiB")?
+        .to_bytes()
+        .to_vec();
+    Ok(VisorResponse { status, mime, body })
+}
+
 fn http_exchange(
     url: &str,
     method: &str,
     body: Option<&str>,
     token: Option<&str>,
 ) -> Result<VisorResponse, String> {
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        .timeout(Duration::from_secs(30))
-        .build();
-    let mut request = agent
-        .request(method, url)
-        .set("Content-Type", "application/json");
-    if let Some(token) = token {
-        request = request.set("Authorization", &format!("Bearer {token}"));
+    let url = url::Url::parse(url).map_err(|_| "invalid visor URL")?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return Err("visor URL requires HTTP(S) without embedded credentials".into());
     }
-    let result = match body {
-        Some(body) => request.send_string(body),
-        None => request.call(),
-    };
-    let response = match result {
-        Ok(response) | Err(ureq::Error::Status(_, response)) => response,
-        Err(_) => return Err("visor HTTP transport failed".into()),
-    };
-    let status = response.status();
-    let mime = response.header("content-type").unwrap_or("").to_owned();
-    let mut body = Vec::new();
-    response
-        .into_reader()
-        .take((MAX_RESPONSE_BYTES + 1) as u64)
-        .read_to_end(&mut body)
-        .map_err(|_| "visor response read failed")?;
-    if body.len() > MAX_RESPONSE_BYTES {
-        return Err("visor response exceeds 32 MiB".into());
-    }
-    Ok(VisorResponse { status, mime, body })
+    let host = url.host_str().ok_or("visor URL requires a host")?;
+    let port = url
+        .port_or_known_default()
+        .ok_or("visor URL requires a port")?;
+    let authority = &url[url::Position::BeforeHost..url::Position::AfterPort];
+    let path = &url[url::Position::BeforePath..url::Position::AfterQuery];
+    with_transport(async {
+        let tcp = tokio::net::TcpStream::connect((host.trim_matches(['[', ']']), port))
+            .await
+            .map_err(|_| "visor connection failed")?;
+        if url.scheme() == "https" {
+            use tokio_rustls::rustls;
+            let roots =
+                rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            let config = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let name =
+                rustls::pki_types::ServerName::try_from(host.trim_matches(['[', ']']).to_owned())
+                    .map_err(|_| "invalid TLS server name")?;
+            let stream = tokio_rustls::TlsConnector::from(Arc::new(config))
+                .connect(name, tcp)
+                .await
+                .map_err(|_| "visor TLS handshake failed")?;
+            exchange_stream(stream, method, path, authority, body, token).await
+        } else {
+            exchange_stream(tcp, method, path, authority, body, token).await
+        }
+    })
 }
 
 fn unix_exchange(
@@ -837,56 +1091,142 @@ fn unix_exchange(
     path: &str,
     body: Option<&str>,
 ) -> Result<VisorResponse, String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
-    runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(30), async {
-            let stream = tokio::net::UnixStream::connect(socket)
-                .await
-                .map_err(|e| e.to_string())?;
-            let (mut sender, connection) =
-                hyper::client::conn::http1::handshake(TokioIo::new(stream))
-                    .await
-                    .map_err(|e| e.to_string())?;
-            tokio::spawn(async move {
-                let _ = connection.await;
-            });
-            let request = hyper::Request::builder()
-                .method(method)
-                .uri(path)
-                .header("host", "localhost")
-                .header("content-type", "application/json")
-                .body(Full::new(Bytes::from(body.unwrap_or("").to_owned())))
-                .map_err(|e| e.to_string())?;
-            let response = sender
-                .send_request(request)
-                .await
-                .map_err(|e| e.to_string())?;
-            let status = response.status().as_u16();
-            let mime = response
-                .headers()
-                .get("content-type")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("")
-                .to_owned();
-            let body = Limited::new(response.into_body(), MAX_RESPONSE_BYTES)
-                .collect()
-                .await
-                .map_err(|_| "visor response is incomplete or exceeds 32 MiB")?
-                .to_bytes()
-                .to_vec();
-            Ok(VisorResponse { status, mime, body })
-        })
-        .await
-        .map_err(|_| "visor request timed out".to_string())?
+    with_transport(async {
+        let stream = tokio::net::UnixStream::connect(socket)
+            .await
+            .map_err(|_| "visor socket connection failed")?;
+        exchange_stream(stream, method, path, "localhost", body, None).await
     })
 }
 
 #[cfg(test)]
 mod capability_contract_tests {
     use super::*;
+
+    #[test]
+    fn reader_cancellation_is_scoped_and_malformed_notifications_are_ignored() {
+        let messages = [
+            json!({"jsonrpc":"2.0","id":"init","method":"initialize"}),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call"}),
+            json!({"jsonrpc":"2.0","id":2,"method":"resources/read"}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"init"}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2,"reason":false}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2},"result":{}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2},"error":{"code":-32600,"message":"invalid"}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"unknown"}}),
+        ];
+        let input = messages
+            .iter()
+            .map(|value| format!("{value}\n"))
+            .collect::<String>();
+        let (tx, rx) = mpsc::sync_channel(MAX_PENDING_REQUESTS);
+        let stopped = Arc::new(AtomicBool::new(false));
+        read_requests(std::io::Cursor::new(input), tx, stopped.clone());
+        let requests: Vec<_> = rx.into_iter().collect();
+        assert_eq!(requests.len(), 3);
+        assert!(!requests[0].cancel.load(Ordering::SeqCst));
+        assert!(requests[1].cancel.load(Ordering::SeqCst));
+        assert!(!requests[2].cancel.load(Ordering::SeqCst));
+        assert!(!stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn input_overflow_is_bounded_and_cancels_admitted_requests() {
+        let input = (0..3)
+            .map(|id| {
+                format!(
+                    "{}\n",
+                    json!({"jsonrpc":"2.0","id":id,"method":"tools/call"})
+                )
+            })
+            .collect::<String>();
+        let (tx, rx) = mpsc::sync_channel(2);
+        let stopped = Arc::new(AtomicBool::new(false));
+        read_requests(std::io::Cursor::new(input), tx, stopped.clone());
+        let requests: Vec<_> = rx.into_iter().collect();
+        assert_eq!(requests.len(), 2);
+        assert!(stopped.load(Ordering::SeqCst));
+        assert!(requests
+            .iter()
+            .all(|request| request.cancel.load(Ordering::SeqCst)));
+    }
+
+    #[test]
+    fn cancelled_submission_recovers_its_id_and_cancels_only_that_task() {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = VisorEndpoint::Http {
+            base: format!("http://{}", listener.local_addr().unwrap()),
+            token: Some("test-bearer".into()),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let server_cancel = cancel.clone();
+        let task = "00000000-0000-0000-0000-000000000002";
+        let session = "00000000-0000-0000-0000-000000000001";
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            for (method, suffix, status) in [
+                ("POST", "tasks".to_string(), "queued"),
+                ("DELETE", format!("tasks/{task}"), "cancelled"),
+            ] {
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            assert!(std::time::Instant::now() < deadline, "missing task request");
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut header = Vec::new();
+                let mut byte = [0];
+                while !header.ends_with(b"\r\n\r\n") {
+                    stream.read_exact(&mut byte).unwrap();
+                    header.push(byte[0]);
+                }
+                let header = String::from_utf8(header).unwrap();
+                assert!(
+                    header.starts_with(&format!("{method} /session/{session}/{suffix} HTTP/1.1"))
+                );
+                let length = header
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':')
+                            .filter(|(key, _)| key.eq_ignore_ascii_case("content-length"))
+                            .map(|(_, value)| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                let mut body = vec![0; length];
+                stream.read_exact(&mut body).unwrap();
+                if method == "POST" {
+                    server_cancel.store(true, Ordering::SeqCst);
+                }
+                let body = json!({"id":task,"status":status}).to_string();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+                let mut rest = Vec::new();
+                stream.read_to_end(&mut rest).unwrap();
+            }
+        });
+        let _request = CancellationScope::enter(Some(cancel));
+        let result = handle_call(&endpoint, session, Some(&json!({"name":"task_submit","arguments":{"steps":[{"tool":"view","arguments":{}}]}}))).unwrap_or_else(|_| panic!("submission lost its task identity"));
+        let mut owned = std::collections::VecDeque::new();
+        finish_task_call(&mut owned, Some("task_submit"), &result, &endpoint, session);
+        assert!(owned.is_empty());
+        let mut response = Vec::new();
+        send(&mut response, result.content);
+        assert!(response.is_empty());
+        server.join().unwrap();
+    }
 
     #[test]
     fn queued_drag_schema_and_request_preserve_valid_endpoints() {

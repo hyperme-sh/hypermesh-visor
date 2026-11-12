@@ -61,11 +61,24 @@ that cannot use it should disconnect. Ping requests work during setup. Invalid
 JSON-RPC envelopes and malformed initialization requests receive protocol errors;
 notifications never produce responses or execute tools.
 
-`notifications/cancelled` does not interrupt a synchronous desktop HTTP call.
-Such calls retain their transport timeout and existing user-pause controls.
-Use queued jobs and `task_cancel` for interruptible multi-step work. A cancellation
-notification for an already-completed RPC does not cancel the task that RPC
-created. General in-flight RPC interruption remains a gap in #32.
+`notifications/cancelled` interrupts an outstanding Unix, HTTP or HTTPS request
+and suppresses its response. A cancelled request waiting in the input queue never
+executes. Unknown or completed request IDs and attempts to cancel initialization
+are ignored. Cancelling a completed submission does not cancel its task.
+
+Cancellation is best effort: closing a transport cannot undo input already
+accepted by the daemon. Use `task_cancel` for interruptible queued work. If a
+submission is cancelled while its POST is in flight, the adapter waits for its
+bounded response to recover the task ID, then requests cancellation of that task
+only. Transport failure can still prevent recovery; the daemon deadline and
+session closure remain the fallback. Requests are never automatically retried.
+
+The input queue holds at most 128 pending requests. Overflow stops the connection
+and cancels admitted requests; output failure also stops further queued work.
+Normal input EOF drains accepted requests and then requests cleanup of owned
+tasks. All transports have a 30-second timeout and a 32 MiB response limit.
+HTTPS verifies the server certificate with public trust roots. Redirects and
+credentials embedded in URLs are rejected; use the configured Bearer token.
 
 Each stdio request is limited to 512 KiB. An oversized line ends the connection
 after a protocol error and requests cleanup of its queued jobs.
