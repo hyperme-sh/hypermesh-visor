@@ -7,7 +7,7 @@ prompt or create a new model executor.
 
 `POST /session/{session}/tasks` accepts `steps`, an array of 1–16 objects with
 `tool` and `arguments`. Supported tools are `view`, `mouse_move`, `mouse_click`,
-`mouse_scroll` and `type_text`, with their inverse-MCP argument schemas. Unknown
+`mouse_scroll`, `mouse_drag` and `type_text`, with their inverse-MCP argument schemas. Unknown
 operations, extra fields and invalid arguments fail before queue insertion.
 The response is HTTP 202 with a task ID and `queued` status.
 
@@ -69,3 +69,8 @@ created. General in-flight RPC interruption remains a gap in #32.
 
 Each stdio request is limited to 512 KiB. An oversized line ends the connection
 after a protocol error and requests cleanup of its queued jobs.
+
+`mouse_drag` requires `x`, `y`, `to_x` and `to_y` in root-window pixels,
+all integers from 0 to 32767. Its optional `button` is `left`, `right` or
+`middle` and defaults to `left`. Queued drags use the same mouse handler,
+physical-user pause and held-button release behavior as direct HTTP drags.
