@@ -5,7 +5,7 @@ use std::io::Read;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Settings {
     origin: String,
@@ -18,6 +18,7 @@ struct Settings {
 
 pub(super) struct Client {
     settings: Settings,
+    config_path: PathBuf,
     credential: zeroize::Zeroizing<String>,
     connection: Uuid,
     agent: ureq::Agent,
@@ -90,6 +91,7 @@ pub(super) fn configured() -> Result<Option<Arc<Client>>, String> {
         return Err("invalid scoped bot credential".into());
     }
     Ok(Some(Arc::new(Client {
+        config_path: path.into(),
         settings,
         credential: zeroize::Zeroizing::new(credential.into()),
         connection: Uuid::new_v4(),
@@ -101,6 +103,20 @@ pub(super) fn configured() -> Result<Option<Arc<Client>>, String> {
 }
 
 impl Client {
+    fn bound_session(&self) -> Result<Uuid, String> {
+        let updated: Settings = serde_json::from_slice(&private_file(&self.config_path)?)
+            .map_err(|_| "invalid bot configuration")?;
+        if validate_origin(&updated.origin)? != self.settings.origin
+            || updated.tenant_id != self.settings.tenant_id
+            || updated.bot_id != self.settings.bot_id
+            || updated.mode != self.settings.mode
+            || updated.credential_file != self.settings.credential_file
+        {
+            return Err("bot identity configuration changed; restart required".into());
+        }
+        Ok(updated.session_id)
+    }
+
     async fn post(self: &Arc<Self>, action: &'static str, body: Value) -> Result<Value, String> {
         let client = Arc::clone(self);
         tokio::task::spawn_blocking(move || {
@@ -182,12 +198,17 @@ async fn poll(
     state: Arc<AppState>,
     stop: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let session = client.settings.session_id;
+    let mut previous_session = client.settings.session_id;
     let mut active: Option<(String, String)> = None;
     loop {
         if *stop.borrow() {
             return Ok(());
         }
+        let session = client.bound_session()?;
+        if active.is_some() && session != previous_session {
+            return Err("bot session changed during active work".into());
+        }
+        previous_session = session;
         let consent =
             state.has_session(session) && lock(&state.automation).phase() == Phase::Running;
         let status = client
@@ -382,6 +403,7 @@ mod tests {
                 socket.write_all(response.as_bytes()).unwrap();
             });
             let client = Arc::new(Client {
+                config_path: PathBuf::new(),
                 settings: Settings {
                     origin: format!("http://{addr}"),
                     tenant_id: tenant,
@@ -406,5 +428,37 @@ mod tests {
             }
             server.join().unwrap();
         }
+    }
+    #[test]
+    fn session_binding_can_change_after_startup_without_changing_bot_identity() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("visor-bot-rebind-{}", Uuid::new_v4()));
+        let settings = Settings {
+            origin: "https://example.test".into(),
+            tenant_id: Uuid::new_v4(),
+            bot_id: Uuid::new_v4(),
+            session_id: Uuid::nil(),
+            mode: "interactive".into(),
+            credential_file: PathBuf::from("/private/token"),
+        };
+        let mut updated = serde_json::to_value(&settings).unwrap();
+        std::fs::write(&path, updated.to_string()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let client = Client {
+            settings,
+            config_path: path.clone(),
+            credential: zeroize::Zeroizing::new(String::new()),
+            connection: Uuid::new_v4(),
+            agent: ureq::AgentBuilder::new().build(),
+        };
+        assert_eq!(client.bound_session().unwrap(), Uuid::nil());
+        let created_after_startup = Uuid::new_v4();
+        updated["session_id"] = json!(created_after_startup);
+        std::fs::write(&path, updated.to_string()).unwrap();
+        assert_eq!(client.bound_session().unwrap(), created_after_startup);
+        updated["bot_id"] = json!(Uuid::new_v4());
+        std::fs::write(&path, updated.to_string()).unwrap();
+        assert!(client.bound_session().is_err());
+        std::fs::remove_file(path).unwrap();
     }
 }

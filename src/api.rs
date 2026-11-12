@@ -2224,11 +2224,11 @@ async fn mouse(
     Path(id): Path<String>,
     Json(op): Json<MouseOp>,
 ) -> Result<StatusCode, ApiError> {
-    mouse_with_cancel(state, id, op, None).await
+    mouse_with_cancel(state, id, op, None, None).await
 }
 
 async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
-                           task_cancel: Option<Arc<AtomicBool>>) -> Result<StatusCode, ApiError> {
+                           task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<u64>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     let backend = state.desktop.backend_name();
     if !mouse_in_bounds(backend, &op) {
@@ -2251,7 +2251,7 @@ async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
     // Captured before the phase check. A pause that publishes a new epoch
     // after this read cannot be adopted as the baseline inside the desktop task.
-    let epoch = automation::unpack_snap(gate_word(&state)).0;
+    let epoch = task_epoch.unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
     if backend == "wayland" {
         return Err(ApiError::not_implemented(
             crate::desktop::WAYLAND_AUTOMATION,
@@ -2312,14 +2312,14 @@ async fn type_keys(
     Path(id): Path<String>,
     Json(body): Json<TypeBody>,
 ) -> Result<StatusCode, ApiError> {
-    type_with_cancel(state, id, body, None).await
+    type_with_cancel(state, id, body, None, None).await
 }
 
 async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
-                          task_cancel: Option<Arc<AtomicBool>>) -> Result<StatusCode, ApiError> {
+                          task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<u64>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
-    let epoch = automation::unpack_snap(gate_word(&state)).0;
+    let epoch = task_epoch.unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
     if state.desktop.backend_name() == "wayland" {
         return Err(ApiError::not_implemented(
             crate::desktop::WAYLAND_AUTOMATION,
@@ -7739,6 +7739,20 @@ while True:
         let done = task_terminal(state, &format!("/session/{session}/tasks/{}", remote["id"].as_str().unwrap())).await;
         assert_eq!(done["status"], "cancelled");
         assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn remote_input_handlers_reject_the_task_epoch_after_a_local_stop() {
+        let (state, desktop, session) = task_fixture();
+        let epoch = lock(&state.automation).epoch();
+        lock(&state.automation).stop();
+        let op = MouseOp::Move { x: 1, y: 1, clickable: false };
+        assert!(mouse_with_cancel(state.clone(), session.to_string(), op, None, Some(epoch)).await.is_err());
+        let body = serde_json::from_value(serde_json::json!({"text":"must not type"})).unwrap();
+        assert!(type_with_cancel(state.clone(), session.to_string(), body, None, Some(epoch)).await.is_err());
+        assert!(lock(&desktop.mice).is_empty());
+        assert!(lock(&desktop.typed).is_empty());
+        assert_eq!(lock(&state.automation).phase(), Phase::Off);
     }
 
 }

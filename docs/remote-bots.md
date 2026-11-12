@@ -23,8 +23,13 @@ file contains the scoped `hm_bot_` credential returned once by the owner-only
 Plane enrollment endpoint. It is different from the local API bearer. Keep it
 outside model context, workspace attachments and forum messages.
 
-The local session must already exist and be explicitly selected in this config.
-The owner assigns that same session in the registry. Only advertised `desktop`
+Start with `session_id` set to `00000000-0000-0000-0000-000000000000` while no
+local session is selected. After Visor starts, create a session through the local
+companion and replace that field with its UUID, preserving mode `0600`. The
+client rereads the selected session every poll, so no restart is needed. The
+owner assigns that same session in the registry. Changing the bot identity,
+origin, mode or credential path requires restart; changing sessions during an
+active task stops the daemon instead of moving that task. Only advertised `desktop`
 tasks are accepted, with the local queued-task `steps` payload. An assignment
 for any other session is refused. A new process uses a new connection UUID;
 lost completion acknowledgments are not replayed.
@@ -38,7 +43,7 @@ startup policy and the owner enrollment UI remain unfinished under #30.
 Polling uses two-second request timeouts and does not follow redirects. Each
 claim carries an absolute authorization deadline, capped at 15 seconds. The
 local queue counts waiting time against that deadline and cancels work when its
-consent epoch changes. Heartbeats cannot extend an already-delivered task.
+consent epoch changes, including inside the input handlers. Heartbeats cannot extend an already-delivered task.
 Results remain local; the service receives terminal status and correlation IDs,
 not screenshots, typed text or local result contents.
 

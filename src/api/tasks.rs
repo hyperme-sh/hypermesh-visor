@@ -328,7 +328,7 @@ async fn run(
             }
             record.status = "running";
         }
-        let result = execute(Arc::clone(&state), session, Arc::clone(&cancel), action).await;
+        let result = execute(Arc::clone(&state), session, Arc::clone(&cancel), action, consent_word.map(|word| automation::unpack_snap(word).0)).await;
         let mut records = lock(&state.tasks.records);
         let Some(record) = records.iter_mut().find(|r| r.id == id) else {
             break;
@@ -372,6 +372,7 @@ async fn execute(
     session: Uuid,
     cancel: Arc<AtomicBool>,
     action: Action,
+    task_epoch: Option<u64>,
 ) -> Result<Value, ApiError> {
     match action {
         Action::View => {
@@ -384,17 +385,17 @@ async fn execute(
             )
         }
         Action::Mouse(op) => {
-            mouse_with_cancel(state, session.to_string(), op, Some(cancel)).await?;
+            mouse_with_cancel(state, session.to_string(), op, Some(cancel), task_epoch).await?;
             Ok(json!({"type":"text","text":"mouse operation completed"}))
         }
         Action::Chord(body) => {
-            type_with_cancel(state, session.to_string(), body, Some(cancel)).await?;
+            type_with_cancel(state, session.to_string(), body, Some(cancel), task_epoch).await?;
             Ok(json!({"type":"text","text":"key chord completed"}))
         }
         Action::Type(text) => {
             let body = serde_json::from_value(json!({"text":text}))
                 .map_err(|_| ApiError::bad("invalid type request"))?;
-            type_with_cancel(state, session.to_string(), body, Some(cancel)).await?;
+            type_with_cancel(state, session.to_string(), body, Some(cancel), task_epoch).await?;
             Ok(json!({"type":"text","text":"typing completed"}))
         }
     }
