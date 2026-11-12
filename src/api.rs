@@ -1486,20 +1486,44 @@ async fn mcp_call(
 
     // Approve path: call the tool. Arguments are not written to the audit row.
     let arguments = body.arguments;
-    let call_result = {
-        let mut sessions = lock(&state.sessions);
-        let session = sessions.get_mut(&id).ok_or_else(ApiError::missing)?;
-        session.mcp_mut().call_tool(&server, &tool, arguments)
-    };
+    let call_state = Arc::clone(&state);
+    let call_server = server.clone();
+    let call_tool = tool.clone();
+    let call_result = tokio::task::spawn_blocking(move || {
+        let mut attached = {
+            let mut sessions = lock(&call_state.sessions);
+            let session = sessions.get_mut(&id).ok_or_else(ApiError::missing)?;
+            let target = session.mcp().servers.iter().find(|s| s.name == call_server)
+                .ok_or_else(|| ApiError::bad("MCP server not attached"))?;
+            if target.refreshing {
+                return Err(ApiError::conflict("MCP server operation in progress"));
+            }
+            if !target.tools.iter().any(|t| t.name == call_tool) {
+                return Err(ApiError::bad("MCP tool is not advertised"));
+            }
+            session.mcp_mut().take_for_refresh(&call_server).map_err(ApiError::from_mcp)?
+        };
+        // The placeholder serializes operations on this attachment. Other sessions
+        // and session close remain available while the remote server is working.
+        let result = attached.call_tool(&call_tool, arguments);
+        // A dispatched operation must be audited even if its client disconnected
+        // or its owning session closed before the remote response arrived.
+        lock(&call_state.mcp_audit).record(McpAuditRow {
+            server: call_server.clone(),
+            tool: call_tool.clone(),
+            decision: "approve".into(),
+            outcome: if result.is_ok() { "ok" } else { "failed" }.into(),
+        });
+        call_state.note(id, "mcp", &format!("{call_server} {call_tool} approve"));
+        {
+            let mut sessions = lock(&call_state.sessions);
+            let session = sessions.get_mut(&id).ok_or_else(ApiError::missing)?;
+            session.mcp_mut().restore_after_refresh(attached);
+        }
+        Ok(result)
+    }).await.map_err(|_| ApiError::internal("MCP call task failed"))??;
     match call_result {
         Ok(result) => {
-            lock(&state.mcp_audit).record(McpAuditRow {
-                server: server.clone(),
-                tool: tool.clone(),
-                decision: "approve".into(),
-                outcome: "ok".into(),
-            });
-            state.note(id, "mcp", &format!("{server} {tool} approve"));
             Ok(Json(McpCallResponse {
                 server,
                 tool,
@@ -1509,13 +1533,6 @@ async fn mcp_call(
             }))
         }
         Err(err) => {
-            lock(&state.mcp_audit).record(McpAuditRow {
-                server: server.clone(),
-                tool: tool.clone(),
-                decision: "approve".into(),
-                outcome: "failed".into(),
-            });
-            state.note(id, "mcp", &format!("{server} {tool} approve"));
             Err(ApiError::from_mcp(err))
         }
     }
@@ -4183,6 +4200,65 @@ for line in sys.stdin:
         )
         .await;
         assert_eq!(status, 404);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn stalled_mcp_call_does_not_block_close_or_other_clients() {
+        let dir = std::env::temp_dir().join(format!("hm-mcp-call-{}", Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        let script = dir.join("server.py");
+        std::fs::write(&script, r#"
+import json, pathlib, sys, time
+root = pathlib.Path(__file__).parent
+for line in sys.stdin:
+    msg = json.loads(line)
+    method = msg.get('method')
+    if method == 'initialize':
+        result = {'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'fixture','version':'0'}}
+    elif method == 'tools/list':
+        result = {'tools':[{'name':'slow','inputSchema':{'type':'object'}}]}
+    elif method == 'tools/call':
+        with (root/'calls').open('a') as f: f.write('called\n')
+        end = time.monotonic() + 5
+        while not (root/'finish').exists() and time.monotonic() < end: time.sleep(.01)
+        result = {'content':[{'type':'text','text':'private result'}]}
+    else: continue
+    print(json.dumps({'jsonrpc':'2.0','id':msg['id'],'result':result}), flush=True)
+"#).unwrap();
+        std::fs::write(dir.join("mcp.json"), serde_json::json!({"mcpServers":{"fixture":{"command":"python3","args":[script],"type":"stdio"}}}).to_string()).unwrap();
+        std::fs::write(dir.join("mcp-profiles.json"), r#"{"active":"default","profiles":{"default":{"servers":["fixture"]}}}"#).unwrap();
+        let addr = spawn_with_mcp_dir(FakeDesktop::new(), dir.clone()).await;
+        let (status, _, id) = open_session_id(addr, serde_json::json!([])).await;
+        assert_eq!(status, 201);
+        let path = format!("/session/{id}/mcp/call");
+        let body = serde_json::json!({"server":"fixture","tool":"slow","decision":"approve","arguments":{}}).to_string();
+        let call_path = path.clone(); let call_body = body.clone();
+        let call = tokio::spawn(async move { send(addr, "POST", &call_path, Some(call_body)).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dir.join("calls").exists() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await.expect("fixture call did not start");
+        let (status, _, _) = tokio::time::timeout(Duration::from_secs(1), send(addr, "GET", "/companion", None)).await.expect("MCP blocked companion status");
+        assert_eq!(status, 200);
+        let (status, _, _) = send(addr, "POST", &path, Some(body)).await;
+        assert_eq!(status, 409, "concurrent call must not dispatch twice");
+        let (status, _, _) = send(addr, "POST", &format!("/session/{id}/mcp/refresh"), Some(r#"{"server":"fixture","action":"reconnect"}"#.into())).await;
+        assert_eq!(status, 409);
+        let (status, _, _) = tokio::time::timeout(Duration::from_secs(1), send(addr, "DELETE", &format!("/session/{id}"), None)).await.expect("MCP blocked session close");
+        assert_eq!(status, 204);
+        std::fs::write(dir.join("finish"), "").unwrap();
+        let (status, _, response) = tokio::time::timeout(Duration::from_secs(2), call).await.unwrap().unwrap();
+        assert_eq!(status, 404);
+        assert!(!String::from_utf8_lossy(&response).contains("private result"));
+        assert_eq!(std::fs::read_to_string(dir.join("calls")).unwrap(), "called\n");
+        let (_, _, audit) = send(addr, "GET", "/mcp-audit", None).await;
+        let audit: serde_json::Value = serde_json::from_slice(&audit).unwrap();
+        assert_eq!(audit.as_array().unwrap().len(), 1);
+        assert_eq!(audit[0]["server"], "fixture");
+        assert_eq!(audit[0]["tool"], "slow");
+        assert_eq!(audit[0]["decision"], "approve");
+        assert_eq!(audit[0]["outcome"], "ok");
+        assert!(!audit.to_string().contains("private result"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
