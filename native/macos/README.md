@@ -33,7 +33,10 @@ and Input Monitoring. A local client must open a session using the control socke
 shown in the window. Then the user must select Allow in the visible native UI.
 Desktop access starts off. Pause, Stop, physical input, lost permissions, a lost
 input monitor or an unavailable engine disable access. Closing the window quits
-the app and releases held input. Resume requires another visible user action.
+the app and releases held input. Resume requires another visible user action. If permission or input monitoring
+is lost, both window and menu disable Allow/Resume and show a restart instruction.
+Restore the permissions, quit and reopen the app, reopen a session, then select
+Allow. Ordinary user pauses and display-layout changes remain resumable.
 
 ## Permission boundary and limitations
 

@@ -48,6 +48,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var tapSource: CFRunLoopSource?
     private var approvedLayout: DesktopLayout?
     private var allowed = false
+    private var restartRequired = false
     private var epoch: UInt64 = 0
     private var polling = false
     private var started = false
@@ -104,11 +105,14 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
     }
     private func update() {
-        let readiness = started && !sessionOpen ? "Waiting for a local client to open a session" : message
+        let readiness = restartRequired ? "Restore permissions in System Settings, then quit and reopen Visor. Desktop access remains off." : (started && !sessionOpen ? "Waiting for a local client to open a session" : message)
         label?.stringValue = "\(readiness)\nSession: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
-        allowButton?.isEnabled = started && sessionOpen && !allowed
-        allowButton?.title = currentPhase == "paused" ? "Resume desktop access" : "Allow desktop access"
-        menuAllow?.isEnabled = started && sessionOpen && !allowed
+        let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
+                                          paused: currentPhase == "paused", restartRequired: restartRequired)
+        allowButton?.isEnabled = access.enabled
+        allowButton?.title = access.title
+        menuAllow?.isEnabled = access.enabled
+        menuAllow?.title = access.title
         statusItem?.button?.title = allowed ? "Visor: ON" : "Visor: off"
         statusItem?.button?.toolTip = message
     }
@@ -132,7 +136,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
     }
     @objc func allow() {
-        guard started && sessionOpen else { return }
+        guard started && sessionOpen && !restartRequired else { return }
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
                        ("Accessibility", CGPreflightPostEventAccess()),
@@ -152,6 +156,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     @objc func stopButton() { pause("Desktop access stopped"); control("stop") }
     func pause(_ reason: String, lost: Bool = false) {
         allowed = false; epoch &+= 1; releaseHeld(); message = reason
+        restartRequired = restartRequired || lost
         if started { control(lost ? "monitor-lost" : "pause") }
         update()
     }

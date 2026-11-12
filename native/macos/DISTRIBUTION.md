@@ -11,8 +11,9 @@ Only Apple Silicon is currently distributed. Intel is not claimed as supported
 until a native build and unit-contract lane exists. The app's Info.plist records
 the minimum macOS version used by the CI builder. The native app provides visible
 Allow, Pause, Stop and Quit controls; it does not yet have the animated companion's
-full feature set. Audio, multi-display support and embedded stdio MCP workers
-remain unavailable.
+full feature set. Multi-display capture and pointer coordinates share the active
+displays' logical rectangle; display changes pause access until Allow is selected
+again. Audio and embedded stdio MCP workers remain unavailable.
 
 ## Verify and use
 
@@ -36,7 +37,9 @@ available for another local instance. Existing CLI endpoint overrides still appl
 
 The app starts with desktop access off. Grant the OS permissions explicitly and
 select Allow in the visible app after a client opens a session. The CLI and inverse
-MCP programs cannot lift a native user pause. Renter credentials remain in the
+MCP programs cannot lift a native user pause. Permission or input-monitor loss
+disables Allow/Resume until Visor is restarted; restore permissions first, reopen
+the app and a session, then select Allow. Renter credentials remain in the
 existing user credential store; the archive contains no credentials.
 
 ## Upgrade and remove
