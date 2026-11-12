@@ -1586,6 +1586,7 @@ mod tests {
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct ChatHit {
+    pub conductor_task: String,
     pub authorization: String,
     pub expected_model: String,
     pub path: String,
@@ -1618,6 +1619,7 @@ impl ChatFixture {
                     continue;
                 };
                 recorded.lock().unwrap().push(ChatHit {
+                    conductor_task: headers.get("x-conductor-task").cloned().unwrap_or_default(),
                     authorization: headers.get("authorization").cloned().unwrap_or_default(),
                     expected_model: headers
                         .get("x-conductor-expected-model")

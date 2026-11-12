@@ -56,3 +56,17 @@ uses Unicode events. Audio capture is unavailable.
 The existing X11 companion is separate. Native animated companion parity,
 isolated stdio workers and broader distribution support remain
 follow-up work. No native desktop run is implied by the unit and contract results.
+
+## Conductor prompt route
+
+The native app reads `HYPERMESH_CONDUCTOR_ADDR`, `HYPERMESH_CONDUCTOR_LEASE_ID`
+and `HYPERMESH_DEFAULT_MODEL` at startup. The address must be a numeric loopback
+address with a nonzero port. A lease requires that route. Prompts use the selected
+model and caller's renter credential through the existing Conductor contract;
+invalid settings stop startup with a configuration error. Without an address,
+prompts report that their route is unconfigured.
+
+Start Conductor independently before launching the native app with these settings.
+Managed `HYPERMESH_CONDUCTOR_CONFIG` and supervisor URL settings are refused by
+the permission-bearing app. Native bundled-child startup still needs an isolated
+worker; explicit external routing does not complete default bundled delivery in #90.

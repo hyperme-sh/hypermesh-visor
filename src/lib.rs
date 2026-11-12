@@ -18,6 +18,8 @@ mod input;
 mod local_peer;
 #[cfg(all(target_os = "macos", feature = "desktop"))]
 mod native_engine;
+#[cfg(any(target_os = "macos", test))]
+mod native_prompt;
 mod mcp;
 mod orchestrator;
 mod prompt;
