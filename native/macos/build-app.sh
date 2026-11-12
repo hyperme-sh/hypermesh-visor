@@ -4,7 +4,7 @@ cd "$(dirname "$0")/../.."
 output=${1:?Usage: build-app.sh OUTPUT_APP_PATH}
 if [[ -e "$output" ]]; then echo "Output already exists" >&2; exit 1; fi
 deployment=$(/usr/bin/sw_vers -productVersion)
-MACOSX_DEPLOYMENT_TARGET="$deployment" cargo build --locked --lib
+MACOSX_DEPLOYMENT_TARGET="$deployment" cargo rustc --locked --lib --crate-type staticlib
 mkdir -p "$output/Contents/MacOS"
 swiftc -parse-as-library -D EMBEDDED_ENGINE -O -target "$(uname -m)-apple-macos$deployment" -import-objc-header native/macos/Engine.h native/macos/Desktop.swift native/macos/Engine.swift \
   -L target/debug -lhypermesh_visor -framework Security -framework SystemConfiguration \
