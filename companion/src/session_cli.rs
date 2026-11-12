@@ -135,12 +135,14 @@ impl<R: Read> Read for TerminalInput<R> {
                         return Ok(0);
                     }
                     8 | 127 => {
-                        if self.pending.pop().is_some() {
-                            while self.pending.last().is_some_and(|b| b & 0xc0 == 0x80) {
-                                self.pending.pop();
-                            }
-                            if self.pending.last().is_some_and(|b| b & 0xc0 == 0xc0) {
-                                self.pending.pop();
+                        if let Some(last) = self.pending.pop() {
+                            if last & 0xc0 == 0x80 {
+                                while self.pending.last().is_some_and(|b| b & 0xc0 == 0x80) {
+                                    self.pending.pop();
+                                }
+                                if self.pending.last().is_some_and(|b| b & 0xc0 == 0xc0) {
+                                    self.pending.pop();
+                                }
                             }
                             echo.write_all(b"\x08 \x08")?;
                         }
@@ -254,6 +256,28 @@ mod tests {
                 assert!(calls.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn terminal_backspace_removes_only_the_last_character() {
+        let input = TerminalInput {
+            input: std::io::Cursor::new("éx\x7f\nyé\x7f\n"),
+            terminal: true,
+            pending: Vec::new(),
+            offset: 0,
+        };
+        let mut calls = Vec::new();
+        run(
+            std::io::BufReader::new(input),
+            &mut Vec::new(),
+            SESSION,
+            |_, text| {
+                calls.push(text.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, ["é", "y"]);
     }
 
     #[test]
