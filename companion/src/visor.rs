@@ -458,6 +458,7 @@ fn exchange_read(path: &Path, request: &str) -> Exchange {
     exchange_read_timeout(path, request, Duration::from_millis(300))
 }
 fn exchange_read_timeout(path: &Path, request: &str, timeout: Duration) -> Exchange {
+    let _attribution = crate::telemetry::UpstreamScope::enter(crate::telemetry::Service::Visor);
     let mut stream = match UnixStream::connect(path) {
         Ok(stream) => stream,
         Err(_) => return Exchange::Failed,

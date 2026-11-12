@@ -802,6 +802,8 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+ "ureq",
+ "url",
  "x11rb",
 ]
 

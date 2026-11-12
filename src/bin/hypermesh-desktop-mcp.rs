@@ -66,6 +66,10 @@ fn configured_token() -> Option<String> {
 }
 
 fn main() {
+    let _reports = hypermesh_visor::telemetry::init(
+        hypermesh_visor::telemetry::Component::InverseMcp,
+        env!("CARGO_PKG_VERSION"),
+    );
     let visor = match VisorEndpoint::from_env() {
         Ok(visor) => visor,
         Err(err) => {
@@ -346,6 +350,9 @@ fn handle_call(
     session: &str,
     params: Option<&Value>,
 ) -> Result<CallResult, String> {
+    let _attribution = hypermesh_visor::telemetry::UpstreamScope::enter(
+        hypermesh_visor::telemetry::Service::Visor,
+    );
     let params = params
         .and_then(Value::as_object)
         .ok_or("params must be an object")?;

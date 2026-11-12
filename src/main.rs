@@ -26,6 +26,10 @@ struct Options {
 }
 
 fn main() -> ExitCode {
+    let _reports = hypermesh_visor::telemetry::init(
+        hypermesh_visor::telemetry::Component::Daemon,
+        env!("CARGO_PKG_VERSION"),
+    );
     let options = match parse_args() {
         Ok(Some(options)) => options,
         Ok(None) => return ExitCode::SUCCESS,
@@ -99,6 +103,9 @@ fn main() -> ExitCode {
             let child = match managed_conductor::ManagedConductor::start(&path, &journal) {
                 Ok(child) => child,
                 Err(e) => {
+                    hypermesh_visor::telemetry::report(
+                        hypermesh_visor::telemetry::Failure::Startup,
+                    );
                     eprintln!("{e}");
                     return ExitCode::from(1);
                 }
@@ -146,6 +153,7 @@ fn main() -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(err) => {
+            hypermesh_visor::telemetry::report(hypermesh_visor::telemetry::Failure::Startup);
             eprintln!("hypermesh-visor: {err}");
             return ExitCode::from(1);
         }
@@ -163,6 +171,7 @@ fn main() -> ExitCode {
     // same deadline `serve` uses before it exits the process.
     runtime.shutdown_timeout(SHUTDOWN_DEADLINE);
     if let Err(err) = result {
+        hypermesh_visor::telemetry::report(hypermesh_visor::telemetry::Failure::Serve);
         eprintln!("hypermesh-visor: {err}");
         return ExitCode::from(1);
     }
