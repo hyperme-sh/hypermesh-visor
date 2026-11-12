@@ -12,6 +12,10 @@ permissions:
   contents: read
 
 jobs:
+  headless-packages:
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/headless.yml
+
   packages:
     name: linux packages
     runs-on: ubuntu-24.04
@@ -36,6 +40,9 @@ jobs:
 
       - name: Check embedded includes
         run: bash ci/check-includes.sh
+
+      - name: Headless asset assembly contracts
+        run: python3 ci/test-headless-assets.py
 
       - name: Test
         run: cargo test --locked --workspace
@@ -140,17 +147,36 @@ jobs:
 
   publish:
     name: publish GitHub release
-    needs: [packages, installed-x11]
+    needs: [packages, installed-x11, headless-packages]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7.0.1
+
       - name: Download packages
         uses: actions/download-artifact@v8.0.1
         with:
           name: hypermesh-visor-linux
           path: dist
+
+      - name: Download native headless x86_64 bundle
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: headless-musl-x86_64
+          path: headless/x86_64
+
+      - name: Download native headless aarch64 bundle
+        uses: actions/download-artifact@v8.0.1
+        with:
+          name: headless-musl-aarch64
+          path: headless/aarch64
+
+      - name: Verify and combine release assets
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: python3 ci/assemble-headless-assets.py dist headless "$SOURCE_REVISION"
 
       - name: Publish
         uses: softprops/action-gh-release@v3.0.3
@@ -162,5 +188,6 @@ jobs:
             dist/hypermesh-visor-aarch64
             dist/hypermesh-visor-aarch64.deb
             dist/hypermesh-visor-aarch64.rpm
+            dist/hypermesh-visor-headless-*
             dist/checksums.txt
           fail_on_unmatched_files: true

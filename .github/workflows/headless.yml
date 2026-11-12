@@ -1,5 +1,6 @@
 name: headless unit and build contracts
 on:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
