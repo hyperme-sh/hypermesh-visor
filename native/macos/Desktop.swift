@@ -224,6 +224,17 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
     default: throw NativeError.invalid
     }
 }
+struct DesktopAccessControl: Equatable {
+    let enabled: Bool
+    let title: String
+}
+
+func desktopAccessControl(started: Bool, sessionOpen: Bool, allowed: Bool, paused: Bool, restartRequired: Bool) -> DesktopAccessControl {
+    if restartRequired { return DesktopAccessControl(enabled: false, title: "Restart Visor to recover") }
+    return DesktopAccessControl(enabled: started && sessionOpen && !allowed,
+                                title: paused ? "Resume desktop access" : "Allow desktop access")
+}
+
 @MainActor final class SetupController: NSObject, NSWindowDelegate {
     var window: NSWindow!
     var status: NSTextField!
@@ -306,6 +317,20 @@ func verifyNativeUnit(_ condition: @autoclosure () -> Bool, line: UInt = #line) 
     }
 }
 func selfTest() throws {
+    for started in [false, true] {
+        for sessionOpen in [false, true] {
+            for allowed in [false, true] {
+                for paused in [false, true] {
+                    let lost = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed, paused: paused, restartRequired: true)
+                    try verifyNativeUnit(!lost.enabled && lost.title == "Restart Visor to recover")
+                    let healthy = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed, paused: paused, restartRequired: false)
+                    try verifyNativeUnit(healthy.enabled == (started && sessionOpen && !allowed))
+                    try verifyNativeUnit(healthy.title == (paused ? "Resume desktop access" : "Allow desktop access"))
+                }
+            }
+        }
+    }
+    print("PASS permanent monitor loss requires restart; ordinary pauses remain resumable")
     try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: true, layoutMatches: true) == nil)
     try verifyNativeUnit(desktopInterruption(permissionsAndMonitor: true, layoutMatches: false)?.permanent == false)
     for layoutMatches in [true, false] {
