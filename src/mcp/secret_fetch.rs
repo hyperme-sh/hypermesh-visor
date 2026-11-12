@@ -45,6 +45,11 @@ pub fn fetch_secret_bytes(
 }
 
 fn text_from_tool_result(result: &Value) -> Option<Vec<u8>> {
+    // A valid JSON-RPC response can still describe a failed tool operation.
+    // Error text must never become credential material. Malformed flags refuse too.
+    if !matches!(result.get("isError"), None | Some(Value::Bool(false))) {
+        return None;
+    }
     let content = result.get("content")?.as_array()?;
     let mut out = String::new();
     for part in content {
@@ -70,6 +75,27 @@ mod tests {
     use super::*;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn tool_errors_and_malformed_error_flags_are_never_secret_bytes() {
+        for flag in [
+            json!(true),
+            json!(null),
+            json!("false"),
+            json!(0),
+            json!({}),
+        ] {
+            let result =
+                json!({"isError":flag,"content":[{"type":"text","text":"private failure detail"}]});
+            assert!(text_from_tool_result(&result).is_none());
+        }
+        assert_eq!(
+            text_from_tool_result(
+                &json!({"isError":false,"content":[{"type":"text","text":"value"}]})
+            ),
+            Some(b"value".to_vec())
+        );
+    }
 
     #[test]
     fn fetches_secret_text_from_fixture_stdio() {
@@ -107,7 +133,10 @@ while True:
         send({"jsonrpc":"2.0","id":msg["id"],"result":{"tools":[{"name":"get_secret","description":"get","inputSchema":{"type":"object"}}]}})
     elif method == "tools/call":
         name = msg.get("params",{}).get("arguments",{}).get("name","")
-        send({"jsonrpc":"2.0","id":msg["id"],"result":{"content":[{"type":"text","text":"secret-for-"+name}]}})
+        result = {"content":[{"type":"text","text":"secret-for-"+name}]}
+        if name == "failed": result["isError"] = True
+        if name == "malformed": result["isError"] = "false"
+        send({"jsonrpc":"2.0","id":msg["id"],"result":result})
 "#,
         )
         .unwrap();
@@ -125,6 +154,10 @@ while True:
 
         let bytes = fetch_secret_bytes(&dir, "vault-fixture", "get_secret", "token").unwrap();
         assert_eq!(bytes.as_slice(), b"secret-for-token");
+        for name in ["failed", "malformed"] {
+            let error = fetch_secret_bytes(&dir, "vault-fixture", "get_secret", name).unwrap_err();
+            assert!(!error.to_string().contains("secret-for-"));
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }
