@@ -32,10 +32,16 @@ pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
         let Ok(runtime) = tokio::runtime::Runtime::new() else {
             return 1;
         };
-        let state = Arc::new(api::AppState::new(
-            Arc::new(MacDesktop::embedded(callback)),
-            Duration::from_millis(250),
-        ));
+        let config = match crate::native_prompt::configuration(|name| std::env::var_os(name)) {
+            Ok(config) => config,
+            Err(error) => { eprintln!("native prompt configuration: {error}"); return 1; }
+        };
+        let state = match api::AppState::with_orchestrator(
+            Arc::new(MacDesktop::embedded(callback)), Duration::from_millis(250), config,
+        ) {
+            Ok(state) => Arc::new(state),
+            Err(error) => { eprintln!("native prompt startup: {error}"); return 1; }
+        };
         if ENGINE
             .set(Engine {
                 runtime,
@@ -155,6 +161,55 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&result.stderr)
         );
+    }
+
+    #[test]
+    fn embedded_prompts_use_the_configured_conductor() {
+        const FLAG: &str = "HYPERMESH_NATIVE_PROMPT_TEST";
+        if std::env::var_os(FLAG).is_some() {
+            unsafe extern "C" fn denied(_: *const u8, _: usize, _: *mut *mut u8, _: *mut usize) -> i32 { 1 }
+            assert_eq!(hypermesh_native_start(Some(denied)), 0);
+            let engine = ENGINE.get().unwrap();
+            engine.runtime.block_on(async {
+                let request = Request::builder().method("POST").uri("/prompt")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"prompt":"native route contract","api_key":"org_native_contract"}"#)).unwrap();
+                let response = api::router(Arc::clone(&engine.state)).oneshot(request).await.unwrap();
+                assert_eq!(response.status(), 200);
+                let bytes = to_bytes(response.into_body(), 65536).await.unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["response"], "native-conductor-ok");
+                assert_eq!(body["passed_through"], true);
+                assert!(!String::from_utf8_lossy(&bytes).contains("org_native_contract"));
+            });
+            return;
+        }
+        let fixture = crate::prompt::ChatFixture::spawn(200,
+            r#"{"choices":[{"message":{"content":"native-conductor-ok"}}]}"#);
+        let directory = std::env::temp_dir().join(format!("hv-native-prompt-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        let lease = "11111111-1111-4111-8111-111111111111";
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "native_engine::tests::embedded_prompts_use_the_configured_conductor"])
+            .env(FLAG, "1")
+            .env("HYPERMESH_CONDUCTOR_ADDR", fixture.url.trim_start_matches("http://"))
+            .env("HYPERMESH_CONDUCTOR_LEASE_ID", lease)
+            .env("HYPERMESH_DEFAULT_MODEL", "qwen-2.5-32b-q4")
+            .env_remove("HYPERMESH_CONDUCTOR_CONFIG")
+            .env_remove("HYPERMESH_SUPERVISOR_URL")
+            .env_remove("HYPERMESH_SUPERVISOR_URL_2")
+            .env("HYPERMESH_RUNTIME_DIR", directory.join("run"))
+            .env("HYPERMESH_CONFIG_DIR", directory.join("config"))
+            .output().unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let hits = fixture.hits();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, crate::prompt::CHAT_COMPLETIONS_PATH);
+        assert_eq!(hits[0].authorization, "Bearer org_native_contract");
+        assert_eq!(hits[0].expected_model, "qwen-2.5-32b-q4");
+        assert_eq!(hits[0].conductor_task, lease);
+        assert!(hits[0].api_key.is_empty() && hits[0].lease.is_empty() && hits[0].hypermesh_lease.is_empty());
     }
 
     #[tokio::test]
