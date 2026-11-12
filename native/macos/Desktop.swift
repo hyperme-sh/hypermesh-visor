@@ -56,19 +56,11 @@ struct DesktopLayout: Equatable {
         guard displays.contains(where: { $0.bounds.contains(point) }) else { throw NativeError.invalid }
         return point
     }
-    // Bitmap rows use the same top-to-bottom ordering as the returned PNG.
+    // CoreGraphics drawing uses upward y; desktop coordinates use downward y.
     func imageRect(_ display: DisplayGeometry) -> CGRect {
-        CGRect(x: display.bounds.minX - bounds.minX, y: display.bounds.minY - bounds.minY,
+        CGRect(x: display.bounds.minX - bounds.minX, y: bounds.maxY - display.bounds.maxY,
                width: display.bounds.width, height: display.bounds.height)
     }
-}
-func drawDesktopImage(_ image: CGImage, on canvas: CGContext, in rect: CGRect) {
-    // Keep source rows top-down within each destination rectangle.
-    canvas.saveGState()
-    canvas.translateBy(x: rect.minX, y: rect.minY + rect.height)
-    canvas.scaleBy(x: 1, y: -1)
-    canvas.draw(image, in: CGRect(origin: .zero, size: rect.size))
-    canvas.restoreGState()
 }
 func desktopLayout() throws -> DesktopLayout {
     var count: UInt32 = 0
@@ -202,7 +194,7 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
         let layout = try desktopLayout()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
         guard let canvas = CGContext(data: nil, width: Int(layout.bounds.width), height: Int(layout.bounds.height),
-                                     bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                     bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw NativeError.unavailable }
         canvas.setFillColor(CGColor(gray: 0, alpha: 1)); canvas.fill(CGRect(origin: .zero, size: layout.bounds.size))
         for geometry in layout.displays {
@@ -213,7 +205,7 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
             configuration.showsCursor = true
             let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
             try checkpoint()
-            drawDesktopImage(image, on: canvas, in: layout.imageRect(geometry))
+            canvas.draw(image, in: layout.imageRect(geometry))
         }
         guard try desktopLayout() == layout, let image = canvas.makeImage(),
               let png = NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { throw NativeError.unavailable }
@@ -328,8 +320,8 @@ func selfTest() throws {
     try verifyNativeUnit(topLeft == CGPoint(x: -1280, y: -200))
     let primaryOrigin = try layout.point(x: 1280, y: 200)
     try verifyNativeUnit(primaryOrigin == .zero)
-    try verifyNativeUnit(layout.imageRect(left) == CGRect(x: 0, y: 0, width: 1280, height: 1024))
-    try verifyNativeUnit(layout.imageRect(primary) == CGRect(x: 1280, y: 200, width: 1920, height: 1080))
+    try verifyNativeUnit(layout.imageRect(left) == CGRect(x: 0, y: 256, width: 1280, height: 1024))
+    try verifyNativeUnit(layout.imageRect(primary) == CGRect(x: 1280, y: 0, width: 1920, height: 1080))
     for (x, y) in [(0, 1279), (1280, 0), (-1, 0), (3200, 200)] {
         do { _ = try layout.point(x: x, y: y); preconditionFailure("gap or outside point accepted") } catch NativeError.invalid { }
     }
@@ -340,18 +332,18 @@ func selfTest() throws {
     let above = DisplayGeometry(id: 2, bounds: CGRect(x: 0, y: -2, width: 2, height: 2))
     let vertical = try DesktopLayout([below, above])
     let canvas = CGContext(data: nil, width: 2, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
-                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-    canvas.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1)); canvas.fill(vertical.imageRect(below))
+                          space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    canvas.setFillColor(CGColor(colorSpace: CGColorSpace(name: CGColorSpace.sRGB)!, components: [1, 0, 0, 1])!); canvas.fill(vertical.imageRect(below))
     let rows = Data([0,255,0,255, 0,255,0,255, 0,0,255,255, 0,0,255,255])
     let fixture = CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
-                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                          space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                           provider: CGDataProvider(data: rows as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
-    drawDesktopImage(fixture, on: canvas, in: vertical.imageRect(above))
+    canvas.draw(fixture, in: vertical.imageRect(above))
     let encoded = NSBitmapImageRep(cgImage: canvas.makeImage()!).representation(using: .png, properties: [:])!
     let bitmap = NSBitmapImageRep(data: encoded)!
-    let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
-    let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.deviceRGB)!
-    let second = bitmap.colorAt(x: 0, y: 1)!.usingColorSpace(.deviceRGB)!
+    let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.sRGB)!
+    let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.sRGB)!
+    let second = bitmap.colorAt(x: 0, y: 1)!.usingColorSpace(.sRGB)!
     FileHandle.standardError.write(Data("Synthetic PNG rows: top=\(top) second=\(second) bottom=\(bottom)\n".utf8))
     try verifyNativeUnit(top.greenComponent > 0.99)
     try verifyNativeUnit(second.blueComponent > 0.99)
