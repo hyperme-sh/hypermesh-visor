@@ -3,6 +3,9 @@ on:
   pull_request:
   push:
     branches: [main]
+concurrency:
+  group: container-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -13,6 +16,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Check Python fixture syntax
         run: python3 -m compileall -q container ci/container
+      - name: Native image metadata contracts
+        run: python3 -m unittest discover -s ci/container -p 'test_image_manifest.py'
       - name: Check shell harness syntax
         run: |
           for script in ci/verbs.sh ci/cross-user.sh ci/display/run.sh; do
@@ -22,3 +27,41 @@ jobs:
         env:
           VISOR_IMAGE: visor-container:contract-only
         run: docker compose -f container/compose.yaml config --quiet
+
+  native-image:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            machine: x86_64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            machine: aarch64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build native desktop image
+        env:
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_MACHINE"
+          docker build --file container/Dockerfile --label "org.opencontainers.image.revision=$SOURCE_REVISION" --tag visor-container:ci .
+      - name: Export archive and verify image contract
+        env:
+          ARCH: ${{ matrix.arch }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/visor-container"
+          docker image inspect visor-container:ci > "$RUNNER_TEMP/visor-image.json"
+          docker image save visor-container:ci | gzip -1 > "$RUNNER_TEMP/visor-container/visor-container-$ARCH.tar.gz"
+          python3 ci/container/image_manifest.py "$RUNNER_TEMP/visor-image.json" "$RUNNER_TEMP/visor-container/visor-container-$ARCH.tar.gz" "$ARCH" "$SOURCE_REVISION" "$RUNNER_TEMP/visor-container/manifest.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: visor-container-${{ matrix.arch }}
+          path: ${{ runner.temp }}/visor-container/
+          retention-days: 1
+          if-no-files-found: error
