@@ -1,5 +1,5 @@
 x-bot: &bot
-  image: ${VISOR_IMAGE:?Set VISOR_IMAGE to an immutable image digest}
+  image: ${VISOR_IMAGE:?Set VISOR_IMAGE to the TEST channel or a verified image reference}
   user: "1000:1000"
   group_add: ["2000"]
   read_only: true
