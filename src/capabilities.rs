@@ -70,7 +70,7 @@ pub(crate) fn describe(backend: &str) -> Value {
             "attached_tools": "/session/{id}/mcp",
             "refresh_tools": "/session/{id}/mcp/refresh",
             "refresh_actions": ["refresh", "reconnect"],
-            "inverse_tools": if cfg!(feature = "desktop") { json!(["capabilities", "view", "mouse_move", "mouse_click", "mouse_scroll", "mouse_drag", "type_text", "task_submit", "task_status", "task_cancel"]) } else { json!([]) }
+            "inverse_tools": if cfg!(feature = "desktop") { json!(["capabilities", "view", "mouse_move", "mouse_click", "mouse_scroll", "mouse_drag", "type_text", "key_chord", "task_submit", "task_status", "task_cancel"]) } else { json!([]) }
         }
     })
 }

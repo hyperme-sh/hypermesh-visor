@@ -34,7 +34,7 @@ pub use desktop::LinuxDesktop;
 pub use desktop::MacDesktop;
 pub use desktop::{current_euid, Desktop, FixtureDesktop, HeadlessDesktop};
 pub use hypermesh_session::{refresh_token, MemoryStore, SessionStore};
-pub use input::SCROLL_MAX_TICKS;
+pub use input::{key_chord_request, SCROLL_MAX_TICKS};
 pub use prompt::{open_supervisor_door, DoorConfig, PromptDoor, DEFAULT_CATALOG_ID};
 
 #[cfg(test)]

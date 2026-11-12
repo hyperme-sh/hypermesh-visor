@@ -691,3 +691,62 @@ mod tests {
         assert!(mouse_in_bounds("wayland", &op));
     }
 }
+
+/// Build one balanced named-key chord for both queued and inverse MCP calls.
+pub fn key_chord_request(keys: &serde_json::Value) -> Result<serde_json::Value, String> {
+    let keys = keys
+        .as_array()
+        .filter(|keys| (1..=8).contains(&keys.len()))
+        .ok_or("keys must contain 1 to 8 named keys")?;
+    let mut names = Vec::new();
+    let mut identities = std::collections::HashSet::new();
+    for key in keys {
+        let name = key
+            .as_str()
+            .filter(|name| !name.is_empty() && name.len() <= 32)
+            .ok_or("each key must be a supported name of at most 32 bytes")?;
+        let identity = keysym_for_name(name).map_err(|_| "unsupported key name")?;
+        if !identities.insert(identity) {
+            return Err("duplicate key in chord".into());
+        }
+        names.push(name);
+    }
+    let mut sequence = Vec::new();
+    for name in &names {
+        sequence.push(serde_json::json!({"key":name,"action":"down"}));
+    }
+    for name in names.iter().rev() {
+        sequence.push(serde_json::json!({"key":name,"action":"up"}));
+    }
+    Ok(serde_json::json!({"keys":sequence}))
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn chords_are_bounded_validated_and_released_in_reverse_order() {
+        let body = key_chord_request(&json!(["ctrl", "shift", "s"])).unwrap();
+        let parsed: TypeBody = serde_json::from_value(body).unwrap();
+        let strokes = plan_type(&parsed, None).unwrap();
+        assert_eq!(strokes.len(), 6);
+        for i in 0..3 {
+            assert!(strokes[i].down);
+            assert!(!strokes[5 - i].down);
+            assert_eq!(strokes[i].keysym, strokes[5 - i].keysym);
+        }
+        for keys in [
+            json!([]),
+            json!(vec!["a"; 9]),
+            json!(["ctrl", "control"]),
+            json!(["ctrl", null]),
+            json!(["unknown"]),
+            json!(["a", "a"]),
+            json!(["\n"]),
+            json!("ctrl+s"),
+        ] {
+            assert!(key_chord_request(&keys).is_err());
+        }
+    }
+}

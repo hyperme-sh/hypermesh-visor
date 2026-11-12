@@ -74,6 +74,7 @@ enum Action {
     View,
     Mouse(MouseOp),
     Type(String),
+    Chord(TypeBody),
 }
 
 fn action(step: Step) -> Result<Action, ApiError> {
@@ -88,6 +89,7 @@ fn action(step: Step) -> Result<Action, ApiError> {
         "mouse_drag" => &["x", "y", "to_x", "to_y", "button"],
         "mouse_scroll" => &["x", "y", "delta_x", "delta_y"],
         "type_text" => &["text"],
+        "key_chord" => &["keys"],
         _ => return Err(ApiError::bad("unsupported task tool")),
     };
     if args.keys().any(|k| !allowed.contains(&k.as_str())) {
@@ -102,6 +104,12 @@ fn action(step: Step) -> Result<Action, ApiError> {
     };
     Ok(match step.tool.as_str() {
         "view" => Action::View,
+        "key_chord" => {
+            let value = crate::key_chord_request(args.get("keys").unwrap_or(&Value::Null))
+                .map_err(ApiError::bad)?;
+            let body = serde_json::from_value(value).map_err(|_| ApiError::bad("invalid chord"))?;
+            Action::Chord(body)
+        }
         "type_text" => {
             let text = args
                 .get("text")
@@ -363,6 +371,10 @@ async fn execute(
         Action::Mouse(op) => {
             mouse_with_cancel(state, session.to_string(), op, Some(cancel)).await?;
             Ok(json!({"type":"text","text":"mouse operation completed"}))
+        }
+        Action::Chord(body) => {
+            type_with_cancel(state, session.to_string(), body, Some(cancel)).await?;
+            Ok(json!({"type":"text","text":"key chord completed"}))
         }
         Action::Type(text) => {
             let body = serde_json::from_value(json!({"text":text}))
