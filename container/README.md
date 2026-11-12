@@ -43,22 +43,27 @@ Networking is off by default. Enabling network access is an operator decision;
 apply an egress policy appropriate to the apps and MCP services in use. Local
 HTTP/SSE fixtures work over each container's own loopback interface.
 
-## Qualification
+## Native CI builds
 
-Use a fresh project name, then run:
+PR and main CI build the image on native amd64 and arm64 runners. Each
+`visor-container-<architecture>` artifact contains a compressed Docker image
+archive and `manifest.json` recording its SHA-256, byte size, source revision,
+platform and local image ID. CI checks the unprivileged user, entrypoint,
+readiness command and absence of implicit ports or volumes before upload.
+Artifacts expire after one day and are development downloads, not registry
+releases. No running container is started by these build jobs.
 
-```sh
-python3 ci/container/qualify.py visor --image "$VISOR_IMAGE" --output /tmp/visor-results
-docker cp ci/container/apps.py visor-writer-1:/home/bot/qualification/apps.py
-docker exec visor-writer-1 python3 /home/bot/qualification/apps.py
-```
+Verify the downloaded archive against the manifest before loading it. After
+`docker image load`, compare the loaded image ID and platform with the manifest;
+use that image ID as `VISOR_IMAGE`. A local image ID identifies image configuration
+and layers; it is not a published registry manifest digest. Registry distribution
+and the remote assignment contract remain tracked in #27.
 
-The first command checks two independent bots, read-only grants, atomic conflicts,
-path attacks, hard quota, MCP discovery/HTTP/SSE and persistent trust through
-restarts. The second drives real Firefox, Mousepad and xterm using Visor input
-and captures the private display. Tests leave the project and its state available
-for inspection. Stop containers with `compose down`; retain volumes unless their
-deletion is intended.
+## Scheduled coverage
+
+The central nightly batch owns the two-bot, shared-resource, restart, MCP and app
+scenarios. Do not run those suites manually on hosts or shared resources. PRs
+validate unit contracts, Compose configuration and native image builds.
 
 See [the base decision](../docs/container-base.md). Host physical input and native
 Wayland automation are separate from this private X11 container environment.
