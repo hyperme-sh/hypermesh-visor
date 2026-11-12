@@ -46,6 +46,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var menuAllow: NSMenuItem?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
+    private var approvedLayout: DesktopLayout?
     private var allowed = false
     private var epoch: UInt64 = 0
     private var polling = false
@@ -124,7 +125,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             self.sessionOpen = body["open"] as? Bool ?? false
             self.currentPhase = automation["phase"] as? String ?? "off"
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
-            if self.allowed && !self.permissionsAndMonitor() { self.pause("Permission or input monitor lost", lost: true) }
+            if self.allowed && !self.permissionsAndMonitor() { self.pause("Permission, display layout or input monitor changed", lost: true) }
             self.update()
         }
     }
@@ -135,7 +136,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                        ("Accessibility", CGPreflightPostEventAccess()),
                        ("Input Monitoring", CGPreflightListenEventAccess())].filter { !$0.1 }.map { $0.0 }
         guard missing.isEmpty else { message = "Permission unavailable: " + missing.joined(separator: ", ") + ". Check System Settings, then retry."; update(); return }
-        guard permissionsAndMonitor() else { message = "Permissions are allowed, but the input monitor stopped. Restart Visor; no permission toggles are needed."; update(); return }
+        approvedLayout = try? desktopLayout()
+        guard permissionsAndMonitor() else { message = "Desktop layout or input monitor unavailable. Check connected displays and restart Visor if needed."; update(); return }
         epoch &+= 1
         let generation = epoch
         control(currentPhase == "paused" ? "resume" : "start") { result in
@@ -153,6 +155,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     private func permissionsAndMonitor() -> Bool {
         guard let tap else { return false }
+        guard let approvedLayout, let currentLayout = try? desktopLayout(), currentLayout == approvedLayout else { return false }
         return CGPreflightScreenCaptureAccess() && CGPreflightPostEventAccess() && CGPreflightListenEventAccess() && CGEvent.tapIsEnabled(tap: tap)
     }
     private func installMonitor() {

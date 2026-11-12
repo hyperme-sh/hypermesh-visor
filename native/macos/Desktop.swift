@@ -19,6 +19,47 @@ func integer(_ value: Any?) throws -> Int {
     guard let number = value as? NSNumber else { throw NativeError.invalid }
     return number.intValue
 }
+struct DisplayGeometry: Equatable {
+    let id: CGDirectDisplayID
+    let bounds: CGRect
+}
+struct DesktopLayout: Equatable {
+    let displays: [DisplayGeometry]
+    let bounds: CGRect
+    init(_ displays: [DisplayGeometry]) throws {
+        guard !displays.isEmpty, displays.count <= 16,
+              Set(displays.map { $0.id }).count == displays.count else { throw NativeError.unavailable }
+        var union = CGRect.null
+        for display in displays {
+            let b = display.bounds
+            guard [b.minX, b.minY, b.width, b.height].allSatisfy({ $0.isFinite && $0.rounded() == $0 }),
+                  b.width > 0, b.height > 0 else { throw NativeError.unavailable }
+            union = union.union(b)
+        }
+        guard union.width <= 16384, union.height <= 16384,
+              union.width * union.height <= 16_777_216 else { throw NativeError.unavailable }
+        self.displays = displays.sorted { $0.id < $1.id }; bounds = union
+    }
+    func point(x: Int, y: Int) throws -> CGPoint {
+        guard x >= 0, y >= 0, Double(x) < bounds.width, Double(y) < bounds.height else { throw NativeError.invalid }
+        let point = CGPoint(x: bounds.minX + Double(x), y: bounds.minY + Double(y))
+        guard displays.contains(where: { $0.bounds.contains(point) }) else { throw NativeError.invalid }
+        return point
+    }
+    // CoreGraphics image composition uses an upward y axis; desktop coordinates use downward y.
+    func imageRect(_ display: DisplayGeometry) -> CGRect {
+        CGRect(x: display.bounds.minX - bounds.minX, y: bounds.maxY - display.bounds.maxY,
+               width: display.bounds.width, height: display.bounds.height)
+    }
+}
+func desktopLayout() throws -> DesktopLayout {
+    var count: UInt32 = 0
+    guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0, count <= 16 else { throw NativeError.unavailable }
+    var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+    guard CGGetActiveDisplayList(count, &ids, &count) == .success, Int(count) <= ids.count else { throw NativeError.unavailable }
+    return try DesktopLayout(ids.prefix(Int(count)).map { DisplayGeometry(id: $0, bounds: CGDisplayBounds($0)) })
+}
+
 func moveEvent(point: CGPoint, buttons: Set<UInt32>) -> CGEvent? {
     let button = [UInt32(0), 1, 2].first(where: { buttons.contains($0) })
     let type: CGEventType = button == 0 ? .leftMouseDragged : button == 1 ? .rightMouseDragged : button == 2 ? .otherMouseDragged : .mouseMoved
@@ -30,9 +71,7 @@ func pointer(_ step: [String: Any]) throws {
     switch step["kind"] as? String {
     case "move":
         let x = try integer(step["x"]), y = try integer(step["y"])
-        let bounds = CGDisplayBounds(CGMainDisplayID())
-        guard x >= 0, y >= 0, Double(x) < bounds.width, Double(y) < bounds.height else { throw NativeError.invalid }
-        let target = CGPoint(x: bounds.minX + Double(x), y: bounds.minY + Double(y))
+        let target = try desktopLayout().point(x: x, y: y)
         try post(moveEvent(point: target, buttons: heldButtons))
         sequencePoint = target
     case "button":
@@ -130,7 +169,7 @@ func pacedInput<T>(_ items: [T], checkpoint: () throws -> Void, send: (T) throws
 func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async throws -> [String: Any] {
     switch request["action"] as? String {
     case "info":
-        let bounds = CGDisplayBounds(CGMainDisplayID())
+        let bounds = try desktopLayout().bounds
         let point = CGEvent(source:nil)?.location ?? .zero
         var result: [String: Any] = ["width":Int(bounds.width),"height":Int(bounds.height),
             "x":Int(point.x-bounds.minX),"y":Int(point.y-bounds.minY),
@@ -142,14 +181,24 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
         return result
     case "view":
         guard CGPreflightScreenCaptureAccess() else { throw NativeError.denied }
+        let layout = try desktopLayout()
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: {$0.displayID == CGMainDisplayID()}) else { throw NativeError.unavailable }
-        let bounds = CGDisplayBounds(display.displayID)
-        let configuration = SCStreamConfiguration()
-        configuration.width = Int(bounds.width); configuration.height = Int(bounds.height)
-        configuration.showsCursor = true
-        let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
-        guard let png = NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { throw NativeError.unavailable }
+        guard let canvas = CGContext(data: nil, width: Int(layout.bounds.width), height: Int(layout.bounds.height),
+                                     bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                     bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw NativeError.unavailable }
+        canvas.setFillColor(CGColor(gray: 0, alpha: 1)); canvas.fill(CGRect(origin: .zero, size: layout.bounds.size))
+        for geometry in layout.displays {
+            try checkpoint()
+            guard let display = content.displays.first(where: {$0.displayID == geometry.id}) else { throw NativeError.unavailable }
+            let configuration = SCStreamConfiguration()
+            configuration.width = Int(geometry.bounds.width); configuration.height = Int(geometry.bounds.height)
+            configuration.showsCursor = true
+            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
+            try checkpoint()
+            canvas.draw(image, in: layout.imageRect(geometry))
+        }
+        guard try desktopLayout() == layout, let image = canvas.makeImage(),
+              let png = NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { throw NativeError.unavailable }
         return ["png":png.base64EncodedString()]
     case "pointer":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let steps = request["steps"] as? [[String:Any]], steps.count <= 4096 else { throw NativeError.denied }
@@ -238,6 +287,23 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
     withExtendedLifetime(controller) { app.run() }
 }
 func selfTest() throws {
+    let primary = DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 1920, height: 1080))
+    let left = DisplayGeometry(id: 2, bounds: CGRect(x: -1280, y: -200, width: 1280, height: 1024))
+    let layout = try DesktopLayout([primary, left])
+    precondition(layout.bounds == CGRect(x: -1280, y: -200, width: 3200, height: 1280))
+    let topLeft = try layout.point(x: 0, y: 0)
+    precondition(topLeft == CGPoint(x: -1280, y: -200))
+    let primaryOrigin = try layout.point(x: 1280, y: 200)
+    precondition(primaryOrigin == .zero)
+    precondition(layout.imageRect(left) == CGRect(x: 0, y: 256, width: 1280, height: 1024))
+    precondition(layout.imageRect(primary) == CGRect(x: 1280, y: 0, width: 1920, height: 1080))
+    for (x, y) in [(0, 1279), (1280, 0), (-1, 0), (3200, 200)] {
+        do { _ = try layout.point(x: x, y: y); preconditionFailure("gap or outside point accepted") } catch NativeError.invalid { }
+    }
+    do { _ = try DesktopLayout([DisplayGeometry(id: 1, bounds: CGRect(x: 0, y: 0, width: 10000, height: 10000))]); preconditionFailure("oversized layout accepted") } catch NativeError.unavailable { }
+    let reordered = try DesktopLayout([left, primary])
+    precondition(reordered == layout)
+    print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
         precondition(event.type == expected)
