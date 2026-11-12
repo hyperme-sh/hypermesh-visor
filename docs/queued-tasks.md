@@ -47,7 +47,10 @@ The adapter tracks at most 16 tasks whose terminal status it has not observed.
 At that limit, `task_submit` returns a tool error without submitting work or
 forgetting an older task. Poll `task_status` or use `task_cancel` and confirm a
 terminal status to free a slot; requesting cancellation of a running task alone
-does not free its slot. This limit is separate from the daemon's active queue.
+does not free its slot. A daemon-confirmed missing record also frees its slot:
+another client can cause completed records to be evicted before they are polled.
+Denial, proxy errors and transport failures retain tracking. This limit is
+separate from the daemon's active queue.
 `capabilities` returns the authenticated daemon contract without requiring a
 session or granting desktop access.
 

@@ -561,6 +561,16 @@ fn mcp_disconnect_cancels_only_its_submitted_task() {
 
 #[test]
 fn task_ownership_limit_never_forgets_active_jobs_and_terminal_status_frees_capacity() {
+    check_ownership_capacity("task_status", 200);
+}
+
+#[test]
+fn evicted_task_status_and_cancel_free_tracking_capacity() {
+    check_ownership_capacity("task_status", 404);
+    check_ownership_capacity("task_cancel", 404);
+}
+
+fn check_ownership_capacity(resolution_tool: &'static str, resolution_status: u16) {
     let tasks: Vec<String> = (0..17).map(|_| uuid::Uuid::new_v4().to_string()).collect();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -580,19 +590,28 @@ fn task_ownership_limit_never_forgets_active_jobs_and_terminal_status_frees_capa
             assert!(wire.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
         }
         // The seventeenth submission must be refused before contacting the daemon.
-        // Confirm a later task finished while the oldest remains active.
+        // Confirm a later task finished or was evicted while the oldest remains active.
         let (stream, _) = accept_bounded!(listener);
         let wire = exchange(
             stream,
-            200,
+            resolution_status,
             "application/json",
-            serde_json::to_vec(&json!({"id":expected[15],"status":"completed"}))
-                .unwrap()
-                .as_slice(),
+            serde_json::to_vec(&if resolution_status == 404 {
+                json!({"error":"session closed or unknown"})
+            } else {
+                json!({"id":expected[15],"status":"completed"})
+            })
+            .unwrap()
+            .as_slice(),
             false,
         );
         assert!(wire.starts_with(&format!(
-            "GET /session/{SESSION}/tasks/{} HTTP/1.1",
+            "{} /session/{SESSION}/tasks/{} HTTP/1.1",
+            if resolution_tool == "task_status" {
+                "GET"
+            } else {
+                "DELETE"
+            },
             expected[15]
         )));
         let (stream, _) = accept_bounded!(listener);
@@ -624,7 +643,7 @@ fn task_ownership_limit_never_forgets_active_jobs_and_terminal_status_frees_capa
         json!({"steps":[{"tool":"view","arguments":{}}]}),
     );
     let mut requests = vec![submit.clone(); 17];
-    requests.push(call("task_status", json!({"task_id":tasks[15]})));
+    requests.push(call(resolution_tool, json!({"task_id":tasks[15]})));
     requests.push(submit);
     let responses = run(&format!("http://{address}"), false, SESSION, &requests);
     server.join().unwrap();
@@ -638,6 +657,65 @@ fn task_ownership_limit_never_forgets_active_jobs_and_terminal_status_frees_capa
         .unwrap()
         .contains("ownership limit"));
     assert_eq!(responses[18]["result"]["isError"], false);
+}
+
+#[test]
+fn uncertain_task_lookup_keeps_disconnect_ownership() {
+    for (status, mime, body) in [
+        (
+            403,
+            "application/json",
+            r#"{"error":"session closed or unknown"}"#,
+        ),
+        (404, "text/html", r#"{"error":"session closed or unknown"}"#),
+        (
+            404,
+            "application/json",
+            r#"{"error":"proxy route missing"}"#,
+        ),
+        (
+            200,
+            "application/json",
+            r#"{"error":"session closed or unknown"}"#,
+        ),
+    ] {
+        let task = uuid::Uuid::new_v4().to_string();
+        let expected = task.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = accept_bounded!(listener);
+            exchange(
+                stream,
+                202,
+                "application/json",
+                serde_json::to_vec(&json!({"id":expected,"status":"queued"}))
+                    .unwrap()
+                    .as_slice(),
+                false,
+            );
+            let (stream, _) = accept_bounded!(listener);
+            exchange(stream, status, mime, body.as_bytes(), false);
+            let (stream, _) = accept_bounded!(listener);
+            let wire = exchange(stream, 200, "application/json", b"{}", false);
+            assert!(wire.starts_with(&format!(
+                "DELETE /session/{SESSION}/tasks/{expected} HTTP/1.1"
+            )));
+        });
+        run(
+            &format!("http://{address}"),
+            false,
+            SESSION,
+            &[
+                call(
+                    "task_submit",
+                    json!({"steps":[{"tool":"view","arguments":{}}]}),
+                ),
+                call("task_status", json!({"task_id":task})),
+            ],
+        );
+        server.join().unwrap();
+    }
 }
 
 #[test]

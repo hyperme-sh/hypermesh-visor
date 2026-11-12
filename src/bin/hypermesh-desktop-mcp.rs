@@ -27,6 +27,11 @@ struct VisorResponse {
     body: Vec<u8>,
 }
 
+struct CallResult {
+    content: Value,
+    missing_task: Option<String>,
+}
+
 enum VisorEndpoint {
     Unix(PathBuf),
     Http { base: String, token: Option<String> },
@@ -171,11 +176,18 @@ fn main() {
                             // Never discard ownership of a possibly active job. The
                             // daemon's queue limit does not bound jobs this client has
                             // submitted over time, including externally cancelled jobs.
-                            Ok(failure("task ownership limit reached; use task_status or task_cancel to confirm a tracked task is terminal before submitting another".to_owned()))
+                            Ok(CallResult {
+                                content: failure("task ownership limit reached; use task_status or task_cancel to confirm a tracked task is terminal or missing before submitting another".to_owned()),
+                                missing_task: None,
+                            })
                         } else {
                             handle_call(&visor, &session, msg.get("params"))
                         };
                         if let Ok(result) = &result {
+                            if let Some(id) = &result.missing_task {
+                                owned_tasks.retain(|known| known != id);
+                            }
+                            let result = &result.content;
                             let name = msg.pointer("/params/name").and_then(Value::as_str);
                             if matches!(name, Some("task_submit" | "task_status" | "task_cancel"))
                                 && result["isError"] == false
@@ -209,7 +221,9 @@ fn main() {
                             }
                         }
                         let envelope = match result {
-                            Ok(result) => json!({"jsonrpc":"2.0", "id":id, "result":result}),
+                            Ok(result) => {
+                                json!({"jsonrpc":"2.0", "id":id, "result":result.content})
+                            }
                             Err(message) => json!({"jsonrpc":"2.0", "id":id,
                                 "error":{"code":-32602,"message":message}}),
                         };
@@ -331,7 +345,7 @@ fn handle_call(
     visor: &VisorEndpoint,
     session: &str,
     params: Option<&Value>,
-) -> Result<Value, String> {
+) -> Result<CallResult, String> {
     let params = params
         .and_then(Value::as_object)
         .ok_or("params must be an object")?;
@@ -352,9 +366,32 @@ fn handle_call(
             token.as_deref(),
         ),
     };
-    Ok(match response {
-        Ok(response) => tool_result(tool, response),
+    let mut missing_task = None;
+    let content = match response {
+        Ok(response) => {
+            // The daemon evicts only terminal records. A confirmed absent record
+            // (or closed session) cannot contain active work owned by this client.
+            // Do not reclaim on proxy 404s, denial, or uncertain transport errors.
+            if matches!(tool, "task_status" | "task_cancel")
+                && response.status == 404
+                && response
+                    .mime
+                    .split(';')
+                    .next()
+                    .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("application/json"))
+                && serde_json::from_slice::<Value>(&response.body)
+                    .ok()
+                    .is_some_and(|body| body["error"] == "session closed or unknown")
+            {
+                missing_task = args["task_id"].as_str().map(str::to_owned);
+            }
+            tool_result(tool, response)
+        }
         Err(error) => failure(format!("{tool}: {error}")),
+    };
+    Ok(CallResult {
+        content,
+        missing_task,
     })
 }
 
