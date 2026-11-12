@@ -341,13 +341,18 @@ func selfTest() throws {
     canvas.draw(fixture, in: vertical.imageRect(above))
     let encoded = NSBitmapImageRep(cgImage: canvas.makeImage()!).representation(using: .png, properties: [:])!
     let bitmap = NSBitmapImageRep(data: encoded)!
-    let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.sRGB)!
-    let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.sRGB)!
-    let second = bitmap.colorAt(x: 0, y: 1)!.usingColorSpace(.sRGB)!
-    FileHandle.standardError.write(Data("Synthetic PNG rows: top=\(top) second=\(second) bottom=\(bottom)\n".utf8))
-    try verifyNativeUnit(top.greenComponent > 0.99)
-    try verifyNativeUnit(second.blueComponent > 0.99)
-    try verifyNativeUnit(bottom.redComponent > 0.99)
+    let reference = NSBitmapImageRep(data: NSBitmapImageRep(cgImage: fixture).representation(using: .png, properties: [:])!)!
+    func pixel(_ rep: NSBitmapImageRep, _ y: Int) -> [UInt] {
+        var samples = [UInt](repeating: 0, count: rep.samplesPerPixel)
+        rep.getPixel(&samples, atX: 0, y: y)
+        return samples
+    }
+    // Compare encoded pixels, not NSColor's display-dependent floating-point conversion.
+    let top = pixel(bitmap, 0), second = pixel(bitmap, 1), bottom = pixel(bitmap, 3)
+    FileHandle.standardError.write(Data("Synthetic PNG rows: \(top), \(second), \(bottom); source: \(pixel(reference, 0)), \(pixel(reference, 1))\n".utf8))
+    try verifyNativeUnit(top == pixel(reference, 0))
+    try verifyNativeUnit(second == pixel(reference, 1))
+    try verifyNativeUnit(top != second && bottom != top && bottom != second)
     print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
