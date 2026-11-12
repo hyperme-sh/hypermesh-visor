@@ -109,6 +109,8 @@ jobs:
           } > qualification/candidate.txt
 
       - name: Exercise installed binaries
+        env:
+          HYPERMESH_TEST_GUEST: nobody
         run: |
           # No source build or PATH-selected executable may stand in for the package.
           test ! -e target/debug/hypermesh-visor

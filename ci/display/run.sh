@@ -2428,12 +2428,15 @@ scenario_auto_resume() {
 
 # A second account. sudo --chdir is not permitted, so commands run from /tmp.
 as_guest() {
-  ( cd /tmp && sudo -n -u hm-visor-guest "$@" )
+  ( cd /tmp && sudo -n -u "$HYPERMESH_TEST_GUEST" "$@" )
 }
 
 ensure_guest() {
-  if ! id -u hm-visor-guest >/dev/null 2>&1; then
-    sudo useradd --system --no-create-home --shell /usr/sbin/nologin hm-visor-guest
+  local guest=${HYPERMESH_TEST_GUEST:?Infra must select the provisioned test guest}
+  local guest_uid
+  guest_uid=$(id -u "$guest") || die "provisioned test guest does not exist"
+  if [[ $guest_uid -eq 0 || $guest_uid -eq $(id -u) ]]; then
+    die "test guest must be a distinct non-root user"
   fi
 }
 
