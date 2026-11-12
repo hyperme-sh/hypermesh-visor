@@ -23,6 +23,15 @@ for limits and supported tools.
 
 For the non-graphical build and its current limits, see [headless build](docs/headless.md).
 
+| Linux option | Native architectures | Availability |
+| --- | --- | --- |
+| Desktop glibc packages | x86_64, aarch64 | Published v0.1.0; current main has additional features. See [release packages](#release-packages). |
+| Alpine/static headless bundles | x86_64, aarch64 | Native CI APK, tarball and runtime image; no published Alpine release yet. See [Alpine installation](docs/headless.md#alpine-installation). |
+
+Headless bundles include Conductor and omit desktop, D-Bus and Secret Service
+dependencies. Windows/macOS distribution and native Wayland input remain separate
+work; the headless option does not enable desktop automation.
+
 Useful links: [downloads](https://hyperme.sh/visor),
 [release packages](#release-packages), [capability reference](docs/verb-contract.md),
 [MCP setup](docs/mcp-discovery.md), [container deployment](container/README.md),
