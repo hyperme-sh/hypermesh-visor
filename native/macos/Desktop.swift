@@ -62,6 +62,14 @@ struct DesktopLayout: Equatable {
                width: display.bounds.width, height: display.bounds.height)
     }
 }
+func drawDesktopImage(_ image: CGImage, on canvas: CGContext, in rect: CGRect) {
+    // Keep source rows top-down within each destination rectangle.
+    canvas.saveGState()
+    canvas.translateBy(x: rect.minX, y: rect.minY + rect.height)
+    canvas.scaleBy(x: 1, y: -1)
+    canvas.draw(image, in: CGRect(origin: .zero, size: rect.size))
+    canvas.restoreGState()
+}
 func desktopLayout() throws -> DesktopLayout {
     var count: UInt32 = 0
     guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0, count <= 16 else { throw NativeError.unavailable }
@@ -76,12 +84,12 @@ func moveEvent(point: CGPoint, buttons: Set<UInt32>) -> CGEvent? {
     return CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point,
                    mouseButton: CGMouseButton(rawValue: button ?? 0)!)
 }
-func pointer(_ step: [String: Any]) throws {
+func pointer(_ step: [String: Any], layout: DesktopLayout) throws {
     let point = sequencePoint ?? CGEvent(source: nil)?.location ?? .zero
     switch step["kind"] as? String {
     case "move":
         let x = try integer(step["x"]), y = try integer(step["y"])
-        let target = try desktopLayout().point(x: x, y: y)
+        let target = try layout.point(x: x, y: y)
         try post(moveEvent(point: target, buttons: heldButtons))
         sequencePoint = target
     case "button":
@@ -205,14 +213,17 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
             configuration.showsCursor = true
             let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
             try checkpoint()
-            canvas.draw(image, in: layout.imageRect(geometry))
+            drawDesktopImage(image, on: canvas, in: layout.imageRect(geometry))
         }
         guard try desktopLayout() == layout, let image = canvas.makeImage(),
               let png = NSBitmapImageRep(cgImage:image).representation(using:.png,properties:[:]) else { throw NativeError.unavailable }
         return ["png":png.base64EncodedString()]
     case "pointer":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let steps = request["steps"] as? [[String:Any]], steps.count <= 4096 else { throw NativeError.denied }
-        try await pacedInput(steps, checkpoint: checkpoint, send: pointer)
+        // Keep one coordinate origin for the sequence. Checkpoints reject a changed layout;
+        // never reinterpret an earlier frame's coordinates against a newly attached display.
+        let layout = try desktopLayout()
+        try await pacedInput(steps, checkpoint: checkpoint, send: { try pointer($0, layout: layout) })
         return [:]
     case "keyboard":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let strokes = request["strokes"] as? [[String:Any]], strokes.count <= 4096 else { throw NativeError.denied }
@@ -335,13 +346,16 @@ func selfTest() throws {
     let fixture = CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
                           provider: CGDataProvider(data: rows as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
-    canvas.draw(fixture, in: vertical.imageRect(above))
+    drawDesktopImage(fixture, on: canvas, in: vertical.imageRect(above))
     let encoded = NSBitmapImageRep(cgImage: canvas.makeImage()!).representation(using: .png, properties: [:])!
     let bitmap = NSBitmapImageRep(data: encoded)!
     let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
     let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.deviceRGB)!
     let second = bitmap.colorAt(x: 0, y: 1)!.usingColorSpace(.deviceRGB)!
-    try verifyNativeUnit(top.greenComponent > 0.99 && second.blueComponent > 0.99 && bottom.redComponent > 0.99)
+    FileHandle.standardError.write(Data("Synthetic PNG rows: top=\(top) second=\(second) bottom=\(bottom)\n".utf8))
+    try verifyNativeUnit(top.greenComponent > 0.99)
+    try verifyNativeUnit(second.blueComponent > 0.99)
+    try verifyNativeUnit(bottom.redComponent > 0.99)
     print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
