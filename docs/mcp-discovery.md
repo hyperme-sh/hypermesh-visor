@@ -824,7 +824,8 @@ and unknown body fields are refused.
 
 `list` sends `resources/list`; `templates` sends `resources/templates/list`.
 Their optional `params.cursor` passes an opaque cursor for one page. `read` sends
-`resources/read` and requires `params.uri`. URIs and cursors are limited to 4096
+`resources/read` and requires an absolute URI in `params.uri`, without whitespace
+or control characters. URIs and cursors are limited to 4096
 bytes. Visor does not fetch URI locations, expand templates or follow pages
 itself. Responses are limited to 256 entries and 1 MiB of JSON; text/blob shape
 and binary base64 encoding are validated. Returned metadata and content remain

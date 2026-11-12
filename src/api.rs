@@ -3454,6 +3454,10 @@ mod tests {
                 "POST",
                 "/session/00000000-0000-0000-0000-000000000001/mcp/call",
             ),
+            (
+                "POST",
+                "/session/00000000-0000-0000-0000-000000000001/mcp/resources",
+            ),
         ];
         for (method, path) in routes {
             let missing = status_with(addr, method, path, Some("{}".into()), None).await;

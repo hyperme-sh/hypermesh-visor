@@ -12,18 +12,29 @@ fn text(value: Option<&Value>, limit: usize) -> bool {
         .is_some_and(|s| !s.is_empty() && s.len() <= limit && !s.contains('\0'))
 }
 
+fn cursor(value: &Value) -> bool {
+    value.as_str().is_some_and(|s| s.len() <= 4096)
+}
+
+fn uri(value: Option<&Value>) -> bool {
+    text(value, 4096)
+        && value.and_then(Value::as_str).is_some_and(|s| {
+            !s.chars().any(|c| c.is_control() || c.is_whitespace()) && url::Url::parse(s).is_ok()
+        })
+}
+
 pub(super) fn validate_request(method: &str, params: &Value) -> Result<(), McpError> {
     let object = params.as_object().ok_or_else(invalid)?;
     match method {
         "resources/list" | "resources/templates/list" => {
             if object.keys().any(|k| k != "cursor")
-                || object.get("cursor").is_some_and(|v| !text(Some(v), 4096))
+                || object.get("cursor").is_some_and(|v| !cursor(v))
             {
                 return Err(invalid());
             }
         }
         "resources/read" => {
-            if object.len() != 1 || !text(object.get("uri"), 4096) {
+            if object.len() != 1 || !uri(object.get("uri")) {
                 return Err(invalid());
             }
         }
@@ -48,17 +59,23 @@ pub(super) fn validate_result(method: &str, value: &Value) -> Result<(), McpErro
         .ok_or_else(invalid)?;
     if value
         .get("nextCursor")
-        .is_some_and(|v| method == "resources/read" || !text(Some(v), 4096))
+        .is_some_and(|v| method == "resources/read" || !cursor(v))
     {
         return Err(invalid());
     }
     for row in rows {
-        let uri = if field == "resourceTemplates" {
+        let identity = if field == "resourceTemplates" {
             "uriTemplate"
         } else {
             "uri"
         };
-        if !row.is_object() || !text(row.get(uri), 4096) {
+        if !row.is_object()
+            || !(if field == "resourceTemplates" {
+                text(row.get(identity), 4096)
+            } else {
+                uri(row.get(identity))
+            })
+        {
             return Err(invalid());
         }
         for key in ["mimeType", "description", "title"] {
@@ -93,6 +110,7 @@ mod tests {
     fn requests_are_bounded_and_never_expand_to_other_methods() {
         for method in ["resources/list", "resources/templates/list"] {
             validate_request(method, &json!({})).unwrap();
+            validate_request(method, &json!({"cursor":""})).unwrap();
             validate_request(method, &json!({"cursor":"opaque"})).unwrap();
             assert!(validate_request(method, &json!({"uri":"file:///secret"})).is_err());
         }
@@ -100,12 +118,15 @@ mod tests {
         for params in [
             json!({}),
             json!({"uri":""}),
-            json!({"uri":"x","extra":true}),
-            json!({"uri":"x".repeat(4097)}),
+            json!({"uri":"relative/path"}),
+            json!({"uri":"https://example.test/a b"}),
+            json!({"uri":"https://example.test/\n"}),
+            json!({"uri":"memory://x","extra":true}),
+            json!({"uri":"memory://x".repeat(4097)}),
         ] {
             assert!(validate_request("resources/read", &params).is_err());
         }
-        assert!(validate_request("resources/subscribe", &json!({"uri":"x"})).is_err());
+        assert!(validate_request("resources/subscribe", &json!({"uri":"memory://x"})).is_err());
     }
     #[test]
     fn results_validate_pagination_content_and_binary_encoding() {
@@ -120,15 +141,15 @@ mod tests {
         )
         .unwrap();
         for content in [
-            json!({"uri":"x","text":""}),
-            json!({"uri":"x","blob":"AAE="}),
+            json!({"uri":"memory://x","text":""}),
+            json!({"uri":"memory://x","blob":"AAE="}),
         ] {
             validate_result("resources/read", &json!({"contents":[content]})).unwrap();
         }
         for content in [
-            json!({"uri":"x","blob":"not base64"}),
-            json!({"uri":"x","text":"private","blob":"AA=="}),
-            json!({"uri":"x","text":null}),
+            json!({"uri":"memory://x","blob":"not base64"}),
+            json!({"uri":"memory://x","text":"private","blob":"AA=="}),
+            json!({"uri":"memory://x","text":null}),
             json!({"text":"private"}),
         ] {
             let error = validate_result("resources/read", &json!({"contents":[content]}))
@@ -141,12 +162,12 @@ mod tests {
         );
         assert!(validate_result(
             "resources/list",
-            &json!({"resources":vec![json!({"uri":"x","name":"x"});257]})
+            &json!({"resources":vec![json!({"uri":"memory://x","name":"x"});257]})
         )
         .is_err());
         assert!(validate_result(
             "resources/read",
-            &json!({"contents":[{"uri":"x","text":"x".repeat(1024*1024)}]})
+            &json!({"contents":[{"uri":"memory://x","text":"x".repeat(1024*1024)}]})
         )
         .is_err());
     }
