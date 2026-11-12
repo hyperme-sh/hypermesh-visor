@@ -50,6 +50,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 x11rb = { version = "0.13", features = ["xtest"], optional = true }
 zbus = { version = "4.4", optional = true }
 zeroize = { version = "1", features = ["derive"] }
+jsonschema = { version = "0.58.6", default-features = false }
 
 [dev-dependencies]
 http = "1"

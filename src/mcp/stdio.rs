@@ -373,23 +373,35 @@ impl AttachedServer {
                 "MCP catalog invalidated; wait for refresh or reconnect",
             ));
         }
-        if self
-            .tools
-            .iter()
-            .any(|info| info.name == tool && !info.supports_direct_call())
-        {
+        let info = self.tools.iter().find(|info| info.name == tool)
+            .ok_or_else(|| McpError::message("MCP tool is not in the current catalog"))?;
+        if !info.supports_direct_call() {
             return Err(McpError::message(
                 "MCP tool requires task execution, which is not supported",
             ));
         }
+        if !arguments.is_object() {
+            return Err(McpError::message("MCP tool arguments must be an object"));
+        }
+        if let Some(schema) = &info.input_schema {
+            super::schema::validate(schema, &arguments)?;
+        }
+        let output_schema = info.output_schema.as_ref().map(super::schema::compile).transpose()?;
         let response = self.request("tools/call", json!({"name":tool,"arguments":arguments}))?;
         if response.get("error").is_some() {
             return Err(McpError::message("MCP tool call rejected"));
         }
-        response
-            .get("result")
-            .cloned()
-            .ok_or_else(|| McpError::message("MCP tool call missing result"))
+        let result = response.get("result").cloned()
+            .ok_or_else(|| McpError::message("MCP tool call missing result"))?;
+        if let Some(schema) = output_schema {
+            // Tool failures may omit structured content. Never retry a completed call.
+            if result.get("isError") != Some(&Value::Bool(true)) {
+                let structured = result.get("structuredContent")
+                    .ok_or_else(|| McpError::message("MCP tool structured result missing"))?;
+                super::schema::validate_compiled(&schema, structured)?;
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -1083,6 +1095,56 @@ for line in sys.stdin:
         bundle.restore_after_refresh(owned);
         assert_eq!(bundle.healthy_server_names(), ["fixture"]);
         drop(bundle);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn schema_contracts_gate_dispatch_and_never_retry_completed_calls() {
+        let dir = std::env::temp_dir().join(format!("visor-schema-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        let script = dir.join("server.py");
+        fs::write(&script, r#"
+import json, pathlib, sys
+root=pathlib.Path(__file__).parent
+for line in sys.stdin:
+    m=json.loads(line); method=m.get('method')
+    if method=='initialize':
+        result={'protocolVersion':'2024-11-05','capabilities':{'tools':{}},'serverInfo':{'name':'fixture','version':'1'}}
+    elif method=='tools/list':
+        schema={'type':'object','required':['value'],'additionalProperties':False,'properties':{'value':{'type':'integer','minimum':1}}}
+        result={'tools':[{'name':'entry','inputSchema':schema,'outputSchema':schema}]}
+    elif method=='tools/call':
+        with (root/'calls').open('a') as out: out.write('call\n')
+        value=m['params']['arguments']['value']
+        result={'content':[],'structuredContent':{'value':value if value==1 else 'private result'}}
+        if value==3: result={'isError':True,'content':[{'type':'text','text':'tool failed'}]}
+    else: continue
+    print(json.dumps({'jsonrpc':'2.0','id':m['id'],'result':result}),flush=True)
+"#).unwrap();
+        let spec = ServerSpec { r#type: Some("stdio".into()), command: Some("python3".into()),
+            args: vec![script.to_string_lossy().into_owned()], env: BTreeMap::new(),
+            url: None, headers: BTreeMap::new(), cwd: None, enabled: None };
+        let mut server = attach_one("fixture", &spec).unwrap();
+        for args in [json!({}), json!({"value":0}), json!({"value":"private input"}), json!([])] {
+            let error = server.call_tool("entry", args).unwrap_err().to_string();
+            assert!(!error.contains("private input"));
+        }
+        assert!(server.call_tool("absent", json!({"value":1})).is_err());
+        assert!(!dir.join("calls").exists());
+        let original_output = server.tools[0].output_schema.clone();
+        for schema in [json!({"type":"not-a-type"}), json!({"$ref":"file:///private"}), json!({"description":"x".repeat(65537)})] {
+            server.tools[0].output_schema = Some(schema);
+            assert!(server.call_tool("entry", json!({"value":1})).is_err());
+            assert!(!dir.join("calls").exists());
+        }
+        server.tools[0].output_schema = original_output;
+        assert_eq!(server.call_tool("entry", json!({"value":1})).unwrap()["structuredContent"]["value"], 1);
+        let error = server.call_tool("entry", json!({"value":2})).unwrap_err().to_string();
+        assert!(!error.contains("private result"));
+        assert_eq!(fs::read_to_string(dir.join("calls")).unwrap(), "call\ncall\n");
+        assert_eq!(server.call_tool("entry", json!({"value":3})).unwrap()["isError"], true);
+        assert_eq!(fs::read_to_string(dir.join("calls")).unwrap(), "call\ncall\ncall\n");
+        drop(server);
         fs::remove_dir_all(dir).unwrap();
     }
 

@@ -447,9 +447,9 @@ All metadata, including schemas, counts toward the existing 8 MiB catalog limit.
 
 Schemas must be JSON objects when supplied; title/description must be strings.
 For compatibility, servers that omit input schemas remain discoverable, with
-`inputSchema` absent rather than an invented no-argument schema. This is not full
-MCP schema conformance validation: schema keywords and argument/result values
-are not evaluated here. References are retained as data and never fetched.
+`inputSchema` absent rather than an invented no-argument schema. Discovery
+preserves schemas as metadata; the call path separately evaluates advertised
+input and output schemas as described below. External references are never fetched.
 Downstream clients can use the supplied schemas to construct calls, but must
 still treat server metadata as untrusted. Metadata does not grant tool permission
 or change call approval. Optional `annotations` and `execution` objects are also preserved. Known
@@ -839,3 +839,23 @@ retaining the operation's audit outcome. Audit rows contain only the server,
 operation, decision and outcome, never the resource URI, cursor or contents.
 No automatic retries, subscriptions, filesystem access or new credentials are
 introduced. Resource access uses the existing session transport authorization.
+
+### Tool schema validation
+
+Calls use the current tool catalog and require object arguments. When a server
+advertises `inputSchema`, Visor validates arguments before dispatch. When it
+advertises `outputSchema`, successful results must include matching
+`structuredContent`. A tool-reported error may omit that content. A rejected
+result is never retried: the remote operation may already have taken effect.
+
+Validation runs locally with external schema retrieval disabled, including file
+and HTTP references. Local definitions work. Invalid or unresolved schemas fail
+closed for calls while remaining visible as catalog metadata. Diagnostic errors
+omit argument values, result values and schema paths. Servers that omit schemas
+retain object-argument compatibility; this is not a claim that those calls have
+a validated schema.
+
+Schemas are limited to 64 KiB, 4,096 nodes and 32 levels; validated instances to
+1 MiB, 16,384 nodes and 32 levels. Regex compilation and backtracking are bounded.
+Schema checks do not grant permission, interpret tool descriptions as policy or
+replace the explicit caller decision.
