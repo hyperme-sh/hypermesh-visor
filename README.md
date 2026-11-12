@@ -113,6 +113,14 @@ and saves `compact_mode` in `~/.config/hypermesh/companion.toml`. Hover shows
 session/tool details and the current status. Usage is labeled unavailable until
 a measured token/contract source is connected. Menus and the Continue prompt
 stay expanded; clicking during automation keeps the existing pause behavior.
+The **Session CLI** menu action opens a terminal bound to the active session.
+It uses the installed `hypermesh` CLI and its existing renter credentials. Enter
+one prompt per line; `/quit` or EOF closes the terminal. Each input line is limited
+to 16 KiB. Failed prompts are not retried, and the terminal never follows a later
+session automatically. The same entry point is
+`hypermesh-companion --session-cli <session-uuid>`. Prompt text goes through a pipe; no prompt body, session credential or key
+is added to command arguments. The generic **Open CLI** action remains available.
+
 Compact mode starts off unless explicitly selected. This is the local compact
 surface for #89; multi-companion selection and forum/editor/CLI destinations
 remain separate work.

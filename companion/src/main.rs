@@ -21,6 +21,7 @@ mod mcp_trust_gui;
 mod pages;
 mod pointer;
 mod prompt;
+mod session_cli;
 mod settings;
 #[path = "../../src/telemetry.rs"]
 mod telemetry;
@@ -143,6 +144,19 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("--session-cli") => {
+            let Some(session) = args.next().filter(|_| args.next().is_none()) else {
+                eprintln!("hypermesh-companion: --session-cli needs exactly one session UUID");
+                return ExitCode::from(2);
+            };
+            match session_cli::start(&session) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("hypermesh-companion: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         Some("--dump-frames") => {
             let Some(dir) = args.next() else {
                 eprintln!("hypermesh-companion: --dump-frames needs a directory");
@@ -156,7 +170,7 @@ fn main() -> ExitCode {
         }
         Some("-h" | "--help") => {
             println!(
-                "hypermesh-companion\n  --mcp-connections   refresh or reconnect session MCP attachments\n  --mcp-status        show focused-app routing and attachment status\n  --mcp-servers       edit MCP servers in desktop dialogs\n  --mcp-trust-gui     review and revoke MCP trust in desktop dialogs\n  --mcp-profiles      edit MCP profiles in desktop dialogs\n  --mcp-trust         review discovery sources and trust snapshots\n  --dump-frames DIR   write idle, automation and compact render samples\n  --prompt TEXT --session ID [--model NAME] [--visor URL]\n      send one prompt on the visor stream\n\nThe bug plays the animated states in companion/assets/states.\nWhile the visor drives the desktop the pointer is the bug cursor.\nBug cursor outside an automation is off unless companion.toml sets bug_cursor.\nsleep_after_secs (default 900) and automation_resume_secs (default 120)\nare read from that file at startup."
+                "hypermesh-companion\n  --session-cli ID   open prompt entry for an existing session\n  --mcp-connections   refresh or reconnect session MCP attachments\n  --mcp-status        show focused-app routing and attachment status\n  --mcp-servers       edit MCP servers in desktop dialogs\n  --mcp-trust-gui     review and revoke MCP trust in desktop dialogs\n  --mcp-profiles      edit MCP profiles in desktop dialogs\n  --mcp-trust         review discovery sources and trust snapshots\n  --dump-frames DIR   write idle, automation and compact render samples\n  --prompt TEXT --session ID [--model NAME] [--visor URL]\n      send one prompt on the visor stream\n\nThe bug plays the animated states in companion/assets/states.\nWhile the visor drives the desktop the pointer is the bug cursor.\nBug cursor outside an automation is off unless companion.toml sets bug_cursor.\nsleep_after_secs (default 900) and automation_resume_secs (default 120)\nare read from that file at startup."
             );
             ExitCode::SUCCESS
         }

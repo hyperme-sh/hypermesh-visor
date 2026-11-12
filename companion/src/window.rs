@@ -37,6 +37,7 @@ struct App {
     pose: Pose,
     menu: bool,
     compact: bool,
+    session_id: Option<String>,
     eyes_follow: bool,
     bug_cursor: bool,
     sleep_after_ms: u64,
@@ -90,6 +91,7 @@ pub fn run() -> Result<(), String> {
         pose: Pose::Idle,
         menu: false,
         compact: settings::compact_mode(&config),
+        session_id: None,
         eyes_follow: settings::eyes_follow_pointer(&config),
         bug_cursor: settings::bug_cursor(&config),
         sleep_after_ms: settings::sleep_after_secs(&config).saturating_mul(1000),
@@ -599,6 +601,11 @@ fn sync_cursor(
     now_ms: u64,
     sample_age_ms: u64,
 ) -> Result<(), String> {
+    app.session_id = if snap.connected {
+        snap.session_id.clone()
+    } else {
+        None
+    };
     app.pose = if snap.connected {
         snap.pose.clone()
     } else {
@@ -742,6 +749,27 @@ fn on_click(
                     app.menu = false;
                 }
                 Err(err) => *app.status.lock().unwrap() = err,
+            }
+        }
+        Action::OpenSessionCli => {
+            app.menu = false;
+            let result = app
+                .session_id
+                .as_deref()
+                .ok_or_else(|| "No active session is available".to_owned())
+                .and_then(|session| {
+                    let executable = std::env::current_exe()
+                        .map_err(|_| "could not locate the companion executable".to_owned())?;
+                    let executable = executable.to_str().ok_or("companion path is not UTF-8")?;
+                    open_terminal_command(&[
+                        executable.into(),
+                        "--session-cli".into(),
+                        session.into(),
+                    ])
+                    .map_err(|_| "could not open a terminal".to_owned())
+                });
+            if let Err(error) = result {
+                *app.status.lock().unwrap() = error;
             }
         }
         Action::OpenCli => {
