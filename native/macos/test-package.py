@@ -45,9 +45,20 @@ def verify(root):
     for name in ['hypermesh', 'hypermesh-desktop-mcp']:
         assert os.access(root/'bin'/name, os.X_OK)
     assert (root/'README.md').is_file()
+    for state in ('idle', 'automation', 'disconnected'):
+        for frame in range(6 if state == 'disconnected' else 8):
+            path = root/APP/'Resources/companion'/f'{state}_{frame}_128.png'
+            if path.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
+                raise ValueError('Missing native companion frame')
 
 
 class LauncherContracts(unittest.TestCase):
+    def test_native_mascot_source_frames_exist(self):
+        assets = Path(__file__).resolve().parents[2]/'companion/assets/states'
+        for state, count in [('idle', 8), ('automation', 8), ('disconnected', 6)]:
+            for frame in range(count):
+                self.assertEqual((assets/f'{state}_{frame}_128.png').read_bytes()[:8], b'\x89PNG\r\n\x1a\n')
+
     def test_paths_arguments_and_runtime_selection(self):
         with tempfile.TemporaryDirectory(prefix="visor's bundle ") as directory:
             root = Path(directory)
