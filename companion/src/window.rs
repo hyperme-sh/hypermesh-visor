@@ -97,7 +97,14 @@ pub fn run() -> Result<(), String> {
         sleep_after_ms: settings::sleep_after_secs(&config).saturating_mul(1000),
         status: Arc::new(Mutex::new(String::new())),
         login_busy: Arc::new(Mutex::new(false)),
-        machine: Machine::new(settings::automation_resume_secs(&config).saturating_mul(1000)),
+        machine: {
+            let machine = Machine::new(settings::automation_resume_secs(&config).saturating_mul(1000));
+            if std::env::var("HYPERMESH_CONTAINER_UNATTENDED").as_deref() == Ok("1") {
+                machine.without_idle_resume()
+            } else {
+                machine
+            }
+        },
         reel: Reel::new(Mascot::Disconnected),
         poller: Poller::new(),
         last_used: Instant::now(),
