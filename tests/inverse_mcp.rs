@@ -741,7 +741,7 @@ fn initialization_negotiates_before_tools_and_notifications_never_reply() {
         json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}),
         json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
         json!({"jsonrpc":"2.0","id":5,"method":"tools/list"}),
-        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":5}}),
+        json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"unknown-completed-request"}}),
         initialize("2024-11-05"),
         json!({"jsonrpc":"1.0","id":6,"method":"tools/list"}),
     ];
@@ -1050,4 +1050,248 @@ fn resource_tracking_case(status: u16, mime: &'static str, body: &'static [u8], 
     if status == 404 {
         assert_eq!(replies[2]["error"]["code"], -32002);
     }
+}
+
+struct InteractiveClient {
+    child: std::process::Child,
+    input: Option<std::process::ChildStdin>,
+    output: std::sync::mpsc::Receiver<Value>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+impl InteractiveClient {
+    fn new(endpoint: &str, unix: bool) -> Self {
+        use std::io::BufRead;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_hypermesh-desktop-mcp"));
+        command
+            .env("HYPERMESH_SESSION_ID", SESSION)
+            .env_remove("APPLICATIONINSIGHTS_CONNECTION_STRING")
+            .env_remove("HYPERMESH_VISOR_TOKEN")
+            .env_remove("HYPERMESH_VISOR_URL")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        if unix {
+            command.env("HYPERMESH_RUNTIME_DIR", endpoint);
+        } else {
+            command
+                .env("HYPERMESH_VISOR_URL", endpoint)
+                .env("HYPERMESH_VISOR_TOKEN", "test-bearer");
+        }
+        let mut child = command.spawn().unwrap();
+        let input = child.stdin.take();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, output) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stdout).lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                if tx.send(serde_json::from_str(&line).unwrap()).is_err() {
+                    break;
+                }
+            }
+        });
+        let mut client = Self {
+            child,
+            input,
+            output,
+            reader: Some(reader),
+        };
+        client.send(initialize("2024-11-05"));
+        assert_eq!(client.receive()["id"], "handshake");
+        client.send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}));
+        client
+    }
+    fn send(&mut self, message: Value) {
+        writeln!(self.input.as_mut().unwrap(), "{message}").unwrap();
+    }
+    fn receive(&self) -> Value {
+        self.output
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("MCP reply exceeded cancellation deadline")
+    }
+    fn finish(mut self) -> Vec<Value> {
+        self.input.take();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                assert!(status.success());
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "MCP did not stop after EOF"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        self.reader.take().unwrap().join().unwrap();
+        self.output.try_iter().collect()
+    }
+}
+impl Drop for InteractiveClient {
+    fn drop(&mut self) {
+        self.input.take();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn wait_for_stalled_request(mut stream: impl Read, ready: std::sync::mpsc::Sender<()>) {
+    let mut request = Vec::new();
+    let mut byte = [0];
+    while !request.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).unwrap();
+        request.push(byte[0]);
+    }
+    assert!(String::from_utf8(request)
+        .unwrap()
+        .starts_with(&format!("POST /session/{SESSION}/view HTTP/1.1")));
+    ready.send(()).unwrap();
+    let mut rest = Vec::new();
+    stream
+        .read_to_end(&mut rest)
+        .expect("cancelled transport was not closed");
+    assert!(rest.is_empty());
+}
+
+#[test]
+fn cancellation_closes_stalled_unix_and_http_requests_and_skips_queued_input() {
+    for unix in [false, true] {
+        let directory = std::env::temp_dir().join(format!("hm-cancel-{}", uuid::Uuid::new_v4()));
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (endpoint, server) = if unix {
+            std::fs::create_dir(&directory).unwrap();
+            let listener = UnixListener::bind(directory.join("control.sock")).unwrap();
+            let endpoint = directory.to_str().unwrap().to_owned();
+            (
+                endpoint,
+                std::thread::spawn(move || {
+                    let (stream, _) = accept_bounded!(listener);
+                    wait_for_stalled_request(stream, ready_tx);
+                    assert!(
+                        matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+                    );
+                }),
+            )
+        } else {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            (
+                endpoint,
+                std::thread::spawn(move || {
+                    let (stream, _) = accept_bounded!(listener);
+                    wait_for_stalled_request(stream, ready_tx);
+                    assert!(
+                        matches!(listener.accept(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+                    );
+                }),
+            )
+        };
+        let mut client = InteractiveClient::new(&endpoint, unix);
+        client.send(call("view", json!({})));
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        client.send(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"type_text","arguments":{"text":"must not execute"}}}));
+        for id in [2, 1] {
+            client.send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":id}}));
+        }
+        client.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}));
+        assert_eq!(
+            client.receive(),
+            json!({"jsonrpc":"2.0","id":3,"result":{}})
+        );
+        assert!(client.finish().is_empty());
+        server.join().unwrap();
+        if unix {
+            std::fs::remove_dir_all(directory).unwrap();
+        }
+    }
+}
+
+#[test]
+fn lost_stdout_stops_queued_work_even_when_stdin_remains_open() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hypermesh-desktop-mcp"))
+        .env("HYPERMESH_SESSION_ID", SESSION)
+        .env(
+            "HYPERMESH_VISOR_URL",
+            format!("http://{}", listener.local_addr().unwrap()),
+        )
+        .env("HYPERMESH_VISOR_TOKEN", "test-bearer")
+        .env_remove("APPLICATIONINSIGHTS_CONNECTION_STRING")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let mut input = child.stdin.take().unwrap();
+    let messages = format!(
+        "{}\n{}\n{}\n",
+        initialize("2024-11-05"),
+        json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        call("view", json!({}))
+    );
+    let _ = input.write_all(messages.as_bytes());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("adapter waited on stdin after losing stdout");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+}
+
+#[test]
+fn cancellation_interrupts_a_stalled_tls_handshake() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("https://{}", listener.local_addr().unwrap());
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = accept_bounded!(listener);
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let mut byte = [0];
+        stream.read_exact(&mut byte).unwrap();
+        assert_eq!(byte[0], 22); // TLS handshake record, before any HTTP request.
+        ready_tx.send(()).unwrap();
+        let mut remaining = Vec::new();
+        stream
+            .read_to_end(&mut remaining)
+            .expect("TLS connection stayed open after cancellation");
+    });
+    let mut client = InteractiveClient::new(&endpoint, false);
+    client.send(call("view", json!({})));
+    ready_rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .unwrap();
+    client
+        .send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}));
+    client.send(json!({"jsonrpc":"2.0","id":3,"method":"ping"}));
+    assert_eq!(
+        client.receive(),
+        json!({"jsonrpc":"2.0","id":3,"result":{}})
+    );
+    // A cancellation arriving after a response must not affect another request.
+    client
+        .send(json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":3}}));
+    client.send(json!({"jsonrpc":"2.0","id":4,"method":"ping"}));
+    assert_eq!(
+        client.receive(),
+        json!({"jsonrpc":"2.0","id":4,"result":{}})
+    );
+    assert!(client.finish().is_empty());
+    server.join().unwrap();
 }

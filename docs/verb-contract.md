@@ -78,8 +78,10 @@ direct calls have no general request ID or idempotency key.
 Do not automatically retry a click, type, drag, or MCP tool call after a timeout or
 partial-progress error: observe state and reconcile first. Read-only discovery
 can be retried. Watch/listen clients should bound their own consumption time.
-MCP HTTP transport currently has a 15-second timeout; this is not a global API
-execution deadline. Cancellation and structured progress need further work in #32.
+MCP transports have a 30-second timeout; this is not a global API execution
+deadline. MCP request cancellation closes the transport and suppresses its
+response; queued task cancellation uses the task API. See the
+[request cancellation contract](queued-tasks.md) for submission cleanup and limits.
 
 ## Scrolling
 
@@ -128,7 +130,8 @@ before transport access. Backend/transport failures return `isError: true`,
 retaining the HTTP status and JSON error detail, including partial progress.
 A tool-call notification without a request ID never executes input.
 
-Task lifecycle, cancellation, and broader tool parity remain in #32.
+Bounded tasks, result resources, request cancellation and approved verb parity
+are described in the [MCP task contract](queued-tasks.md).
 
 ## Task coverage and evidence
 
@@ -145,7 +148,7 @@ Task lifecycle, cancellation, and broader tool parity remain in #32.
 | Native Wayland | Refusal/access-control scenarios | Portal/libei scenario is skipped; #17 |
 | Windows/macOS | Linux compile guard | #18/#25/#26 |
 | Container bots | No supported production deployment yet | #27/#35 |
-| Conventional AI client | Eleven inverse MCP tools; binary-image and validation transport tests | Broader parity and lifecycle: #32 |
+| Conventional AI client | Eleven inverse MCP tools; binary-image and validation transport tests | Task/resource/cancellation contracts: #32 |
 
 The live X11 harness covers 17 scenarios: uinput channel, key state, TCP startup,
 injection, wheel press/release balance, real editor and browser scrolling, stop/resume ordering, physical key/motion pause, pausing-click behavior,

@@ -22,7 +22,7 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:x11rb", "dep:zbus", "hypermesh-session/os-keyring"]
+desktop = ["dep:x11rb", "dep:zbus", "dep:tokio-rustls", "dep:webpki-roots", "hypermesh-session/os-keyring"]
 headless = []
 
 [dependencies]
@@ -41,6 +41,8 @@ serde_json = "1"
 sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 tokio-stream = "0.1"
+tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
 tower = { version = "0.5", features = ["util"] }
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2"
