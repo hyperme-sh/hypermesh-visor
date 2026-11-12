@@ -45,6 +45,11 @@ def verify(root):
     for name in ['hypermesh', 'hypermesh-desktop-mcp']:
         assert os.access(root/'bin'/name, os.X_OK)
     assert (root/'README.md').is_file()
+    for state in ('idle', 'automation', 'disconnected'):
+        for frame in range(8):
+            path = root/APP/'Resources/companion'/f'{state}_{frame}_128.png'
+            if path.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
+                raise ValueError('Missing native companion frame')
 
 
 class LauncherContracts(unittest.TestCase):

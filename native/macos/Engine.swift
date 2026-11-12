@@ -43,6 +43,10 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private let queue = DispatchQueue(label: "sh.hyperme.visor.internal-control")
     private var timer: Timer?
     private var statusItem: NSStatusItem?
+    private var mascotFrames: [String: [NSImage]] = [:]
+    private var mascotTick = 0
+    private var usageSummary: String?
+    private var engineConnected = false
     private var menuAllow: NSMenuItem?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
@@ -69,6 +73,15 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         guard hypermesh_native_start(desktopCallback) == 0 else { message = "Native engine failed to start"; update(); return }
         started = true
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        for state in ["idle", "automation", "disconnected"] {
+            mascotFrames[state] = (0..<8).compactMap { frame in
+                guard let path = Bundle.main.path(forResource: "\(state)_\(frame)_128", ofType: "png", inDirectory: "companion"),
+                      let image = NSImage(contentsOfFile: path) else { return nil }
+                image.size = NSSize(width: 22, height: 22)
+                image.isTemplate = false
+                return image
+            }
+        }
         let menu = NSMenu(); menu.autoenablesItems = false
         for (title, action) in [("Allow desktop access", #selector(allow)), ("Pause", #selector(pauseButton)), ("Stop", #selector(stopButton))] {
             let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
@@ -113,20 +126,35 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         allowButton?.title = access.title
         menuAllow?.isEnabled = access.enabled
         menuAllow?.title = access.title
-        statusItem?.button?.title = allowed ? "Visor: ON" : "Visor: off"
-        statusItem?.button?.toolTip = message
+        let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
+        if let frames = mascotFrames[state], frames.count == 8 {
+            let frame = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : mascotTick % frames.count
+            statusItem?.button?.image = frames[frame]
+            statusItem?.button?.title = ""
+        } else {
+            statusItem?.button?.image = nil
+            statusItem?.button?.title = allowed ? "Visor: ON" : "Visor: off"
+        }
+        statusItem?.button?.setAccessibilityLabel("Hypermesh Visor: " + currentPhase)
+        statusItem?.button?.toolTip = [message, "Session: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)", usageSummary]
+            .compactMap { $0 }.joined(separator: "\n")
     }
     private func poll() {
         guard started && !polling else { return }
+        mascotTick = (mascotTick + 1) % 8
         polling = true
         let generation = epoch
         control("poll") { result in
             self.polling = false
             guard generation == self.epoch else { return }
             guard let result, result["status"] as? Int == 200, let body = result["body"] as? [String:Any], let automation = body["automation"] as? [String:Any] else {
+                self.engineConnected = false
+                self.usageSummary = nil
                 self.pause("Native engine unavailable"); return
             }
+            self.engineConnected = true
             self.sessionOpen = body["open"] as? Bool ?? false
+            self.usageSummary = self.sessionOpen ? nativeUsageSummary(body["session"] as? [String:Any]) : nil
             self.currentPhase = automation["phase"] as? String ?? "off"
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
             if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {

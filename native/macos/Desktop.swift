@@ -316,7 +316,29 @@ func verifyNativeUnit(_ condition: @autoclosure () -> Bool, line: UInt = #line) 
         throw NativeError.invalid
     }
 }
+func nativeMascotState(connected: Bool, allowed: Bool, phase: String) -> String {
+    if !connected { return "disconnected" }
+    return allowed && phase == "running" ? "automation" : "idle"
+}
+
+func nativeUsageSummary(_ session: [String:Any]?) -> String? {
+    guard let usage = session?["last_response_usage"] as? [String:Any],
+          let input = usage["input_tokens"] as? NSNumber,
+          let output = usage["output_tokens"] as? NSNumber,
+          CFGetTypeID(input) != CFBooleanGetTypeID(), CFGetTypeID(output) != CFBooleanGetTypeID(),
+          input.doubleValue >= 0, output.doubleValue >= 0 else { return nil }
+    return "Latest response · Input \(input.uint64Value) · Output \(output.uint64Value) tokens"
+}
+
 func selfTest() throws {
+    try verifyNativeUnit(nativeMascotState(connected: false, allowed: true, phase: "running") == "disconnected")
+    try verifyNativeUnit(nativeMascotState(connected: true, allowed: true, phase: "running") == "automation")
+    try verifyNativeUnit(nativeMascotState(connected: true, allowed: true, phase: "paused") == "idle")
+    try verifyNativeUnit(nativeMascotState(connected: true, allowed: false, phase: "running") == "idle")
+    try verifyNativeUnit(nativeUsageSummary(nil) == nil)
+    try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": true, "output_tokens": 1]]) == nil)
+    try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "Latest response · Input 0 · Output 0 tokens")
+    print("PASS native mascot state and reported usage contracts")
     for started in [false, true] {
         for sessionOpen in [false, true] {
             for allowed in [false, true] {
