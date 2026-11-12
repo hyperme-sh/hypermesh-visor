@@ -95,7 +95,10 @@ fn read_requests(
                 && message.get("id").is_none()
             {
                 if let Some(params) = message.get("params").and_then(Value::as_object) {
-                    if params.get("reason").is_none_or(Value::is_string) {
+                    if message.get("result").is_none()
+                        && message.get("error").is_none()
+                        && params.get("reason").is_none_or(Value::is_string)
+                    {
                         if let Some(id) = params.get("requestId").filter(|id| valid_id(id)) {
                             if let Some(flag) = pending.iter().find_map(|(known, flag)| {
                                 (known == id).then(|| flag.upgrade()).flatten()
@@ -1109,6 +1112,8 @@ mod capability_contract_tests {
             json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"init"}}),
             json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1}}),
             json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2,"reason":false}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2},"result":{}}),
+            json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":2},"error":{"code":-32600,"message":"invalid"}}),
             json!({"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":"unknown"}}),
         ];
         let input = messages
