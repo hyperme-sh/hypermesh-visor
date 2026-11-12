@@ -561,7 +561,8 @@ An already-running subscription read can still finish within its existing bound.
 
 The `sse` configuration value remains an alias for the POST-based transport.
 Legacy HTTP+SSE endpoint discovery, resumable POST responses, OAuth negotiation,
-and non-tool MCP features are not implemented.
+prompts, subscriptions to resources, and other non-tool operations remain unimplemented.
+Explicit resource list/template/read operations are documented below.
 A server selecting `2024-11-05` over HTTP retains the existing POST/JSON/SSE
 response compatibility path, without a GET subscription. This is not a claim
 of complete MCP conformance. Additional discovery sources and broader platform
@@ -769,8 +770,9 @@ fields and experimental payloads are discarded, so the summary contains no
 server-supplied strings or arbitrary extension data and has a fixed maximum shape.
 
 This is advertised support, not enabled visor functionality or authorization.
-Resource/prompt discovery, reads, subscriptions, logging setup, completion, and
-task execution are not started by this change. A server without tools still has
+Resource operations require the explicit approved endpoint documented below.
+Prompt discovery, subscriptions, logging setup, completion and task execution
+are not automatically enabled by a capability advertisement. A server without tools still has
 no tool-routing eligibility. Compact companion/status summaries are unchanged.
 Catalog refresh and failed connections retain the historical summary; successful
 reconnect replaces it. Consult routing_status separately for current availability.
@@ -807,3 +809,32 @@ requests return a conflict and are not retried. Companion status, other sessions
 and session close remain available. Closing the owning session discards the
 pending result and removes the attachment when its bounded request returns.
 This does not undo a tool operation already accepted by the remote server.
+
+## Explicit resource access
+
+`POST /session/{id}/mcp/resources` supports the attached server's advertised
+resources capability, including servers with no tools. Every request names an
+exact `server`, an `action` (`list`, `templates` or `read`) and a `decision`
+(`approve` or `deny`). A denial performs no remote operation. Missing decisions
+and unknown body fields are refused.
+
+```json
+{"server":"documents","action":"read","decision":"approve","params":{"uri":"document://example"}}
+```
+
+`list` sends `resources/list`; `templates` sends `resources/templates/list`.
+Their optional `params.cursor` passes an opaque cursor for one page. `read` sends
+`resources/read` and requires `params.uri`. URIs and cursors are limited to 4096
+bytes. Visor does not fetch URI locations, expand templates or follow pages
+itself. Responses are limited to 256 entries and 1 MiB of JSON; text/blob shape
+and binary base64 encoding are validated. Returned metadata and content remain
+untrusted data, never instructions or permission grants.
+
+An approved result has `outcome: "ok"` and the validated MCP `result`. Denials
+return `outcome: "denied"` with a null result. Missing sessions return 404, busy
+attachments return 409, and unsupported capabilities, malformed resource data
+or remote errors return 502. A closing session discards pending content while
+retaining the operation's audit outcome. Audit rows contain only the server,
+operation, decision and outcome, never the resource URI, cursor or contents.
+No automatic retries, subscriptions, filesystem access or new credentials are
+introduced. Resource access uses the existing session transport authorization.

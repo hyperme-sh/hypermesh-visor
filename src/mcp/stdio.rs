@@ -353,6 +353,20 @@ impl AttachedServer {
         }
     }
 
+    pub fn resource_request(&mut self, method: &str, params: Value) -> Result<Value, McpError> {
+        super::resources::validate_request(method, &params)?;
+        if !self.negotiated.as_ref().is_some_and(|n| n.server_capabilities.get("resources").is_some_and(Value::is_object)) {
+            return Err(McpError::message("MCP server did not advertise resources"));
+        }
+        let response = self.request(method, params)?;
+        if response.get("error").is_some() {
+            return Err(McpError::message("MCP resource request rejected"));
+        }
+        let result = response.get("result").ok_or_else(|| McpError::message("MCP resource result missing"))?;
+        super::resources::validate_result(method, result)?;
+        Ok(result.clone())
+    }
+
     pub fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<Value, McpError> {
         if self.needs_refresh() {
             return Err(McpError::message(
