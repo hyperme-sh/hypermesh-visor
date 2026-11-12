@@ -82,3 +82,23 @@ such as `ctrl`/`control` are rejected. Each name is limited to 32 bytes. This to
 has no persistent key-down mode; physical input, pause and task cancellation use
 the existing typing gate and held-key cleanup. Use explicit modifier names;
 keyboard layout and application shortcuts still determine the result.
+
+## MCP result resources
+
+The adapter also advertises the MCP `resources` capability. `resources/list`
+returns at most the 16 tasks currently tracked by this connection, and
+`resources/templates/list` exposes `visor-task://<assigned-session>/{task_id}`.
+`resources/read` accepts only a canonical task URI for the assigned session and
+reads the authenticated task-status route. It returns one `application/json`
+text resource containing status and results, including any base64 PNG data.
+No filesystem paths, arbitrary URLs, other sessions or new transport are exposed.
+
+A completed task can still be read by URI after it leaves the connection's
+tracking list, until the daemon evicts it or the session closes. Reading a
+terminal task frees its tracking slot. A verified daemon response confirming a
+missing task also frees its slot while
+returning a resource-not-found error. Unverified proxy responses, denials and
+transport failures retain tracking and do not expose backend diagnostics.
+Resource lists have no pagination cursor because tracking is bounded. Subscriptions and
+list-change notifications are not advertised; clients refresh explicitly.
+The shape follows the [MCP resource contract](https://modelcontextprotocol.io/specification/2024-11-05/server/resources).

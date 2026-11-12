@@ -750,6 +750,7 @@ fn initialization_negotiates_before_tools_and_notifications_never_reply() {
     assert_eq!(replies[0]["error"]["code"], -32002);
     assert_eq!(replies[1]["error"]["code"], -32602);
     assert_eq!(replies[2]["result"]["protocolVersion"], "2024-11-05");
+    assert_eq!(replies[2]["result"]["capabilities"]["resources"], json!({}));
     assert_eq!(replies[3]["result"], json!({}));
     assert_eq!(replies[4]["error"]["code"], -32002);
     assert_eq!(replies[5]["result"]["tools"].as_array().unwrap().len(), 11);
@@ -866,5 +867,187 @@ fn named_key_chords_preserve_balanced_http_requests_and_denials() {
     }
     for result in run("http://127.0.0.1:0", false, SESSION, &requests) {
         assert_eq!(result["error"]["code"], -32602);
+    }
+}
+
+#[test]
+fn task_resources_read_only_the_assigned_session_and_preserve_results() {
+    let task = "00000000-0000-0000-0000-000000000002";
+    let uri = format!("visor-task://{SESSION}/{task}");
+    let body = json!({"id":task,"status":"completed","results":[{"type":"text","text":"done"},{"type":"image","mimeType":"image/png","data":base64::engine::general_purpose::STANDARD.encode(png())}]});
+    for unix in [false, true] {
+        let request =
+            json!({"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":uri}});
+        let (response, wire) = roundtrip(
+            unix,
+            200,
+            "application/json",
+            serde_json::to_vec(&body).unwrap(),
+            true,
+            request.clone(),
+        );
+        assert!(wire.starts_with(&format!("GET /session/{SESSION}/tasks/{task} HTTP/1.1")));
+        if !unix {
+            assert!(wire
+                .to_lowercase()
+                .contains("authorization: bearer test-bearer"));
+        }
+        let resource = &response["result"]["contents"][0];
+        assert_eq!(resource["uri"], uri);
+        assert_eq!(resource["mimeType"], "application/json");
+        assert_eq!(
+            serde_json::from_str::<Value>(resource["text"].as_str().unwrap()).unwrap(),
+            body
+        );
+        for (status, code) in [(401, -32001), (403, -32001), (404, -32002), (500, -32603)] {
+            let (response, _) = roundtrip(
+                unix,
+                status,
+                "application/json",
+                br#"{"error":"private backend diagnostic"}"#.to_vec(),
+                false,
+                request.clone(),
+            );
+            assert_eq!(response["error"]["code"], code);
+            assert!(!response.to_string().contains("private backend diagnostic"));
+        }
+    }
+}
+
+#[test]
+fn resource_discovery_is_bounded_and_foreign_or_malformed_uris_never_connect() {
+    let task = "00000000-0000-0000-0000-000000000002";
+    let messages = vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"resources/list"}),
+        json!({"jsonrpc":"2.0","id":2,"method":"resources/templates/list"}),
+    ];
+    let responses = run("http://127.0.0.1:0", false, SESSION, &messages);
+    assert_eq!(responses[0]["result"], json!({"resources":[]}));
+    assert_eq!(
+        responses[1]["result"]["resourceTemplates"][0]["uriTemplate"],
+        format!("visor-task://{SESSION}/{{task_id}}")
+    );
+    let mut invalid = vec![];
+    for uri in [
+        format!("visor-task://{task}/{task}"),
+        format!("visor-task://{SESSION}/{task}?token=secret"),
+        format!("visor-task://{SESSION}/{task}/../other"),
+        "file:///etc/passwd".into(),
+        "https://example.test".into(),
+    ] {
+        invalid
+            .push(json!({"jsonrpc":"2.0","id":1,"method":"resources/read","params":{"uri":uri}}));
+    }
+    invalid.push(
+        json!({"jsonrpc":"2.0","id":1,"method":"resources/list","params":{"cursor":"invented"}}),
+    );
+    for response in run("http://127.0.0.1:0", false, SESSION, &invalid) {
+        assert_eq!(response["error"]["code"], -32602);
+    }
+}
+
+#[test]
+fn reading_a_terminal_resource_reclaims_connection_tracking() {
+    resource_tracking_case(
+        200,
+        "application/json",
+        br#"{"id":"00000000-0000-0000-0000-000000000002","status":"completed","results":[]}"#,
+        true,
+    );
+}
+
+#[test]
+fn only_confirmed_missing_resource_reads_reclaim_tracking() {
+    resource_tracking_case(
+        404,
+        "application/json; charset=utf-8",
+        br#"{"error":"session closed or unknown"}"#,
+        true,
+    );
+    resource_tracking_case(
+        404,
+        "text/html",
+        br#"{"error":"session closed or unknown"}"#,
+        false,
+    );
+    resource_tracking_case(
+        404,
+        "application/json",
+        br#"{"error":"proxy not found"}"#,
+        false,
+    );
+    resource_tracking_case(
+        403,
+        "application/json",
+        br#"{"error":"session closed or unknown"}"#,
+        false,
+    );
+    resource_tracking_case(
+        500,
+        "application/json",
+        br#"{"error":"session closed or unknown"}"#,
+        false,
+    );
+}
+
+fn resource_tracking_case(status: u16, mime: &'static str, body: &'static [u8], reclaimed: bool) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let task = "00000000-0000-0000-0000-000000000002";
+    let uri = format!("visor-task://{SESSION}/{task}");
+    let server = std::thread::spawn(move || {
+        let (stream, _) = accept_bounded!(listener);
+        let wire = exchange(
+            stream,
+            202,
+            "application/json",
+            serde_json::to_string(&json!({"id":task,"status":"queued"}))
+                .unwrap()
+                .as_bytes(),
+            false,
+        );
+        assert!(wire.starts_with(&format!("POST /session/{SESSION}/tasks HTTP/1.1")));
+        let (stream, _) = accept_bounded!(listener);
+        let wire = exchange(stream, status, mime, body, false);
+        assert!(wire.starts_with(&format!("GET /session/{SESSION}/tasks/{task} HTTP/1.1")));
+        if !reclaimed {
+            let (stream, _) = accept_bounded!(listener);
+            let wire = exchange(
+                stream,
+                200,
+                "application/json",
+                serde_json::to_string(&json!({"id":task,"status":"cancelled"}))
+                    .unwrap()
+                    .as_bytes(),
+                false,
+            );
+            assert!(wire.starts_with(&format!("DELETE /session/{SESSION}/tasks/{task} HTTP/1.1")));
+        }
+    });
+    let replies = run(
+        &endpoint,
+        false,
+        SESSION,
+        &[
+            call(
+                "task_submit",
+                json!({"steps":[{"tool":"view","arguments":{}}]}),
+            ),
+            json!({"jsonrpc":"2.0","id":2,"method":"resources/list"}),
+            json!({"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":uri}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"resources/list"}),
+        ],
+    );
+    server.join().unwrap();
+    assert_eq!(replies[1]["result"]["resources"][0]["uri"], uri);
+    assert_eq!(
+        replies[3]["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        reclaimed
+    );
+    if status == 404 {
+        assert_eq!(replies[2]["error"]["code"], -32002);
     }
 }
