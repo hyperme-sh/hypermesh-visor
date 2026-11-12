@@ -383,7 +383,10 @@ fn handle_call(
                     .ok()
                     .is_some_and(|body| body["error"] == "session closed or unknown")
             {
-                missing_task = args["task_id"].as_str().map(str::to_owned);
+                missing_task = args["task_id"]
+                    .as_str()
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                    .map(|id| id.to_string());
             }
             tool_result(tool, response)
         }

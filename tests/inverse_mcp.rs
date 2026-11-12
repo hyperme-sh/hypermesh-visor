@@ -565,13 +565,14 @@ fn task_ownership_limit_never_forgets_active_jobs_and_terminal_status_frees_capa
 }
 
 #[test]
-fn evicted_task_status_and_cancel_free_tracking_capacity() {
+fn evicted_task_status_and_cancel_accept_alternate_uuid_spellings() {
     check_ownership_capacity("task_status", 404);
     check_ownership_capacity("task_cancel", 404);
 }
 
 fn check_ownership_capacity(resolution_tool: &'static str, resolution_status: u16) {
-    let tasks: Vec<String> = (0..17).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let mut tasks: Vec<String> = (0..17).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    tasks[15] = "abcdefab-cdef-4abc-8def-abcdefabcdef".into();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let expected = tasks.clone();
@@ -643,7 +644,16 @@ fn check_ownership_capacity(resolution_tool: &'static str, resolution_status: u1
         json!({"steps":[{"tool":"view","arguments":{}}]}),
     );
     let mut requests = vec![submit.clone(); 17];
-    requests.push(call(resolution_tool, json!({"task_id":tasks[15]})));
+    let lookup_id = if resolution_status == 404 {
+        if resolution_tool == "task_status" {
+            tasks[15].to_uppercase()
+        } else {
+            tasks[15].replace('-', "")
+        }
+    } else {
+        tasks[15].clone()
+    };
+    requests.push(call(resolution_tool, json!({"task_id":lookup_id})));
     requests.push(submit);
     let responses = run(&format!("http://{address}"), false, SESSION, &requests);
     server.join().unwrap();
