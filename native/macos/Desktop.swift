@@ -56,9 +56,9 @@ struct DesktopLayout: Equatable {
         guard displays.contains(where: { $0.bounds.contains(point) }) else { throw NativeError.invalid }
         return point
     }
-    // CoreGraphics image composition uses an upward y axis; desktop coordinates use downward y.
+    // Bitmap rows use the same top-to-bottom ordering as the returned PNG.
     func imageRect(_ display: DisplayGeometry) -> CGRect {
-        CGRect(x: display.bounds.minX - bounds.minX, y: bounds.maxY - display.bounds.maxY,
+        CGRect(x: display.bounds.minX - bounds.minX, y: display.bounds.minY - bounds.minY,
                width: display.bounds.width, height: display.bounds.height)
     }
 }
@@ -317,8 +317,8 @@ func selfTest() throws {
     try verifyNativeUnit(topLeft == CGPoint(x: -1280, y: -200))
     let primaryOrigin = try layout.point(x: 1280, y: 200)
     try verifyNativeUnit(primaryOrigin == .zero)
-    try verifyNativeUnit(layout.imageRect(left) == CGRect(x: 0, y: 256, width: 1280, height: 1024))
-    try verifyNativeUnit(layout.imageRect(primary) == CGRect(x: 1280, y: 0, width: 1920, height: 1080))
+    try verifyNativeUnit(layout.imageRect(left) == CGRect(x: 0, y: 0, width: 1280, height: 1024))
+    try verifyNativeUnit(layout.imageRect(primary) == CGRect(x: 1280, y: 200, width: 1920, height: 1080))
     for (x, y) in [(0, 1279), (1280, 0), (-1, 0), (3200, 200)] {
         do { _ = try layout.point(x: x, y: y); preconditionFailure("gap or outside point accepted") } catch NativeError.invalid { }
     }
@@ -331,11 +331,17 @@ func selfTest() throws {
     let canvas = CGContext(data: nil, width: 2, height: 4, bitsPerComponent: 8, bytesPerRow: 0,
                           space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
     canvas.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1)); canvas.fill(vertical.imageRect(below))
-    canvas.setFillColor(CGColor(red: 0, green: 1, blue: 0, alpha: 1)); canvas.fill(vertical.imageRect(above))
-    let bitmap = NSBitmapImageRep(cgImage: canvas.makeImage()!)
+    let rows = Data([0,255,0,255, 0,255,0,255, 0,0,255,255, 0,0,255,255])
+    let fixture = CGImage(width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
+                          space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                          provider: CGDataProvider(data: rows as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+    canvas.draw(fixture, in: vertical.imageRect(above))
+    let encoded = NSBitmapImageRep(cgImage: canvas.makeImage()!).representation(using: .png, properties: [:])!
+    let bitmap = NSBitmapImageRep(data: encoded)!
     let top = bitmap.colorAt(x: 0, y: 0)!.usingColorSpace(.deviceRGB)!
     let bottom = bitmap.colorAt(x: 0, y: 3)!.usingColorSpace(.deviceRGB)!
-    try verifyNativeUnit(top.greenComponent > 0.99 && bottom.redComponent > 0.99)
+    let second = bitmap.colorAt(x: 0, y: 1)!.usingColorSpace(.deviceRGB)!
+    try verifyNativeUnit(top.greenComponent > 0.99 && second.blueComponent > 0.99 && bottom.redComponent > 0.99)
     print("PASS multi-display logical coordinates, gaps, composition placement and bounds")
     for (button, expected) in [(UInt32(0), CGEventType.leftMouseDragged), (1, .rightMouseDragged), (2, .otherMouseDragged)] {
         let event = moveEvent(point: .zero, buttons: [button])!
