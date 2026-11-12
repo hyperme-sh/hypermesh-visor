@@ -84,6 +84,7 @@ pub fn pose_from_companion(body: &str) -> Pose {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub connected: bool,
+    pub session_id: Option<String>,
     pub upgrading: bool,
     pub pose: Pose,
     pub idle_ms: Option<u64>,
@@ -131,6 +132,7 @@ impl Snapshot {
     pub fn disconnected() -> Self {
         Self {
             connected: false,
+            session_id: None,
             upgrading: false,
             pose: Pose::Idle,
             idle_ms: None,
@@ -201,6 +203,14 @@ pub fn snapshot_from_body(body: &str) -> Option<Snapshot> {
         .unwrap_or(0);
     Some(Snapshot {
         connected: true,
+        session_id: open
+            .then(|| {
+                value
+                    .pointer("/session/id")
+                    .and_then(|id| id.as_str())
+                    .and_then(crate::session_cli::canonical_session)
+            })
+            .flatten(),
         upgrading,
         pose,
         idle_ms,
@@ -258,6 +268,30 @@ fn parse_drive(value: &serde_json::Value) -> Option<DriveView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn launch_identity_requires_an_open_session_and_a_valid_uuid() {
+        let id = "01234567-89AB-CDEF-0123-456789ABCDEF";
+        let open = serde_json::json!({"open":true,"session":{"id":id,"purpose":"work"}});
+        assert_eq!(
+            snapshot_from_body(&open.to_string())
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("01234567-89ab-cdef-0123-456789abcdef")
+        );
+        for body in [
+            serde_json::json!({"open":false,"session":{"id":id}}),
+            serde_json::json!({"open":true,"session":{"id":"--session another"}}),
+            serde_json::json!({"open":true,"session":{}}),
+        ] {
+            assert!(snapshot_from_body(&body.to_string())
+                .unwrap()
+                .session_id
+                .is_none());
+        }
+        assert!(Snapshot::disconnected().session_id.is_none());
+    }
 
     #[test]
     fn visor_poll_does_not_carry_a_key() {

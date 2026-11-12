@@ -21,6 +21,7 @@ pub enum Action {
     ToggleMenu,
     ToggleCompact,
     OpenCli,
+    OpenSessionCli,
     Login,
     OpenBilling,
     OpenRent,
@@ -253,6 +254,7 @@ pub fn render(
         };
         let rows = [
             ("Compact / expanded icon", Action::ToggleCompact),
+            ("Session CLI", Action::OpenSessionCli),
             ("Open CLI", Action::OpenCli),
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
@@ -268,6 +270,9 @@ pub fn render(
             (bug_label, Action::ToggleBugCursor),
         ];
         for (label, action) in rows {
+            if action == Action::OpenSessionCli && !matches!(pose, Pose::Active { .. }) {
+                continue;
+            }
             let row = text_card(
                 width,
                 3,

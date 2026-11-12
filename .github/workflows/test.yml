@@ -26,6 +26,10 @@ jobs:
       - name: Check display typing interruption observer
         run: python3 ci/display/test-interrupt-type.py
       - run: cargo test --locked --workspace
+      - name: Session CLI terminal unit contracts
+        run: |
+          cargo build --locked -p hypermesh-companion
+          python3 companion/tests/session_cli_terminal.py
 
   native-mcp-discovery:
     name: MCP discovery (${{ matrix.os }})
