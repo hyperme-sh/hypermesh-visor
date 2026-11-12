@@ -95,6 +95,8 @@ impl SupervisorDoor {
 
 impl PromptDoor for SupervisorDoor {
     fn forward(&self, call: &ForwardedPrompt) -> Result<String, String> {
+        let attribution =
+            crate::telemetry::UpstreamScope::enter(crate::telemetry::Service::Supervisor);
         let payload = ChatBody {
             model: call.model.as_deref(),
             messages: [ChatMessage {
@@ -111,8 +113,19 @@ impl PromptDoor for SupervisorDoor {
             .set("X-Api-Key", &call.api_key)
             .send_bytes(&body)
         {
-            Ok(response) => completion_text(&read_limited(response)?),
+            Ok(response) => {
+                attribution.response(&response);
+                let result = read_limited(response).and_then(|body| completion_text(&body));
+                if result.is_err() {
+                    crate::telemetry::report(crate::telemetry::Failure::UpstreamResponse);
+                }
+                result
+            }
             Err(ureq::Error::Status(code, response)) => {
+                attribution.response(&response);
+                if code >= 500 {
+                    crate::telemetry::report(crate::telemetry::Failure::UpstreamHttp);
+                }
                 let _ = read_limited(response);
                 Err(format!("supervisor chat HTTP {code}"))
             }
@@ -150,6 +163,8 @@ impl ConductorDoor {
 
 impl PromptDoor for ConductorDoor {
     fn forward(&self, call: &ForwardedPrompt) -> Result<String, String> {
+        let attribution =
+            crate::telemetry::UpstreamScope::enter(crate::telemetry::Service::Conductor);
         let model = call
             .model
             .as_deref()
@@ -171,11 +186,23 @@ impl PromptDoor for ConductorDoor {
         if let Some(id) = self.lease {
             request = request.set("X-Conductor-Task", &id.to_string());
         }
-        let response = request.send_bytes(&payload).map_err(|e| match e {
-            ureq::Error::Status(code, _) => format!("Conductor HTTP {code}"),
-            _ => "Conductor request failed".into(),
-        })?;
-        completion_text(&read_limited(response)?)
+        let response = match request.send_bytes(&payload) {
+            Ok(response) => response,
+            Err(ureq::Error::Status(code, response)) => {
+                attribution.response(&response);
+                if code >= 500 {
+                    crate::telemetry::report(crate::telemetry::Failure::UpstreamHttp);
+                }
+                return Err(format!("Conductor HTTP {code}"));
+            }
+            Err(_) => return Err("Conductor request failed".into()),
+        };
+        attribution.response(&response);
+        let result = read_limited(response).and_then(|body| completion_text(&body));
+        if result.is_err() {
+            crate::telemetry::report(crate::telemetry::Failure::UpstreamResponse);
+        }
+        result
     }
 }
 

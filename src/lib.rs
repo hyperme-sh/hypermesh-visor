@@ -21,16 +21,17 @@ mod orchestrator;
 mod prompt;
 mod session;
 mod stream;
+pub mod telemetry;
 mod vault;
 
 pub use api::{serve, serve_until, AppState};
 pub use automation::SHUTDOWN_DEADLINE;
 pub use bind::parse_listen;
 pub use companion_sock::{control_socket_file, read_api_token, runtime_dir};
-#[cfg(all(target_os = "macos", feature = "desktop"))]
-pub use desktop::MacDesktop;
 #[cfg(feature = "desktop")]
 pub use desktop::LinuxDesktop;
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+pub use desktop::MacDesktop;
 pub use desktop::{current_euid, Desktop, FixtureDesktop, HeadlessDesktop};
 pub use hypermesh_session::{refresh_token, MemoryStore, SessionStore};
 pub use input::SCROLL_MAX_TICKS;

@@ -217,3 +217,8 @@ shapes, cancellation/retry rules, platform limits, and remaining gaps.
 `--supervisor-url` is the only door until `--supervisor-url-2` is also set. Two hosts need `--route CATALOG=URL`. A model with no route is not sent. A failed door is tried again only on another host that route already names. `--experts CATALOG` fans that id across both hosts and returns one answer: the first host, unless `--expert-answer CATALOG=URL` names the other. One expert failing fails the prompt.
 
 A `kind: prompt` line on `POST /session/{id}/stream` is kept on the inbox and also enters that same pass. Secret and file lines do not. The audit row records the forwarded model, the door authority when one was selected, and a secret or PII finding without the secret value.
+
+## Crash reporting
+
+Optional first-party crash reports use the existing Azure Monitor workspace.
+See [configuration, privacy and reporting limits](docs/crash-reporting.md).

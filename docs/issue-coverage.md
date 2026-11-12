@@ -34,6 +34,12 @@ they do not create a new bot identity or grant assignment authority.
 | [#100](https://github.com/hyperme-sh/hypermesh-visor/issues/100) Mobile | Native app/core binding spike, enrolled device auth, VPN, share actions, sensor permissions and local model routing remain open. | Native Android/iOS simulator/device adapters; no claim of desktop-style iOS automation. |
 | [#101](https://github.com/hyperme-sh/hypermesh-visor/issues/101) Alpine | Native x86_64/ARM64 musl unit/build checks exist. Package/OpenRC/runtime work is tracked separately from release publication. | Installed APK/native architecture, private sockets, non-display session and OpenRC startup on both architectures. |
 
+Crash reporting [#115](https://github.com/hyperme-sh/hypermesh-visor/issues/115)
+is implemented as an opt-in, bounded Application Insights reporter with fixed
+error categories and request-scoped upstream attribution. See
+[configuration and privacy](crash-reporting.md); unit and mocked-collector
+contracts cover the reporting boundary.
+
 Infra owns all fixture setup, readiness and teardown. The registered Linux lanes
 are listed in [nightly CI](nightly-ci.md); missing display prerequisites fail
 setup. Dedicated native desktop and ARM64 nightly runners must be provisioned

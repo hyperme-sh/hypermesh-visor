@@ -60,6 +60,7 @@ fn run_raw(endpoint: &str, unix: bool, session: &str, requests: &[Value]) -> Vec
     let mut command = Command::new(env!("CARGO_BIN_EXE_hypermesh-desktop-mcp"));
     command
         .env("HYPERMESH_SESSION_ID", session)
+        .env_remove("APPLICATIONINSIGHTS_CONNECTION_STRING")
         .env_remove("HYPERMESH_VISOR_TOKEN")
         .env_remove("HYPERMESH_VISOR_URL")
         .stdin(Stdio::piped())

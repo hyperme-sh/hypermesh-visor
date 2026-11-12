@@ -22,6 +22,8 @@ mod pages;
 mod pointer;
 mod prompt;
 mod settings;
+#[path = "../../src/telemetry.rs"]
+mod telemetry;
 mod visor;
 mod window;
 
@@ -37,11 +39,13 @@ fn visor_base() -> String {
 }
 
 fn main() -> ExitCode {
+    let _reports = telemetry::init(telemetry::Component::Companion, env!("CARGO_PKG_VERSION"));
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         None => match window::run() {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
+                telemetry::report(telemetry::Failure::Serve);
                 eprintln!("hypermesh-companion: {err}");
                 ExitCode::from(1)
             }
