@@ -17,7 +17,7 @@ jobs:
       - name: Check Python fixture syntax
         run: python3 -m compileall -q container ci/container
       - name: Native image metadata contracts
-        run: python3 -m unittest discover -s ci/container -p 'test_image_manifest.py'
+        run: python3 -m unittest discover -s ci/container -p 'test_*.py'
       - name: Check shell harness syntax
         run: |
           for script in ci/verbs.sh ci/cross-user.sh ci/display/run.sh; do
@@ -47,9 +47,10 @@ jobs:
         env:
           EXPECTED_MACHINE: ${{ matrix.machine }}
           SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
         run: |
           test "$(uname -m)" = "$EXPECTED_MACHINE"
-          docker build --file container/Dockerfile --label "org.opencontainers.image.revision=$SOURCE_REVISION" --tag visor-container:ci .
+          docker build --file container/Dockerfile --label "org.opencontainers.image.revision=$SOURCE_REVISION" --label "org.opencontainers.image.source=https://github.com/$SOURCE_REPOSITORY" --tag visor-container:ci .
       - name: Export archive and verify image contract
         env:
           ARCH: ${{ matrix.arch }}
@@ -64,4 +65,39 @@ jobs:
           name: visor-container-${{ matrix.arch }}
           path: ${{ runner.temp }}/visor-container/
           retention-days: 1
+          if-no-files-found: error
+
+  publish-test:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [contracts, native-image]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: visor-container-*
+          path: ${{ runner.temp }}/native-images
+      - name: Publish verified native images to TEST
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+          SOURCE_REVISION: ${{ github.sha }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          DOCKER_CONFIG: ${{ runner.temp }}/visor-registry-auth
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          chmod 700 "$DOCKER_CONFIG"
+          trap 'docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
+          image="ghcr.io/${SOURCE_REPOSITORY,,}"
+          python3 ci/container/publish_test.py "$RUNNER_TEMP/native-images" "$image" "$SOURCE_REVISION" "$RUNNER_TEMP/container-test-channel.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: container-test-channel
+          path: ${{ runner.temp }}/container-test-channel.json
+          retention-days: 90
           if-no-files-found: error
