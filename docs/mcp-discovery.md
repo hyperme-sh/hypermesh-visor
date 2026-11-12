@@ -798,3 +798,12 @@ Windows, and macOS, including real filesystem enumeration. The small CI crate
 is not a native visor build: daemon trust storage, focused-app probes, companion,
 and input/capture acceptance still depend on #18/#25/#26. Zed's existing Unix
 configuration lookup remains separate; Windows Zed discovery is not claimed.
+
+## Concurrent tool calls
+
+An approved tool call runs outside the global session lock. While it is pending,
+that attachment is temporarily unavailable for another call or refresh; those
+requests return a conflict and are not retried. Companion status, other sessions
+and session close remain available. Closing the owning session discards the
+pending result and removes the attachment when its bounded request returns.
+This does not undo a tool operation already accepted by the remote server.
