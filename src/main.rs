@@ -65,7 +65,7 @@ fn main() -> ExitCode {
         #[cfg(all(target_os = "linux", feature = "desktop"))]
         let desktop = LinuxDesktop::from_process();
         #[cfg(all(target_os = "macos", feature = "desktop"))]
-        let desktop = hypermesh_visor::MacDesktop;
+        let desktop = hypermesh_visor::MacDesktop::default();
         #[cfg(not(feature = "desktop"))]
         let desktop = hypermesh_visor::HeadlessDesktop;
         Arc::new(desktop)

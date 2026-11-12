@@ -6,6 +6,8 @@ let injectionTag: Int64 = 0x48595045524d4553
 let source = CGEventSource(stateID: .privateState)!
 var heldKeys = Set<CGKeyCode>()
 var heldButtons = Set<UInt32>()
+// Posted movement is asynchronous; subsequent buttons use the sequence target.
+var sequencePoint: CGPoint?
 
 func post(_ event: CGEvent?) throws {
     guard CGPreflightPostEventAccess(), let event else { throw NativeError.denied }
@@ -24,13 +26,15 @@ func moveEvent(point: CGPoint, buttons: Set<UInt32>) -> CGEvent? {
                    mouseButton: CGMouseButton(rawValue: button ?? 0)!)
 }
 func pointer(_ step: [String: Any]) throws {
-    let point = CGEvent(source: nil)?.location ?? .zero
+    let point = sequencePoint ?? CGEvent(source: nil)?.location ?? .zero
     switch step["kind"] as? String {
     case "move":
         let x = try integer(step["x"]), y = try integer(step["y"])
         let bounds = CGDisplayBounds(CGMainDisplayID())
         guard x >= 0, y >= 0, Double(x) < bounds.width, Double(y) < bounds.height else { throw NativeError.invalid }
-        try post(moveEvent(point: CGPoint(x: bounds.minX + Double(x), y: bounds.minY + Double(y)), buttons: heldButtons))
+        let target = CGPoint(x: bounds.minX + Double(x), y: bounds.minY + Double(y))
+        try post(moveEvent(point: target, buttons: heldButtons))
+        sequencePoint = target
     case "button":
         let button = try integer(step["button"])
         guard (0...2).contains(button), let down = step["down"] as? Bool else { throw NativeError.invalid }
@@ -108,11 +112,22 @@ func releaseHeld() {
     for code in heldKeys { try? post(CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)) }
     for button in heldButtons {
         let types: [CGEventType] = [.leftMouseUp,.rightMouseUp,.otherMouseUp]
-        try? post(CGEvent(mouseEventSource: source, mouseType: types[Int(button)], mouseCursorPosition: CGEvent(source:nil)?.location ?? .zero, mouseButton: CGMouseButton(rawValue: button)!))
+        try? post(CGEvent(mouseEventSource: source, mouseType: types[Int(button)], mouseCursorPosition: sequencePoint ?? CGEvent(source:nil)?.location ?? .zero, mouseButton: CGMouseButton(rawValue: button)!))
     }
-    heldKeys.removeAll(); heldButtons.removeAll()
+    heldKeys.removeAll(); heldButtons.removeAll(); sequencePoint = nil
 }
-func handle(_ request: [String: Any]) async throws -> [String: Any] {
+@MainActor
+func pacedInput<T>(_ items: [T], checkpoint: () throws -> Void, send: (T) throws -> Void) async throws {
+    for item in items {
+        // Bound the event backlog and let the physical-input monitor run.
+        try await Task.sleep(nanoseconds: 5_000_000)
+        try checkpoint()
+        try send(item)
+    }
+}
+
+@MainActor
+func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async throws -> [String: Any] {
     switch request["action"] as? String {
     case "info":
         let bounds = CGDisplayBounds(CGMainDisplayID())
@@ -138,25 +153,26 @@ func handle(_ request: [String: Any]) async throws -> [String: Any] {
         return ["png":png.base64EncodedString()]
     case "pointer":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let steps = request["steps"] as? [[String:Any]], steps.count <= 4096 else { throw NativeError.denied }
-        for step in steps { try pointer(step) }
+        try await pacedInput(steps, checkpoint: checkpoint, send: pointer)
         return [:]
     case "keyboard":
         guard CGPreflightPostEventAccess(), CGPreflightListenEventAccess(), let strokes = request["strokes"] as? [[String:Any]], strokes.count <= 4096 else { throw NativeError.denied }
-        for stroke in strokes { try key(stroke) }
+        try await pacedInput(strokes, checkpoint: checkpoint, send: key)
         return [:]
     default: throw NativeError.invalid
     }
 }
-@MainActor final class SetupController: NSObject {
+@MainActor final class SetupController: NSObject, NSWindowDelegate {
     var window: NSWindow!
     var status: NSTextField!
     func show() {
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 280),
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 470),
                           styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-        window.title = "Hypermesh Visor Development — Permissions"
+        window.title = "Hypermesh Visor Development"
         window.isReleasedWhenClosed = false
+        window.delegate = self
         let content = window.contentView!
-        let intro = NSTextField(wrappingLabelWithString: "Development helper for native desktop testing. This is not the finished Visor app. Grant only the permissions you want to test.")
+        let intro = NSTextField(wrappingLabelWithString: "Desktop access starts off. While allowed, local clients can capture and control this desktop. Your mouse or keyboard input pauses it.")
         intro.frame = NSRect(x: 24, y: 205, width: 552, height: 52)
         content.addSubview(intro)
         status = NSTextField(wrappingLabelWithString: "")
@@ -173,9 +189,33 @@ func handle(_ request: [String: Any]) async throws -> [String: Any] {
         let quitButton = NSButton(title: "Quit", target: NSApplication.shared, action: #selector(NSApplication.terminate(_:)))
         quitButton.frame = NSRect(x: 470, y: 30, width: 100, height: 32)
         content.addSubview(quitButton)
+        #if EMBEDDED_ENGINE
+        let native = NativeRuntime.shared
+        NSApplication.shared.delegate = native
+        let runtimeLabel = NSTextField(wrappingLabelWithString: "")
+        runtimeLabel.frame = NSRect(x: 24, y: 290, width: 630, height: 100)
+        content.addSubview(runtimeLabel); native.label = runtimeLabel
+        for (index, pair) in [("Allow desktop access", #selector(NativeRuntime.allow)), ("Pause", #selector(NativeRuntime.pauseButton)), ("Stop", #selector(NativeRuntime.stopButton))].enumerated() {
+            let button = NSButton(title: pair.0, target: native, action: pair.1)
+            button.frame = NSRect(x: 24 + index * 210, y: 400, width: 200, height: 32)
+            content.addSubview(button)
+            if index == 0 { native.allowButton = button }
+        }
+        native.start()
+        #endif
         refresh()
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
         window.center(); window.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        #if EMBEDDED_ENGINE
+        NativeRuntime.shared.pause("Control window closed")
+        #endif
+        NSApplication.shared.terminate(nil)
+        return false
     }
     @objc func refresh() {
         status.stringValue = "Screen Recording: \(CGPreflightScreenCaptureAccess() ? "allowed" : "not allowed")\nAccessibility: \(CGPreflightPostEventAccess() ? "allowed" : "not allowed")\nInput Monitoring: \(CGPreflightListenEventAccess() ? "allowed" : "not allowed")"
@@ -227,7 +267,18 @@ func selfTest() throws {
     @MainActor static func main() async {
         let arguments = Array(CommandLine.arguments.dropFirst())
         if arguments == ["--self-test"] {
-            do { try selfTest() } catch { exit(1) }
+            do {
+                try selfTest()
+                var delivered = [Int]()
+                do {
+                    try await pacedInput([1, 2, 3], checkpoint: {
+                        if !delivered.isEmpty { throw NativeError.denied }
+                    }, send: { delivered.append($0) })
+                    preconditionFailure("cancelled sequence completed")
+                } catch NativeError.denied { }
+                precondition(delivered == [1])
+                print("PASS cancellation checkpoint prevents later events without posting input")
+            } catch { exit(1) }
             return
         }
         if arguments == ["--setup"] || (arguments.isEmpty && Bundle.main.bundleIdentifier == "sh.hyperme.visor.development") {

@@ -10,6 +10,9 @@ rust-version = "1.85"
 description = "Linux desktop visor for Hypermesh"
 publish = false
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [[bin]]
 name = "hypermesh-desktop-mcp"
 path = "src/bin/hypermesh-desktop-mcp.rs"
