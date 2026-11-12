@@ -23,13 +23,19 @@ for limits and supported tools.
 
 For the non-graphical build and its current limits, see [headless build](docs/headless.md).
 
+Useful links: [downloads](https://hyperme.sh/visor),
+[release packages](#release-packages), [capability reference](docs/verb-contract.md),
+[MCP setup](docs/mcp-discovery.md), [container deployment](container/README.md),
+[headless builds](docs/headless.md), and
+[report a problem](https://github.com/hyperme-sh/hypermesh-visor/issues/new).
+
 ## Linux build and tests
 
 Stable Rust. The workspace tests do not need a display server.
 
 ```bash
-cargo test
-cargo build --release
+cargo test --locked --workspace
+cargo build --locked --release
 ./target/release/hypermesh-visor
 ```
 
@@ -43,13 +49,10 @@ Full display and container integration runs are owned by the [central nightly CI
 
 X11 uses Xorg with the dummy video driver. Injected mouse and type go through XTEST, and a small `xev` window checks that those events landed. Physical input is separate: the harness creates a pointer and a keyboard with `/dev/uinput` (`sudo modprobe uinput`, then `ci/display/uinput.py` under `sudo`). libinput attaches those nodes as slave devices. If libinput does not attach them, the same nodes are handed to the evdev driver. They are not the XTEST pointer or keyboard, and the harness does not pretend that XTEST input is physical. The companion's XTEST classification is what the pause and click scenarios exercise.
 
-```bash
-sudo modprobe uinput
-cargo build --locked --workspace --bins
-bash ci/display/run.sh x11
-bash ci/display/run.sh x11 inject-lands
-bash ci/display/run.sh wayland
-```
+These display scenarios run only in the scheduled CI batch against main.
+Do not invoke the harness manually on developer machines or shared hosts.
+Infra provisions its dedicated runner and input-device prerequisites.
+
 
 X11 scenarios: `uinput-channel`, `key-down-detects`, `inject-lands`, `stop-resume-during-type`, `uinput-key-pauses-type`, `uinput-move-pauses`, `pausing-click-does-not-ask`, `off-bug-toggles-menu`, `xtest-click-does-nothing`, `watchdog-pauses`, `held-release`, `auto-resume`, `tcp-start-without-poll`, `other-user-cannot-drive`. An unknown name exits non-zero and lists these names. `uinput-channel` runs inside a scenario subshell, moves the pointer through the inherited command channel, and expects the companion to pause. `key-down-detects` holds an XTEST key down with no up and checks that `key[$code]=down` is reported. `stop-resume-during-type` posts stop and then resume while a long type is still injecting; the type is cancelled and the phase is running again. `off-bug-toggles-menu` clicks the bug while automation is off and expects the menu to open and close. `tcp-start-without-poll` posts `start` on the control socket with no companion poll and expects 503. That is the same rule as opted-in TCP. `other-user-cannot-drive` adds a second account with `sudo useradd` and checks that it cannot connect to either socket. It then restarts the visor with `--tcp` and checks that the account cannot read `api.token` and gets 401 on session, view, mouse, and type. A resume with that bearer is 403, or 501 on Wayland until #17.
 
@@ -61,12 +64,14 @@ Wayland starts sway with `WLR_BACKENDS=headless` and `WLR_RENDERER=pixman`. Sway
 
 Pull requests and `main` build Linux artifacts. Those builds are not a release. Their version is the `Cargo.toml` version plus `~ci.` and the commit. A release is a tag named `v` plus that same `Cargo.toml` version, pushed after the version is on `main`. The workflow refuses a tag that does not match.
 
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
+Creating or changing a version tag or release requires the owner's explicit
+authorization for that version and action. Do not recreate the existing
+`v0.1.0` tag.
 
-The release asset names do not include the version. `v0.1.0` publishes:
+
+The published [v0.1.0 release](https://github.com/hyperme-sh/hypermesh-visor/releases/tag/v0.1.0)
+contains the assets below. The source documentation describes current main;
+newer capabilities may not exist in that release. The asset names omit the version:
 
 - `hypermesh-visor-x86_64`
 - `hypermesh-visor-x86_64.deb`
@@ -94,7 +99,9 @@ The raw release assets `hypermesh-visor-x86_64` and `hypermesh-visor-aarch64` st
 | disconnected | The visor does not answer. Three missed polls in a row count as down |
 | sleeping | The visor is up, nothing is driving, and neither the companion nor the open session has been used for `sleep_after_secs` (default 900) |
 
-While a visor session is open it paints that session's purpose and the prefer-MCP mode (`mcp:<id>` when a healthy binding matches, else `view` / `watch` / `listen` / `mouse` / `type`) under the bug in a built-in bitmap face. It does not copy the screen into the window. Clicking it opens a short menu: a terminal running `hypermesh`, MCP profiles, MCP doctor, login, billing (`https://hyperme.sh/#pricing`), renting (`https://hyperme.sh/#offers`), the desk (`https://portal.test.hyperme.sh/dashboard/hypermesh`), Eyes follow, and Bug cursor. On a short display the window is capped to the screen and the wheel scrolls the rows, so the last item stays reachable. Eyes follow and the bug cursor are off unless that menu row turns them on. Both choices are stored in `~/.config/hypermesh/companion.toml` (`eyes_follow_pointer`, `bug_cursor`). Pupils track the pointer only on the idle animation, and only while a session is open and eyes follow is on. `sleep_after_secs` and `automation_resume_secs` (default 120) are read from that file when the companion starts. Polls and pause posts use the Unix socket `$XDG_RUNTIME_DIR/hypermesh/companion.sock` (directory mode 0700, socket mode 0600). `HYPERMESH_RUNTIME_DIR` overrides that directory. When `XDG_RUNTIME_DIR` is unset, both sides use `$XDG_STATE_HOME/hypermesh/run`, or `~/.local/state/hypermesh/run` when that is unset too. A path that does not fit in `sun_path` fails closed. Session tools and the desktop MCP still use `HYPERMESH_VISOR_URL` (default `http://127.0.0.1:9847`) on the loopback TCP port.
+While a visor session is open it paints that session's purpose and the prefer-MCP mode (`mcp:<id>` when a healthy binding matches, else `view` / `watch` / `listen` / `mouse` / `type`) under the bug in a built-in bitmap face. It does not copy the screen into the window. Clicking it opens a short menu: a terminal running `hypermesh`, MCP profiles, MCP doctor, login, billing (`https://hyperme.sh/#pricing`), renting (`https://hyperme.sh/#offers`), the desk (`https://portal.test.hyperme.sh/dashboard/hypermesh`), Eyes follow, and Bug cursor. On a short display the window is capped to the screen and the wheel scrolls the rows, so the last item stays reachable. Eyes follow and the bug cursor are off unless that menu row turns them on. Both choices are stored in `~/.config/hypermesh/companion.toml` (`eyes_follow_pointer`, `bug_cursor`). Pupils track the pointer only on the idle animation, and only while a session is open and eyes follow is on. `sleep_after_secs` and `automation_resume_secs` (default 120) are read from that file when the companion starts. Polls and pause posts use the Unix socket `$XDG_RUNTIME_DIR/hypermesh/companion.sock` (directory mode 0700, socket mode 0600). `HYPERMESH_RUNTIME_DIR` overrides that directory. When `XDG_RUNTIME_DIR` is unset, both sides use `$XDG_STATE_HOME/hypermesh/run`, or `~/.local/state/hypermesh/run` when that is unset too. A path that does not fit in `sun_path` fails closed. Session tools and desktop MCP use the private control socket by default.
+`HYPERMESH_VISOR_URL` explicitly selects authenticated loopback TCP; it does
+not enable the daemon's TCP listener.
 
 The bug cursor art is in [`companion/assets/cursor`](companion/assets/cursor/README.md). How it pairs with the automation state is [Automation mode](#automation-mode).
 
