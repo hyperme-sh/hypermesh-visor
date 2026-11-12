@@ -22,6 +22,8 @@ pub enum Action {
     ToggleCompact,
     OpenCli,
     OpenSessionCli,
+    OpenSessionForum,
+    OpenSessionEditor,
     Login,
     OpenBilling,
     OpenRent,
@@ -255,6 +257,8 @@ pub fn render(
         let rows = [
             ("Compact / expanded icon", Action::ToggleCompact),
             ("Session CLI", Action::OpenSessionCli),
+            ("Session forum", Action::OpenSessionForum),
+            ("Session in VS Code", Action::OpenSessionEditor),
             ("Open CLI", Action::OpenCli),
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
@@ -270,7 +274,7 @@ pub fn render(
             (bug_label, Action::ToggleBugCursor),
         ];
         for (label, action) in rows {
-            if action == Action::OpenSessionCli && !matches!(pose, Pose::Active { .. }) {
+            if matches!(action, Action::OpenSessionCli | Action::OpenSessionForum | Action::OpenSessionEditor) && !matches!(pose, Pose::Active { .. }) {
                 continue;
             }
             let row = text_card(
@@ -1329,6 +1333,18 @@ mod tests {
 
     fn corner_clear(scene: &Scene) -> bool {
         scene.rgba[3] == 0
+    }
+
+    #[test]
+    fn session_destinations_only_appear_for_an_active_session() {
+        let sprites = Sprites::load();
+        for pose in [Pose::Idle, Pose::Active { purpose: "work".into(), verb: None, mode: None }] {
+            let scene = render(&sprites, &pose, Mascot::Idle, 0, true, false, None,
+                false, false, None, None, 1800, 0);
+            for action in [Action::OpenSessionCli, Action::OpenSessionForum, Action::OpenSessionEditor] {
+                assert_eq!(scene.hits.iter().any(|hit| hit.action == action), matches!(pose, Pose::Active { .. }));
+            }
+        }
     }
 
     #[test]
