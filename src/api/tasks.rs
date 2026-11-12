@@ -189,7 +189,16 @@ pub(super) async fn submit(
     Path(session): Path<String>,
     Json(body): Json<Submission>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
+    submit_bounded(state, session, body, DEADLINE, None).await
+}
+
+pub(super) async fn submit_bounded(
+    state: Arc<AppState>, session: String, body: Submission, deadline: Duration, consent_word: Option<u64>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
     let session = parse_id(&session)?;
+    if deadline.is_zero() || deadline > DEADLINE {
+        return Err(ApiError::bad("invalid task deadline"));
+    }
     if body.steps.is_empty() || body.steps.len() > MAX_STEPS {
         return Err(ApiError::bad("task requires 1 to 16 steps"));
     }
@@ -232,9 +241,10 @@ pub(super) async fn submit(
         value
     };
     drop(sessions);
+    let expires_at = Instant::now() + deadline;
     tokio::spawn(async move {
         let _slot = slot;
-        run(state, session, id, cancel, actions).await;
+        run(state, session, id, cancel, actions, expires_at, consent_word).await;
     });
     Ok((StatusCode::ACCEPTED, Json(snapshot)))
 }
@@ -286,10 +296,12 @@ async fn run(
     id: Uuid,
     cancel: Arc<AtomicBool>,
     actions: Vec<Action>,
+    expires_at: Instant,
+    consent_word: Option<u64>,
 ) {
     let timer_flag = Arc::clone(&cancel);
     let timer = tokio::spawn(async move {
-        tokio::time::sleep(DEADLINE).await;
+        tokio::time::sleep_until(tokio::time::Instant::from_std(expires_at)).await;
         timer_flag.store(true, Ordering::SeqCst);
     });
     let _permit = state
@@ -300,6 +312,9 @@ async fn run(
         .expect("task semaphore stays open");
     let mut size = 0;
     for action in actions {
+        if consent_word.is_some_and(|word| gate_word(&state) != word) {
+            cancel.store(true, Ordering::SeqCst);
+        }
         if cancel.load(Ordering::SeqCst) || !state.has_session(session) {
             break;
         }

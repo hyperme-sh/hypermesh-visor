@@ -41,6 +41,7 @@ use crate::stream::{self, StreamError};
 use crate::vault::{SecretRequest, Vault, VaultError};
 
 mod tasks;
+mod remote_bot;
 mod mcp_resources;
 mod mcp_prompts;
 
@@ -923,6 +924,7 @@ pub async fn serve_until(
     state: Arc<AppState>,
     dependency: impl std::future::Future<Output = std::io::Result<()>> + Send + 'static,
 ) -> std::io::Result<()> {
+    let remote_bot = remote_bot::configured().map_err(std::io::Error::other)?;
     let runtime = crate::companion_sock::runtime_dir()?;
     crate::companion_sock::prepare_dir(&runtime)?;
     let companion_path = crate::companion_sock::socket_file(&runtime);
@@ -984,6 +986,9 @@ pub async fn serve_until(
             .await
     });
     let mut jobs = vec![companion, control];
+    if let Some(client) = remote_bot {
+        jobs.push(tokio::spawn(remote_bot::run(client, Arc::clone(&state), cancel_rx.clone())));
+    }
     if let (Some(listener), Some(token)) = (tcp_listener, token) {
         let app = tcp_router(Arc::clone(&state), token);
         let mut tcp_stop = cancel_rx.clone();
@@ -7705,4 +7710,35 @@ while True:
         assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
         assert!(lock(&desktop.typed).len() < 1024);
     }
+    #[tokio::test]
+    async fn remote_deadline_cancels_work_while_it_waits_in_the_local_queue() {
+        let (state, desktop, session) = task_fixture();
+        let injection = lock(&state.injection);
+        let (_, first) = task_request(state.clone(), "POST", &format!("/session/{session}/tasks"),
+            serde_json::json!({"steps":[{"tool":"type_text","arguments":{"text":"x"}}]})).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let body = serde_json::from_value(serde_json::json!({"steps":[{"tool":"view","arguments":{}}]})).unwrap();
+        let (_, Json(remote)) = tasks::submit_bounded(state.clone(), session.to_string(), body, Duration::from_millis(10), None).await
+            .unwrap_or_else(|_| panic!("bounded task rejected"));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        drop(injection);
+        task_terminal(state.clone(), &format!("/session/{session}/tasks/{}", first["id"].as_str().unwrap())).await;
+        let done = task_terminal(state, &format!("/session/{session}/tasks/{}", remote["id"].as_str().unwrap())).await;
+        assert_eq!(done["status"], "cancelled");
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn remote_task_cannot_run_after_its_local_consent_epoch_changes() {
+        let (state, desktop, session) = task_fixture();
+        let old_consent = gate_word(&state);
+        lock(&state.automation).pause();
+        let body = serde_json::from_value(serde_json::json!({"steps":[{"tool":"view","arguments":{}}]})).unwrap();
+        let (_, Json(remote)) = tasks::submit_bounded(state.clone(), session.to_string(), body,
+            Duration::from_secs(1), Some(old_consent)).await.unwrap_or_else(|_| panic!("submission failed"));
+        let done = task_terminal(state, &format!("/session/{session}/tasks/{}", remote["id"].as_str().unwrap())).await;
+        assert_eq!(done["status"], "cancelled");
+        assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+    }
+
 }
