@@ -41,6 +41,7 @@ use crate::stream::{self, StreamError};
 use crate::vault::{SecretRequest, Vault, VaultError};
 
 mod tasks;
+mod mcp_resources;
 
 pub struct AppState {
     tasks: tasks::Queue,
@@ -670,6 +671,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/session/:id/inbox", get(session_inbox))
         .route("/session/:id/mcp", get(session_mcp))
         .route("/session/:id/mcp/call", post(mcp_call))
+        .route("/session/:id/mcp/resources", post(mcp_resources::request))
         .route("/session/:id/mcp/refresh", post(mcp_refresh))
         .layer(Extension(CompanionLink(from_companion)))
         .with_state(state)
@@ -3451,6 +3453,10 @@ mod tests {
             (
                 "POST",
                 "/session/00000000-0000-0000-0000-000000000001/mcp/call",
+            ),
+            (
+                "POST",
+                "/session/00000000-0000-0000-0000-000000000001/mcp/resources",
             ),
         ];
         for (method, path) in routes {

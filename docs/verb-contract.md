@@ -45,6 +45,7 @@ the deserializers in `src/api.rs`, `src/input.rs`, `src/harness.rs`, and
 | `GET …/inbox` | Held prompts, files including base64 content, secret handles | Sensitive file content; not a public forum feed |
 | `GET …/mcp` | Profile, server health, tool names and schemas | Session tool discovery |
 | `POST …/mcp/call` | `server`, `tool`, `decision` approve/deny, optional `arguments` | Explicit tool decision; returns outcome/result |
+| `POST …/mcp/resources` | `server`, `action` list/templates/read, `decision` approve/deny, optional `params` | Explicit resource operation; requires advertised resource capability; returns outcome/result |
 | `GET /companion` | Desktop/session state, focus and preferred MCP binding | Does not grant execution permission |
 | `POST /companion/automation` | `action` | Trusted companion link required to lift a user pause |
 | `POST /companion/interrupt`, `/companion/notice` | Companion control messages | See API request types; not task submission APIs |
