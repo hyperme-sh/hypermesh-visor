@@ -367,6 +367,20 @@ impl AttachedServer {
         Ok(result.clone())
     }
 
+    pub fn prompt_request(&mut self, method: &str, params: Value) -> Result<Value, McpError> {
+        super::prompts::validate_request(method, &params)?;
+        if !self.negotiated.as_ref().is_some_and(|n| n.server_capabilities.get("prompts").is_some_and(Value::is_object)) {
+            return Err(McpError::message("MCP server did not advertise prompts"));
+        }
+        let response = self.request(method, params)?;
+        if response.get("error").is_some() {
+            return Err(McpError::message("MCP prompt request rejected"));
+        }
+        let result = response.get("result").ok_or_else(|| McpError::message("MCP prompt result missing"))?;
+        super::prompts::validate_result(method, result)?;
+        Ok(result.clone())
+    }
+
     pub fn call_tool(&mut self, tool: &str, arguments: Value) -> Result<Value, McpError> {
         if self.needs_refresh() {
             return Err(McpError::message(
