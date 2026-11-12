@@ -46,10 +46,10 @@ UID zero, creates private runtime/state directories, and keeps its PID file in
 root-owned `/run`. Installation leaves it disabled. Its default transport is a
 local socket; network access requires separate configuration.
 
-This implements the build/storage and package portions of #99/#101. Installed
-OpenRC behavior, on-request host delivery/removal, the opt-in host capability
-schema and AIuditor integration remain required. Nightly integration coverage must be added for those paths;
-unit/build results do not establish installed-service behavior.
+The Alpine build and packaging work in #101 is implemented. Infra owns the
+scheduled installed-package checks; they are not a prerequisite for closing the
+implementation issue. On-request host delivery/removal, opt-in host capabilities
+and AIuditor authorization remain separate work in #99.
 
 The same Dockerfile has an optional `runtime` target built on digest-pinned
 Alpine. It installs the APK, runs as UID 1000, and contains no Rust/Go toolchain,
@@ -63,3 +63,64 @@ and checksums, and includes them beside the desktop assets. Architecture-specifi
 build metadata avoids filename collisions, and the combined checksum file covers
 all published bytes. Current CI artifacts are still not a published release;
 this wiring does not create a tag, authorize a version, or alter desktop packages.
+
+## Alpine installation
+
+Current native bundles are CI artifacts, not a published Alpine release. Download
+the complete `headless-musl-x86_64` or `headless-musl-aarch64` artifact from the
+same successful main build. Keep its `build.txt` and `checksums.txt`; the former
+records both source revisions and the latter covers the bundle's bytes. Do not
+combine files from different builds. The APK is unsigned; checksum comparison
+does not provide a package-signing identity.
+
+On a native Alpine machine, unpack that artifact into a new directory. From that
+directory, verify the complete artifact and select the matching architecture:
+
+```sh
+visor_arch=$(uname -m)
+case "$visor_arch" in x86_64|aarch64) ;; *) exit 1 ;; esac
+test "$(apk --print-arch)" = "$visor_arch"
+sha256sum -c checksums.txt
+```
+
+Install the matching file as root. This installs the binaries and service files;
+it does not create an account, start a service or enable TCP:
+
+```sh
+apk add --no-network --allow-untrusted "./hypermesh-visor-headless-${visor_arch}.apk"
+```
+
+For OpenRC operation, use an Alpine installation that already has OpenRC and a
+provisioned dedicated non-root service account. Set `visor_user` to that account
+in `/etc/conf.d/hypermesh-visor-headless`, then start the service as root:
+
+```sh
+rc-service hypermesh-visor-headless start
+rc-service hypermesh-visor-headless status
+```
+
+The service creates `/run/hypermesh-visor-headless` and
+`/var/lib/hypermesh-visor-headless` with mode 0700 owned by the selected account.
+It sets the private session-file backend, stores configuration under the state
+directory and keeps TCP disabled. Desktop operations remain unavailable. To
+start it at boot, explicitly add it with `rc-update add hypermesh-visor-headless
+default`; installation itself does not do that.
+
+For an upgrade, first verify the new complete artifact, stop the service, and
+install its matching APK. Development artifacts can share a package version:
+remove the old package with `apk del hypermesh-visor-headless` before adding a
+same-version candidate. Preserve the state directory and service-account choice,
+and restore `visor_user` if the package manager supplies a fresh configuration.
+Start the service after installation. This is a manual development bundle path,
+not an automatic update channel.
+
+To uninstall, stop the service, remove its boot entry if one was added, and run
+`apk del hypermesh-visor-headless`. The service account and private state remain
+operator-owned; package removal does not erase stored credentials.
+
+The static tarball contains the daemon, Conductor and licenses under `usr/`; it
+does not contain OpenRC setup. Keep the daemon's `bin` directory and Conductor's
+sibling `lib/hypermesh-visor-headless` layout together. A direct non-root launch
+requires an explicitly configured private session-file backend as described
+above. Neither installation mode silently grants host abilities or provisions a
+Conductor lease.
