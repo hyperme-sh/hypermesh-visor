@@ -8,7 +8,10 @@ and identifier are unchanged.
 
 CI builds the app on its native macOS runner, checks event mappings without
 posting input, verifies that command-line bridge requests are refused, and runs
-workspace unit and contract tests. The uploaded development ZIP contains the app, CLI and inverse MCP adapter,
+workspace unit and contract tests. A separate CI-only credential-store contract
+uses a temporary keychain for the bundled CLI, checks write/replace/read/delete
+and empty-token refusal, then restores the runner keychain settings. It uses
+fixture values and does not perform sign-in or contact an auth service. The uploaded development ZIP contains the app, CLI and inverse MCP adapter,
 with per-file SHA256 checksums and a source revision. See
 [distribution instructions](DISTRIBUTION.md) for verification, use and removal. It targets the runner's macOS version and
 architecture; it is not a universal or backwards-compatible release bundle.
