@@ -27,6 +27,8 @@ mod session;
 mod stream;
 pub mod telemetry;
 mod vault;
+mod usage;
+pub use usage::ResponseUsage;
 
 pub use api::{serve, serve_until, AppState};
 pub use automation::SHUTDOWN_DEADLINE;
@@ -39,7 +41,7 @@ pub use desktop::MacDesktop;
 pub use desktop::{current_euid, Desktop, FixtureDesktop, HeadlessDesktop};
 pub use hypermesh_session::{refresh_token, MemoryStore, SessionStore};
 pub use input::{key_chord_request, SCROLL_MAX_TICKS};
-pub use prompt::{open_supervisor_door, DoorConfig, PromptDoor, DEFAULT_CATALOG_ID};
+pub use prompt::{open_supervisor_door, DoorConfig, PromptCompletion, PromptDoor, DEFAULT_CATALOG_ID};
 
 #[cfg(test)]
 mod session_key {

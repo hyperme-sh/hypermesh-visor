@@ -257,20 +257,25 @@ impl AppState {
     }
 
     fn deliver_stream(&self, id: Uuid, body: &str, api_key: &str) -> Result<String, StreamError> {
-        let (parked, mut secrets) = {
+        let (parked, mut secrets, usage_generation) = {
             let mut sessions = lock(&self.sessions);
             let session = sessions.get_mut(&id).ok_or(StreamError::Closed)?;
             let parked = stream::deliver(session, body)?;
             let secrets = stream::vault_needles(session);
-            (parked, secrets)
+            let generation = (!parked.prompts.is_empty()).then(|| session.begin_response_usage());
+            (parked, secrets, generation)
         };
         let prompts = parked
             .prompts
             .iter()
             .map(|prompt| (prompt.prompt.clone(), prompt.model.clone()))
             .collect::<Vec<_>>();
-        self.prompts
-            .drive_parked(&prompts, &parked.file_texts, api_key, &secrets);
+        let usage = self.prompts.drive_parked(&prompts, &parked.file_texts, api_key, &secrets);
+        if let Some(generation) = usage_generation {
+            if let Some(session) = lock(&self.sessions).get_mut(&id) {
+                session.finish_response_usage(generation, usage);
+            }
+        }
         for secret in &mut secrets {
             secret.zeroize();
         }
@@ -303,6 +308,7 @@ impl AppState {
                 .map(|server| (server, server.routing_status())).collect();
             ChosenSession {
                 id: session.id(),
+                last_response_usage: session.last_response_usage(),
                 purpose: clip_text(session.purpose(), SESSION_TEXT_MAX),
                 verb: session.verb().map(Verb::as_str),
                 mcp_servers: session.mcp().server_names(),
@@ -342,6 +348,7 @@ impl AppState {
         });
         Some(CompanionSession {
             id: chosen.id,
+            last_response_usage: chosen.last_response_usage,
             purpose: chosen.purpose,
             verb: chosen.verb,
             mode,
@@ -546,6 +553,7 @@ struct DriveBody {
 }
 
 struct ChosenSession {
+    last_response_usage: Option<crate::ResponseUsage>,
     id: Uuid,
     purpose: String,
     verb: Option<&'static str>,
@@ -573,6 +581,8 @@ struct McpAttachment {
 
 #[derive(Serialize)]
 struct CompanionSession {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_response_usage: Option<crate::ResponseUsage>,
     id: Uuid,
     purpose: String,
     verb: Option<&'static str>,
@@ -7355,6 +7365,51 @@ while True:
         let audit: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(audit[0]["outcome"], "forwarded");
         assert_eq!(audit[0]["model"], crate::prompt::DEFAULT_CATALOG_ID);
+    }
+
+    #[tokio::test]
+    async fn response_usage_is_reported_per_session_and_old_completions_are_ignored() {
+        let fixture = crate::prompt::ChatFixture::spawn(200,
+            r#"{"choices":[{"message":{"content":"done"}}],"usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}"#);
+        let mut state = AppState::with_orchestrator(FakeDesktop::new(), Duration::from_millis(20),
+            crate::prompt::DoorConfig {
+                conductor_addr: Some(fixture.url.trim_start_matches("http://").into()),
+                ..Default::default()
+            }).unwrap();
+        state.mcp_dir = std::env::temp_dir().join(format!("visor-usage-{}", Uuid::new_v4()));
+        let state = Arc::new(state);
+        let mut ids = Vec::new();
+        for purpose in ["first", "second"] {
+            let request = serde_json::from_value(serde_json::json!({
+                "purpose": purpose, "recipes": [], "agent": {"name":"fixture", "instructions":""}, "skills": []
+            })).unwrap();
+            let (_, Json(opened)) = open_session(State(state.clone()), Json(request)).await.ok().expect("session opens");
+            ids.push(opened.id);
+        }
+        state.deliver_stream(ids[0], r#"{"kind":"prompt","prompt":"count"}"#, "org_fixture_ok").unwrap();
+        let expected = crate::ResponseUsage { input_tokens: 12, output_tokens: 0, cached_input_tokens: Some(4) };
+        {
+            let sessions = lock(&state.sessions);
+            assert_eq!(sessions[&ids[0]].last_response_usage(), Some(expected));
+            assert_eq!(sessions[&ids[1]].last_response_usage(), None);
+        }
+        let selected = serde_json::to_value(state.companion_session().unwrap()).unwrap();
+        assert_eq!(selected["id"], ids[0].to_string());
+        assert_eq!(selected["last_response_usage"]["output_tokens"], 0);
+        state.deliver_stream(ids[0], r#"{"kind":"file","name":"note.txt","content_base64":"aGk="}"#, "org_fixture_ok").unwrap();
+        assert_eq!(lock(&state.sessions)[&ids[0]].last_response_usage(), Some(expected));
+        // A failed prompt clears the previous count instead of displaying stale usage.
+        state.deliver_stream(ids[0], r#"{"kind":"prompt","prompt":"count"}"#, "").unwrap();
+        assert_eq!(lock(&state.sessions)[&ids[0]].last_response_usage(), None);
+        let mut sessions = lock(&state.sessions);
+        let session = sessions.get_mut(&ids[0]).unwrap();
+        let old = session.begin_response_usage();
+        let current = session.begin_response_usage();
+        session.finish_response_usage(old, Some(expected));
+        assert_eq!(session.last_response_usage(), None);
+        session.finish_response_usage(current, Some(expected));
+        session.finish_response_usage(old, None);
+        assert_eq!(session.last_response_usage(), Some(expected));
     }
 
     fn task_fixture() -> (Arc<AppState>, Arc<FakeDesktop>, Uuid) {

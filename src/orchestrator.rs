@@ -8,7 +8,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use crate::prompt::{ExpertAside, ForwardedPrompt, PromptDoor, SupervisorDoor, UnconfiguredDoor};
+use crate::prompt::{
+    ExpertAside, ForwardedPrompt, PromptCompletion, PromptDoor, SupervisorDoor, UnconfiguredDoor,
+};
 
 /// Catalog id used when the caller omits `model`. One string, beside this seam.
 pub const DEFAULT_CATALOG_ID: &str = "llama-3.1-8b-q4";
@@ -56,7 +58,7 @@ pub(crate) enum Choice {
 pub(crate) enum Dispatch {
     Unmapped,
     Finished {
-        result: Result<String, String>,
+        result: Result<PromptCompletion, String>,
         door: Option<String>,
         other_expert: Option<ExpertAside>,
     },
@@ -262,7 +264,7 @@ impl Orchestrator {
         match self.plan(model) {
             Plan::Unmapped => Dispatch::Unmapped,
             Plan::Unconfigured => Dispatch::Finished {
-                result: UnconfiguredDoor.forward(call),
+                result: UnconfiguredDoor.forward_reported(call),
                 door: None,
                 other_expert: None,
             },
@@ -270,7 +272,7 @@ impl Orchestrator {
                 if let Some(name) = &name {
                     self.report.set_door(name);
                 }
-                let result = door.forward(call);
+                let result = door.forward_reported(call);
                 Dispatch::Finished {
                     result,
                     door: self.report.door(),
@@ -295,7 +297,7 @@ impl Orchestrator {
                     answer_second,
                     report: Some(Arc::clone(&self.report)),
                 };
-                let result = fan.forward(call);
+                let result = fan.forward_reported(call);
                 Dispatch::Finished {
                     result,
                     door: self.report.door(),
@@ -314,7 +316,7 @@ impl Orchestrator {
             match host.door.forward(call) {
                 Ok(text) => {
                     return Dispatch::Finished {
-                        result: Ok(text),
+                        result: Ok(PromptCompletion::unmeasured(text)),
                         door: door_name,
                         other_expert: None,
                     };

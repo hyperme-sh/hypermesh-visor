@@ -111,8 +111,12 @@ The raw release assets `hypermesh-visor-x86_64` and `hypermesh-visor-aarch64` st
 
 The menu's **Compact / expanded icon** action switches to a 96-pixel-wide bug
 and saves `compact_mode` in `~/.config/hypermesh/companion.toml`. Hover shows
-session/tool details and the current status. Usage is labeled unavailable until
-a measured token/contract source is connected. Menus and the Continue prompt
+session/tool details and the current status. When Conductor reports complete
+input/output counts, the icon shows the latest response counts and hover shows
+exact values, including cached input when reported. Missing or invalid counts
+stay unavailable; a new prompt clears the prior response counts. These are not
+task totals or budget limits, which remain unavailable. Counts stay with their
+session. Menus and the Continue prompt
 stay expanded; clicking during automation keeps the existing pause behavior.
 The **Session CLI** menu action opens a terminal bound to the active session.
 It uses the installed `hypermesh` CLI and its existing renter credentials. Enter

@@ -348,6 +348,7 @@ pub fn render_compact(
     mascot: Mascot,
     frame: usize,
     status: &str,
+    usage: Option<&crate::auth::ResponseUsage>,
     hover: bool,
     max_height: u32,
 ) -> Scene {
@@ -359,6 +360,29 @@ pub fn render_compact(
                 put_px(&mut bug, x, y + dy, [230, 240, 245, 255]);
             }
         }
+    }
+    if let Some(usage) = usage {
+        for y in 2..23 {
+            for x in 2..42 {
+                put_px(&mut bug, x, y, [12, 18, 28, 235]);
+            }
+        }
+        draw_text(
+            &mut bug,
+            1,
+            4,
+            4,
+            &format!("I{}", compact_tokens(usage.input_tokens)),
+            [130, 220, 255, 255],
+        );
+        draw_text(
+            &mut bug,
+            1,
+            4,
+            14,
+            &format!("O{}", compact_tokens(usage.output_tokens)),
+            [180, 245, 160, 255],
+        );
     }
     let details = hover.then(|| {
         let mut lines = vec!["Companion".to_owned()];
@@ -382,7 +406,19 @@ pub fn render_compact(
         if !status.is_empty() {
             lines.extend(wrap_note(&sanitize(status), 42));
         }
-        lines.push("Token/contract usage: unavailable".into());
+        if let Some(usage) = usage {
+            lines.push("Latest response tokens (reported)".into());
+            lines.push(format!(
+                "Input: {}  Output: {}",
+                usage.input_tokens, usage.output_tokens
+            ));
+            if let Some(cached) = usage.cached_input_tokens {
+                lines.push(format!("Cached input: {cached}"));
+            }
+        } else {
+            lines.push("Latest response tokens: unavailable".into());
+        }
+        lines.push("Task totals/budget: unavailable".into());
         text_card(
             360,
             2,
@@ -416,6 +452,22 @@ pub fn render_compact(
             action: Action::ToggleMenu,
         }],
     }
+}
+
+fn compact_tokens(tokens: u64) -> String {
+    for (scale, unit) in [
+        (1_000_000_000_000_000_000, "E"),
+        (1_000_000_000_000_000, "P"),
+        (1_000_000_000_000, "T"),
+        (1_000_000_000, "G"),
+        (1_000_000, "M"),
+        (1_000, "K"),
+    ] {
+        if tokens >= scale {
+            return format!("{}{unit}", tokens / scale);
+        }
+    }
+    tokens.to_string()
 }
 
 fn clip_hit(mut hit: Hit, scroll: i32, clip_top: i32, height: i32) -> Option<Hit> {
@@ -491,6 +543,11 @@ pub fn dump_frames(dir: &Path) -> std::io::Result<()> {
             Mascot::Idle,
             0,
             "Paused",
+            Some(&crate::auth::ResponseUsage {
+                input_tokens: 1240,
+                output_tokens: 86,
+                cached_input_tokens: Some(128),
+            }),
             hover,
             900,
         );
@@ -1398,6 +1455,45 @@ mod tests {
     }
 
     #[test]
+    fn compact_counts_show_reported_zero_and_keep_the_same_geometry() {
+        let sprites = Sprites::load();
+        let usage = crate::auth::ResponseUsage {
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_input_tokens: None,
+        };
+        let unknown = render_compact(
+            &sprites,
+            &Pose::Idle,
+            Mascot::Idle,
+            0,
+            "Ready",
+            None,
+            false,
+            800,
+        );
+        let measured = render_compact(
+            &sprites,
+            &Pose::Idle,
+            Mascot::Idle,
+            0,
+            "Ready",
+            Some(&usage),
+            false,
+            800,
+        );
+        assert_eq!(
+            (unknown.width, unknown.height),
+            (measured.width, measured.height)
+        );
+        assert_ne!(unknown.rgba, measured.rgba);
+        assert_eq!(compact_tokens(0), "0");
+        assert_eq!(compact_tokens(999), "999");
+        assert_eq!(compact_tokens(1240), "1K");
+        assert_eq!(compact_tokens(u64::MAX), "18E");
+    }
+
+    #[test]
     fn compact_hover_preserves_icon_anchor_and_has_no_control_actions() {
         let sprites = Sprites::load();
         let pose = Pose::Active {
@@ -1405,8 +1501,8 @@ mod tests {
             verb: Some("type".into()),
             mode: None,
         };
-        let small = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", false, 900);
-        let detail = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", true, 900);
+        let small = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", None, false, 900);
+        let detail = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", None, true, 900);
         assert_eq!(small.width, 96);
         assert_eq!(detail.width, 360);
         assert!(detail.height > small.height);
@@ -1422,7 +1518,7 @@ mod tests {
                 scene.width as usize * scene.height as usize * 4
             );
         }
-        let clipped = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", true, 1);
+        let clipped = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", None, true, 1);
         assert_eq!(clipped.height, 1);
         assert_eq!(clipped.hits[0].h, 1);
     }

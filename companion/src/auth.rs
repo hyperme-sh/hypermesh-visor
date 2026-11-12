@@ -82,9 +82,36 @@ pub fn pose_from_companion(body: &str) -> Pose {
 /// One successful `GET /companion` body. `connected` is false only for the
 /// disconnected placeholder; a parsed body is always connected.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResponseUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: Option<u64>,
+}
+impl ResponseUsage {
+    fn parse(value: &serde_json::Value) -> Option<Self> {
+        let input_tokens = value.get("input_tokens")?.as_u64()?;
+        let output_tokens = value.get("output_tokens")?.as_u64()?;
+        input_tokens.checked_add(output_tokens)?;
+        let cached_input_tokens = match value.get("cached_input_tokens") {
+            None => None,
+            Some(count) => Some(count.as_u64()?),
+        };
+        if cached_input_tokens.is_some_and(|cached| cached > input_tokens) {
+            return None;
+        }
+        Some(Self {
+            input_tokens,
+            output_tokens,
+            cached_input_tokens,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
     pub connected: bool,
     pub session_id: Option<String>,
+    pub last_response_usage: Option<ResponseUsage>,
     pub upgrading: bool,
     pub pose: Pose,
     pub idle_ms: Option<u64>,
@@ -133,6 +160,7 @@ impl Snapshot {
         Self {
             connected: false,
             session_id: None,
+            last_response_usage: None,
             upgrading: false,
             pose: Pose::Idle,
             idle_ms: None,
@@ -201,16 +229,22 @@ pub fn snapshot_from_body(body: &str) -> Option<Snapshot> {
         .get("instance")
         .and_then(|item| item.as_u64())
         .unwrap_or(0);
+    let session_id = open
+        .then(|| {
+            value
+                .pointer("/session/id")
+                .and_then(|id| id.as_str())
+                .and_then(crate::session_cli::canonical_session)
+        })
+        .flatten();
+    let last_response_usage = session_id
+        .as_ref()
+        .and_then(|_| value.pointer("/session/last_response_usage"))
+        .and_then(ResponseUsage::parse);
     Some(Snapshot {
         connected: true,
-        session_id: open
-            .then(|| {
-                value
-                    .pointer("/session/id")
-                    .and_then(|id| id.as_str())
-                    .and_then(crate::session_cli::canonical_session)
-            })
-            .flatten(),
+        session_id,
+        last_response_usage,
         upgrading,
         pose,
         idle_ms,
@@ -268,6 +302,53 @@ fn parse_drive(value: &serde_json::Value) -> Option<DriveView> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_counts_require_an_open_session_and_complete_valid_numbers() {
+        let mut body = serde_json::json!({"open":true,"session":{
+            "id":"01234567-89ab-cdef-0123-456789abcdef",
+            "last_response_usage":{"input_tokens":0,"output_tokens":0,"cached_input_tokens":0}
+        }});
+        let counts = snapshot_from_body(&body.to_string())
+            .unwrap()
+            .last_response_usage
+            .unwrap();
+        assert_eq!(
+            (
+                counts.input_tokens,
+                counts.output_tokens,
+                counts.cached_input_tokens
+            ),
+            (0, 0, Some(0))
+        );
+        for invalid in [
+            serde_json::json!({"input_tokens":1}),
+            serde_json::json!({"input_tokens":-1,"output_tokens":0}),
+            serde_json::json!({"input_tokens":1,"output_tokens":0,"cached_input_tokens":2}),
+            serde_json::json!({"input_tokens":u64::MAX,"output_tokens":1}),
+        ] {
+            body["session"]["last_response_usage"] = invalid;
+            assert!(snapshot_from_body(&body.to_string())
+                .unwrap()
+                .last_response_usage
+                .is_none());
+        }
+        body["session"]["last_response_usage"] =
+            serde_json::json!({"input_tokens":1,"output_tokens":2});
+        assert_eq!(
+            snapshot_from_body(&body.to_string())
+                .unwrap()
+                .last_response_usage
+                .unwrap()
+                .cached_input_tokens,
+            None
+        );
+        body["open"] = false.into();
+        assert!(snapshot_from_body(&body.to_string())
+            .unwrap()
+            .last_response_usage
+            .is_none());
+    }
 
     #[test]
     fn launch_identity_requires_an_open_session_and_a_valid_uuid() {
