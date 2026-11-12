@@ -8,8 +8,9 @@ and identifier are unchanged.
 
 CI builds the app on its native macOS runner, checks event mappings without
 posting input, verifies that command-line bridge requests are refused, and runs
-workspace unit and contract tests. The uploaded development ZIP includes its
-SHA256 checksum and source revision. It targets the runner's macOS version and
+workspace unit and contract tests. The uploaded development ZIP contains the app, CLI and inverse MCP adapter,
+with per-file SHA256 checksums and a source revision. See
+[distribution instructions](DISTRIBUTION.md) for verification, use and removal. It targets the runner's macOS version and
 architecture; it is not a universal or backwards-compatible release bundle.
 
 ## Development installation
