@@ -1,0 +1,196 @@
+// The daemon and permission-bearing desktop implementation share one process.
+// No external caller can register a callback or acquire companion authority.
+import AppKit
+import CoreGraphics
+
+private final class ReplySlot: @unchecked Sendable {
+    let lock = NSLock()
+    var cancelled = false
+    var value: Data?
+    func active() -> Bool { lock.lock(); defer { lock.unlock() }; return !cancelled }
+    func finish(_ data: Data) { lock.lock(); defer { lock.unlock() }; if !cancelled { value = data } }
+    func take() -> Data? { lock.lock(); defer { lock.unlock() }; cancelled = true; return value }
+}
+private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ output: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>?, _ size: UnsafeMutablePointer<Int>?) -> Int32 {
+    guard !Thread.isMainThread, let bytes, let output, let size, count > 0, count <= 1024 * 1024 else { return 1 }
+    output.pointee = nil; size.pointee = 0
+    let request = Data(bytes: bytes, count: count)
+    let finished = DispatchSemaphore(value: 0)
+    let slot = ReplySlot()
+    let task = Task { @MainActor in
+        defer { finished.signal() }
+        guard slot.active(), !Task.isCancelled else { return }
+        var reply: [String: Any]
+        do {
+            guard let object = try JSONSerialization.jsonObject(with: request) as? [String: Any] else { throw NativeError.invalid }
+            reply = ["result": try await NativeRuntime.shared.perform(object)]
+        } catch { if slot.active() { releaseHeld() }; reply = ["error": "Native operation refused or unavailable"] }
+        if let data = try? JSONSerialization.data(withJSONObject: reply) { slot.finish(data) }
+    }
+    guard finished.wait(timeout: .now() + 10) == .success else {
+        _ = slot.take(); task.cancel()
+        Task { @MainActor in NativeRuntime.shared.pause("Native operation timed out") }
+        return 1
+    }
+    guard let data = slot.take(), data.count <= 48 * 1024 * 1024, let memory = malloc(data.count) else { return 1 }
+    data.copyBytes(to: memory.assumingMemoryBound(to: UInt8.self), count: data.count)
+    output.pointee = memory.assumingMemoryBound(to: UInt8.self); size.pointee = data.count
+    return 0
+}
+
+@MainActor final class NativeRuntime: NSObject, NSApplicationDelegate {
+    static let shared = NativeRuntime()
+    private let queue = DispatchQueue(label: "sh.hyperme.visor.internal-control")
+    private var timer: Timer?
+    private var statusItem: NSStatusItem?
+    private var menuAllow: NSMenuItem?
+    private var tap: CFMachPort?
+    private var tapSource: CFRunLoopSource?
+    private var allowed = false
+    private var epoch: UInt64 = 0
+    private var polling = false
+    private var started = false
+    private var sessionOpen = false
+    private var currentPhase = "off"
+    private var message = "Desktop access is off"
+    weak var label: NSTextField?
+    weak var allowButton: NSButton?
+    private(set) var runtimePath = ""
+
+    func start() {
+        guard !started else { return }
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        runtimePath = home + "/.local/state/hypermesh/native-run"
+        setenv("HYPERMESH_RUNTIME_DIR", runtimePath, 1)
+        setenv("HYPERMESH_CONFIG_DIR", home + "/.config/hypermesh", 1)
+        // No env/CLI argument can enable this callback; only the app links it.
+        guard hypermesh_native_start(desktopCallback) == 0 else { message = "Native engine failed to start"; update(); return }
+        started = true
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let menu = NSMenu(); menu.autoenablesItems = false
+        for (title, action) in [("Allow desktop access", #selector(allow)), ("Pause", #selector(pauseButton)), ("Stop", #selector(stopButton))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; menu.addItem(item)
+            if action == #selector(allow) { menuAllow = item }
+        }
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        statusItem?.menu = menu
+        installMonitor()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in Task { @MainActor in self.poll() } }
+        update()
+    }
+    func applicationWillTerminate(_ notification: Notification) {
+        allowed = false; epoch &+= 1; releaseHeld()
+        if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
+        timer?.invalidate()
+    }
+    private func control(_ action: String, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
+        queue.async {
+            let data = try! JSONSerialization.data(withJSONObject: ["action": action])
+            var output: UnsafeMutablePointer<UInt8>?
+            var size = 0
+            let code = data.withUnsafeBytes { raw in hypermesh_native_control(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &output, &size) }
+            var value: [String:Any]?
+            if let output {
+                defer { free(output) }
+                if code == 0 && size >= 0 && size <= 256 * 1024 {
+                    value = (try? JSONSerialization.jsonObject(with: Data(bytes: output, count: size))) as? [String:Any]
+                }
+            }
+            let result = value
+            Task { @MainActor in completion(result) }
+        }
+    }
+    private func update() {
+        let readiness = started && !sessionOpen ? "Waiting for a local client to open a session" : message
+        label?.stringValue = "\(readiness)\nSession: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
+        allowButton?.isEnabled = started && sessionOpen && !allowed
+        allowButton?.title = currentPhase == "paused" ? "Resume desktop access" : "Allow desktop access"
+        menuAllow?.isEnabled = started && sessionOpen && !allowed
+        statusItem?.button?.title = allowed ? "Visor: ON" : "Visor: off"
+        statusItem?.button?.toolTip = message
+    }
+    private func poll() {
+        guard started && !polling else { return }
+        polling = true
+        let generation = epoch
+        control("poll") { result in
+            self.polling = false
+            guard generation == self.epoch else { return }
+            guard let result, result["status"] as? Int == 200, let body = result["body"] as? [String:Any], let automation = body["automation"] as? [String:Any] else {
+                self.pause("Native engine unavailable"); return
+            }
+            self.sessionOpen = body["open"] as? Bool ?? false
+            self.currentPhase = automation["phase"] as? String ?? "off"
+            if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
+            if self.allowed && !self.permissionsAndMonitor() { self.pause("Permission or input monitor lost", lost: true) }
+            self.update()
+        }
+    }
+    @objc func allow() {
+        guard started && sessionOpen else { return }
+        installMonitor()
+        let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
+                       ("Accessibility", CGPreflightPostEventAccess()),
+                       ("Input Monitoring", CGPreflightListenEventAccess())].filter { !$0.1 }.map { $0.0 }
+        guard missing.isEmpty else { message = "Permission unavailable: " + missing.joined(separator: ", ") + ". Check System Settings, then retry."; update(); return }
+        guard permissionsAndMonitor() else { message = "Permissions are allowed, but the input monitor stopped. Restart Visor; no permission toggles are needed."; update(); return }
+        epoch &+= 1
+        let generation = epoch
+        control(currentPhase == "paused" ? "resume" : "start") { result in
+            guard generation == self.epoch else { return }
+            guard result?["status"] as? Int == 204 else { self.message = "Unable to start; check session and permissions"; self.update(); return }
+            self.allowed = true; self.message = "Desktop access allowed — real input pauses immediately"; self.currentPhase = "running"; self.update()
+        }
+    }
+    @objc func pauseButton() { pause("Paused by user") }
+    @objc func stopButton() { pause("Desktop access stopped"); control("stop") }
+    func pause(_ reason: String, lost: Bool = false) {
+        allowed = false; epoch &+= 1; releaseHeld(); message = reason
+        if started { control(lost ? "monitor-lost" : "pause") }
+        update()
+    }
+    private func permissionsAndMonitor() -> Bool {
+        guard let tap else { return false }
+        return CGPreflightScreenCaptureAccess() && CGPreflightPostEventAccess() && CGPreflightListenEventAccess() && CGEvent.tapIsEnabled(tap: tap)
+    }
+    private func installMonitor() {
+        guard tap == nil, CGPreflightListenEventAccess() else { return }
+        let types: [CGEventType] = [.keyDown,.keyUp,.flagsChanged,.mouseMoved,.leftMouseDragged,.rightMouseDragged,.otherMouseDragged,.leftMouseDown,.leftMouseUp,.rightMouseDown,.rightMouseUp,.otherMouseDown,.otherMouseUp,.scrollWheel]
+        let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
+        tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly, eventsOfInterest: mask, callback: { _, type, event, _ in
+            // Tap is attached only to the main run loop; callback and input operations serialize there.
+            MainActor.assumeIsolated {
+                let runtime = NativeRuntime.shared
+                if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                    runtime.pause("Input monitor stopped; restart to recover", lost: true)
+                } else if !(event.getIntegerValueField(.eventSourceUserData) == injectionTag && event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid())) && runtime.allowed {
+                    runtime.pause("Paused by real input")
+                }
+            }
+            return Unmanaged.passUnretained(event)
+        }, userInfo: nil)
+        if let tap {
+            tapSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            CFRunLoopAddSource(CFRunLoopGetMain(), tapSource, .commonModes)
+            CGEvent.tapEnable(tap: tap, enable: true)
+        }
+    }
+    func perform(_ request: [String:Any]) async throws -> [String:Any] {
+        guard started, !Task.isCancelled else { throw NativeError.denied }
+        if request["action"] as? String == "release" { releaseHeld(); return [:] }
+        if request["action"] as? String != "info" {
+            guard allowed, permissionsAndMonitor() else { throw NativeError.denied }
+        }
+        let generation = epoch
+        let result = try await handle(request) {
+            guard self.allowed, self.epoch == generation, !Task.isCancelled,
+                  self.permissionsAndMonitor() else { throw NativeError.denied }
+        }
+        if request["action"] as? String != "info" {
+            guard allowed, epoch == generation, !Task.isCancelled else { throw NativeError.denied }
+        }
+        return result
+    }
+}

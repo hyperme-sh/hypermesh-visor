@@ -50,15 +50,30 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build native helper
-        run: |
-          mkdir -p target/debug
-          swiftc -parse-as-library -O native/macos/Desktop.swift -o target/debug/hypermesh-native-desktop
+      - name: Build native development app
+        run: bash native/macos/build-app.sh "$RUNNER_TEMP/Hypermesh Visor Development.app"
       - name: Native event mapping and unauthenticated bridge refusal
         run: |
-          target/debug/hypermesh-native-desktop --self-test
-          python3 native/macos/test-bridge-refusal.py target/debug/hypermesh-native-desktop
-      - name: Native workspace tests
+          "$RUNNER_TEMP/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop" --self-test
+          python3 native/macos/test-bridge-refusal.py "$RUNNER_TEMP/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop"
+      - name: Native workspace unit contracts
         env:
           TMPDIR: /tmp
         run: cargo test --locked --workspace
+      - name: Archive native development app
+        env:
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/Hypermesh Visor Development.app" "$RUNNER_TEMP/hypermesh-visor-macos.zip"
+          cd "$RUNNER_TEMP"
+          shasum -a 256 hypermesh-visor-macos.zip > hypermesh-visor-macos.zip.sha256
+          printf '%s\n' "$SOURCE_REVISION" > hypermesh-visor-macos.source-revision
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-macos-${{ runner.arch }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/hypermesh-visor-macos.zip
+            ${{ runner.temp }}/hypermesh-visor-macos.zip.sha256
+            ${{ runner.temp }}/hypermesh-visor-macos.source-revision

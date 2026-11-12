@@ -1,61 +1,52 @@
-# Native macOS backend work
+# Native macOS development app
 
-This is an unsigned development backend, not a completed macOS application.
-Signing/notarization is deferred to issue #84. Native companion UI, physical-input
-monitoring, packaging and desktop acceptance remain in #18/#26.
+The development app embeds the Rust daemon and Swift desktop backend in one
+process. It provides a visible permission window and menu-bar Allow, Pause, Stop
+and Quit controls. It is a development build for #18/#26; distribution signing
+and notarization remain deferred in #84. The existing development bundle version
+and identifier are unchanged.
 
-On the assigned Apple Silicon Mac:
+CI builds the app on its native macOS runner, checks event mappings without
+posting input, verifies that command-line bridge requests are refused, and runs
+workspace unit and contract tests. The uploaded development ZIP includes its
+SHA256 checksum and source revision. It targets the runner's macOS version and
+architecture; it is not a universal or backwards-compatible release bundle.
 
-```sh
-cargo build --locked --workspace
-swiftc -parse-as-library -O native/macos/Desktop.swift \
-  -o target/debug/hypermesh-native-desktop
-TMPDIR=/tmp cargo test --locked --workspace
-printf '{"action":"info"}\n' | target/debug/hypermesh-native-desktop
-```
+## Development installation
 
-For a visible, installed permission setup app, run:
+An operator can build and install with:
 
 ```sh
 bash native/macos/install-development.sh
 ```
 
 This installs `~/Applications/Hypermesh Visor Development.app` and opens its
-permission setup window. Use its buttons to request Screen Recording,
-Accessibility and Input Monitoring, then refresh status. It uses local ad-hoc
-signing only, not Developer ID signing or notarization. The installer refuses to
-overwrite an existing bundle. Replacing the development executable can require
-permissions to be granted again. To uninstall, quit the development app and remove
-that bundle; revoke its entries in System Settings if desired.
+window. The installer refuses to replace an existing app. Local ad-hoc hardened
+signing verifies bundle integrity; it is not Developer ID signing or notarization.
+No permissions are granted by installation. Replacing the executable can require
+permissions to be granted again. Quit and remove the app to uninstall it, and
+remove its permission entries in System Settings if desired.
 
-The installed app is a permission setup app only, not the finished companion.
-**Desktop bridge invocation is disabled**, including `--bridge`, arbitrary
-arguments and the old `HYPERMESH_NATIVE_BRIDGE` environment switch. Granting TCC
-permissions to an app must not turn it into an automation deputy for any process
-that can invoke `open --stdin/--stdout`. An authenticated daemon-owned channel
-is required before capture or input is enabled again. Same UID alone does not
-establish that authority. The daemon receives an unavailable error today.
+Use the window's explicit permission buttons for Screen Recording, Accessibility
+and Input Monitoring. A local client must open a session using the control socket
+shown in the window. Then the user must select Allow in the visible native UI.
+Desktop access starts off. Pause, Stop, physical input, lost permissions, a lost
+input monitor or an unavailable engine disable access. Closing the window quits
+the app and releases held input. Resume requires another visible user action.
 
-The event construction code uses explicit US ANSI virtual key identities for
-modifier shortcuts; unsupported Unicode shortcuts fail rather than aliasing A.
-Unmodified Unicode text uses Unicode events. Left, right and middle drags select
-both the matching drag event type and button identity. Mapping tests construct
-events without posting input:
+## Permission boundary and limitations
 
-```sh
-target/debug/hypermesh-native-desktop --self-test
-python3 native/macos/test-bridge-refusal.py target/debug/hypermesh-native-desktop
-```
+Only the embedded app can register the desktop callback. There is no external
+bridge invocation, environment switch or callback-registration socket. External
+control clients can pause but cannot lift the native pause. Same-user socket
+access does not confer the app's internal companion authority.
 
-`--permissions` requests OS permission explicitly. Native companion monitoring
-and authenticated integration remain unfinished. The companion GUI still uses
-X11; compiling it on macOS does not establish native UI support.
+The permission-bearing app refuses stdio MCP child processes until an isolated
+worker is implemented. HTTP MCP adapters remain available. Capture and input
+currently address the primary display in logical pixels. Modifier shortcuts use
+explicit US ANSI key identities; unsupported Unicode shortcuts fail. Plain text
+uses Unicode events. Audio capture is unavailable.
 
-Local Unix socket peer authentication uses `getpeereid` on macOS. MCP process
-liveness uses owned child handles instead of Linux `/proc`. The native suite
-also accounts for BSD sockets inheriting nonblocking mode on accept.
-
-Verified on MACMINI-1: native event mapping and bridge refusal tests pass.
-The earlier direct helper qualification is historical and does not establish
-secure daemon integration; that unauthenticated entry point has been removed.
-Audio capture is not implemented.
+The existing X11 companion is separate. Native animated companion parity,
+multi-display behavior, isolated stdio workers and distribution packaging remain
+follow-up work. No native desktop run is implied by the unit and contract results.

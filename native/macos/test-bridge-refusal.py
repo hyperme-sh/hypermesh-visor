@@ -6,7 +6,11 @@ import subprocess
 import sys
 
 executable = sys.argv[1]
-for arguments in ([], ['--bridge'], ['--unknown'], ['--permissions', '--bridge']):
+cases = [['--bridge'], ['--unknown'], ['--permissions', '--bridge']]
+# A normal app launch opens the visible UI; the standalone helper has no UI default.
+if '.app/Contents/MacOS/' not in executable:
+    cases.insert(0, [])
+for arguments in cases:
     for override in ('0', '1'):
         result = subprocess.run([executable, *arguments],
             input='\n'.join(json.dumps(request) for request in [

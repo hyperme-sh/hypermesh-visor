@@ -510,6 +510,10 @@ fn attach_one(name: &str, spec: &ServerSpec) -> Result<AttachedServer, McpError>
 }
 
 fn attach_stdio(name: &str, spec: &ServerSpec) -> Result<AttachedServer, McpError> {
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    if crate::native_engine::is_embedded() {
+        return Err(McpError::message("Native app stdio MCP requires an isolated worker; spawning permission-inheriting children is disabled"));
+    }
     let command = spec
         .command
         .as_deref()

@@ -597,6 +597,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     routes(state, false)
 }
 
+/// Native macOS UI authority stays in-process, never on an external socket.
+pub(crate) fn socket_companion_router(state: Arc<AppState>) -> Router {
+    if state.desktop.backend_name().starts_with("macos") { router(state) }
+    else { companion_router(state) }
+}
+
 pub(crate) fn companion_router(state: Arc<AppState>) -> Router {
     routes(state, true)
 }
@@ -946,7 +952,7 @@ pub async fn serve_until(
     // One stop flag for every listener. The first one to finish cancels the
     // rest, then close_all runs, then the others have the shutdown deadline.
     let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
-    let companion_app = companion_router(Arc::clone(&state));
+    let companion_app = socket_companion_router(Arc::clone(&state));
     let companion_stop = cancel_rx.clone();
     let companion = tokio::spawn(async move {
         crate::companion_sock::accept_loop(
@@ -2367,6 +2373,9 @@ async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
         if cancelled() {
             return Err(paused_after(sent, "keystrokes"));
         }
+        // Native input sequences hold a backend permit. Release it before
+        // querying that backend again for the settled pointer position.
+        drop(keyboard);
         let at = desktop.pointer_position().ok().flatten();
         state2.record_type(id, at, generation);
         Ok(())
@@ -2823,6 +2832,8 @@ mod tests {
         step_calls: AtomicUsize,
         pointer_sessions: AtomicUsize,
         keyboard_sessions: AtomicUsize,
+        keyboard_active: AtomicUsize,
+        require_keyboard_closed: AtomicBool,
         root_size: Mutex<Option<(u16, u16)>>,
         views: AtomicUsize,
         audio_opens: AtomicUsize,
@@ -2851,6 +2862,8 @@ mod tests {
                 step_calls: AtomicUsize::new(0),
                 pointer_sessions: AtomicUsize::new(0),
                 keyboard_sessions: AtomicUsize::new(0),
+                keyboard_active: AtomicUsize::new(0),
+                require_keyboard_closed: AtomicBool::new(false),
                 root_size: Mutex::new(None),
                 views: AtomicUsize::new(0),
                 audio_opens: AtomicUsize::new(0),
@@ -2925,6 +2938,7 @@ mod tests {
 
         fn open_keyboard(&self) -> Result<Box<dyn KeyboardPipe + '_>, DesktopError> {
             self.keyboard_sessions.fetch_add(1, Ordering::SeqCst);
+            self.keyboard_active.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(FakeKeys { desktop: self }))
         }
 
@@ -2954,6 +2968,9 @@ mod tests {
         }
 
         fn pointer_position(&self) -> Result<Option<(i32, i32)>, DesktopError> {
+            if self.require_keyboard_closed.load(Ordering::SeqCst) {
+                assert_eq!(self.keyboard_active.load(Ordering::SeqCst), 0);
+            }
             if self.block_pointer.load(Ordering::SeqCst) {
                 self.pointer_waits.fetch_add(1, Ordering::SeqCst);
                 while self.block_pointer.load(Ordering::SeqCst) {
@@ -2984,6 +3001,12 @@ mod tests {
 
     struct FakeKeys<'a> {
         desktop: &'a FakeDesktop,
+    }
+
+    impl Drop for FakeKeys<'_> {
+        fn drop(&mut self) {
+            self.desktop.keyboard_active.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 
     impl KeyboardPipe for FakeKeys<'_> {
@@ -6360,6 +6383,7 @@ while True:
     #[tokio::test]
     async fn type_records_the_live_pointer() {
         let desktop = FakeDesktop::new();
+        desktop.require_keyboard_closed.store(true, Ordering::SeqCst);
         *lock(&desktop.pointer) = Some((40, 70));
         let addr = spawn(Arc::clone(&desktop)).await;
         let (_, _, id) = open_session_id(addr, serde_json::json!([])).await;
