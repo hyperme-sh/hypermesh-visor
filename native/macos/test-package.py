@@ -69,6 +69,37 @@ class LauncherContracts(unittest.TestCase):
                     result = subprocess.run([str(launch), *args], env=env, check=True, capture_output=True, text=True)
                     self.assertEqual(json.loads(result.stdout), [args, override or str(root/'home/.local/state/hypermesh/native-run')])
 
+    def test_side_by_side_upgrade_and_removal_preserve_user_state(self):
+        with tempfile.TemporaryDirectory(prefix="visor upgrade ") as directory:
+            root = Path(directory)
+            home = root/'home'
+            config = home/'.config/hypermesh/config.toml'
+            config.parent.mkdir(parents=True)
+            config.write_text('tenant_id = "fixture"\n')
+            before = config.read_bytes()
+            bundles = [root/'previous', root/'replacement']
+            for bundle in bundles:
+                (bundle/'bin').mkdir(parents=True)
+                (bundle/'libexec').mkdir()
+                for name in ['hypermesh', 'hypermesh-desktop-mcp']:
+                    launcher = bundle/'bin'/name
+                    shutil.copyfile(Path(__file__).with_name('launch-tool.sh'), launcher)
+                    launcher.chmod(0o755)
+                    program = bundle/'libexec'/name
+                    program.write_text('#!' + sys.executable + '\nimport json,os\nprint(json.dumps([__file__,os.environ["HYPERMESH_RUNTIME_DIR"]]))\n')
+                    program.chmod(0o755)
+            env = dict(os.environ, HOME=str(home))
+            env.pop('HYPERMESH_RUNTIME_DIR', None)
+            for bundle in bundles:
+                for name in ['hypermesh', 'hypermesh-desktop-mcp']:
+                    result = subprocess.run([str(bundle/'bin'/name)], check=True, capture_output=True, text=True, env=env)
+                    self.assertEqual(json.loads(result.stdout), [str(bundle/'libexec'/name), str(home/'.local/state/hypermesh/native-run')])
+                self.assertEqual(config.read_bytes(), before)
+                # The replacement launcher must continue to resolve its own files
+                # after the old extracted distribution has been removed.
+                shutil.rmtree(bundle)
+            self.assertEqual(config.read_bytes(), before)
+
     def test_manifest_detects_tampering_and_refuses_links(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

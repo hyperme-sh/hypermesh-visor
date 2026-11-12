@@ -13,7 +13,9 @@ the minimum macOS version used by the CI builder. The native app provides visibl
 Allow, Pause, Stop and Quit controls; it does not yet have the animated companion's
 full feature set. Multi-display capture and pointer coordinates share the active
 displays' logical rectangle; display changes pause access until Allow is selected
-again. Audio and embedded stdio MCP workers remain unavailable.
+again. The app shows access state in its window and menu bar; it does not hide or
+replace the global cursor in other apps. Animated cursor-overlay parity remains
+in #18. Audio and embedded stdio MCP workers remain unavailable.
 
 ## Verify and use
 
