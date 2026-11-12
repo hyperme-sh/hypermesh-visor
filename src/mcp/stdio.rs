@@ -386,7 +386,7 @@ impl AttachedServer {
         if let Some(schema) = &info.input_schema {
             super::schema::validate(schema, &arguments)?;
         }
-        let output_schema = info.output_schema.clone();
+        let output_schema = info.output_schema.as_ref().map(super::schema::compile).transpose()?;
         let response = self.request("tools/call", json!({"name":tool,"arguments":arguments}))?;
         if response.get("error").is_some() {
             return Err(McpError::message("MCP tool call rejected"));
@@ -398,7 +398,7 @@ impl AttachedServer {
             if result.get("isError") != Some(&Value::Bool(true)) {
                 let structured = result.get("structuredContent")
                     .ok_or_else(|| McpError::message("MCP tool structured result missing"))?;
-                super::schema::validate(&schema, structured)?;
+                super::schema::validate_compiled(&schema, structured)?;
             }
         }
         Ok(result)
@@ -1131,6 +1131,13 @@ for line in sys.stdin:
         }
         assert!(server.call_tool("absent", json!({"value":1})).is_err());
         assert!(!dir.join("calls").exists());
+        let original_output = server.tools[0].output_schema.clone();
+        for schema in [json!({"type":"not-a-type"}), json!({"$ref":"file:///private"}), json!({"description":"x".repeat(65537)})] {
+            server.tools[0].output_schema = Some(schema);
+            assert!(server.call_tool("entry", json!({"value":1})).is_err());
+            assert!(!dir.join("calls").exists());
+        }
+        server.tools[0].output_schema = original_output;
         assert_eq!(server.call_tool("entry", json!({"value":1})).unwrap()["structuredContent"]["value"], 1);
         let error = server.call_tool("entry", json!({"value":2})).unwrap_err().to_string();
         assert!(!error.contains("private result"));

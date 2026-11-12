@@ -19,21 +19,27 @@ fn bounded(value: &Value, depth: usize, remaining: &mut usize) -> bool {
     }
 }
 
-pub(super) fn validate(schema: &Value, instance: &Value) -> Result<(), McpError> {
-    if schema.to_string().len() > 64 * 1024
-        || instance.to_string().len() > 1024 * 1024
-        || !bounded(schema, 0, &mut 4096)
-        || !bounded(instance, 0, &mut 16384)
-    {
+pub(super) fn compile(schema: &Value) -> Result<jsonschema::Validator, McpError> {
+    if schema.to_string().len() > 64 * 1024 || !bounded(schema, 0, &mut 4096) {
         return Err(invalid());
     }
-    let validator = jsonschema::options()
+    jsonschema::options()
         .offline()
         .with_pattern_options(jsonschema::PatternOptions::fancy_regex()
             .backtrack_limit(10_000).size_limit(1024 * 1024).dfa_size_limit(1024 * 1024))
         .build(schema)
-        .map_err(|_| invalid())?;
+        .map_err(|_| invalid())
+}
+
+pub(super) fn validate_compiled(validator: &jsonschema::Validator, instance: &Value) -> Result<(), McpError> {
+    if instance.to_string().len() > 1024 * 1024 || !bounded(instance, 0, &mut 16384) {
+        return Err(invalid());
+    }
     if validator.is_valid(instance) { Ok(()) } else { Err(invalid()) }
+}
+
+pub(super) fn validate(schema: &Value, instance: &Value) -> Result<(), McpError> {
+    validate_compiled(&compile(schema)?, instance)
 }
 
 #[cfg(test)]
