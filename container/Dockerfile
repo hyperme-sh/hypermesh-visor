@@ -36,6 +36,7 @@ COPY --from=cli /out/hypermesh /usr/local/bin/hypermesh
 COPY third_party/hypermesh-cli/VENDOR_REV /usr/share/doc/hypermesh-cli/VENDOR_REV
 RUN install -d -o bot -g resources -m 2770 /resources/share
 COPY container/entrypoint.py /usr/local/bin/visor-container
+COPY container/unattended.py /usr/local/bin/visor_unattended.py
 COPY container/resource.py /usr/local/bin/visor-resource
 COPY container/health.py /usr/local/bin/visor-health
 RUN chmod 0755 /usr/local/bin/visor-container /usr/local/bin/visor-health /usr/local/bin/visor-resource

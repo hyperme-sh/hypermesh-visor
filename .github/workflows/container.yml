@@ -26,7 +26,10 @@ jobs:
       - name: Validate Compose contract without starting containers
         env:
           VISOR_IMAGE: visor-container:contract-only
-        run: docker compose -f container/compose.yaml config --quiet
+        run: |
+          docker compose -f container/compose.yaml config --quiet
+          touch "$RUNNER_TEMP/bot-config" "$RUNNER_TEMP/bot-token"
+          VISOR_BOT_CONFIG_FILE="$RUNNER_TEMP/bot-config" VISOR_BOT_TOKEN_FILE="$RUNNER_TEMP/bot-token" docker compose -f container/compose.remote.yaml config --quiet
 
   native-image:
     strategy:
