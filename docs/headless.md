@@ -116,7 +116,7 @@ not an automatic update channel.
 
 To uninstall, stop the service, remove its boot entry if one was added, and run
 `apk del hypermesh-visor-headless`. The service account and private state remain
-operator-owned; package removal does not erase stored credentials or sessions.
+operator-owned; package removal does not erase stored credentials.
 
 The static tarball contains the daemon, Conductor and licenses under `usr/`; it
 does not contain OpenRC setup. Keep the daemon's `bin` directory and Conductor's
