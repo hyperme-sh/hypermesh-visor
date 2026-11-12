@@ -33,6 +33,7 @@ dependencies. Windows/macOS distribution and native Wayland input remain separat
 work; the headless option does not enable desktop automation.
 
 Useful links: [downloads](https://hyperme.sh/visor),
+[published Linux installation](docs/linux-v0.1.0.md),
 [release packages](#release-packages), [capability reference](docs/verb-contract.md),
 [MCP setup](docs/mcp-discovery.md), [container deployment](container/README.md),
 [headless builds](docs/headless.md), and
