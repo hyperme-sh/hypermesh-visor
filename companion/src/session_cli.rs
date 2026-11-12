@@ -101,7 +101,8 @@ impl TerminalMode {
 impl Drop for TerminalMode {
     fn drop(&mut self) {
         unsafe {
-            libc::tcsetattr(0, libc::TCSANOW, &self.0);
+            // Do not hand leftover oversized or cancelled input to the parent shell.
+            libc::tcsetattr(0, libc::TCSAFLUSH, &self.0);
         }
     }
 }
