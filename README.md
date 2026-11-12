@@ -108,6 +108,15 @@ The raw release assets `hypermesh-visor-x86_64` and `hypermesh-visor-aarch64` st
 | disconnected | The visor does not answer. Three missed polls in a row count as down |
 | sleeping | The visor is up, nothing is driving, and neither the companion nor the open session has been used for `sleep_after_secs` (default 900) |
 
+The menu's **Compact / expanded icon** action switches to a 96-pixel-wide bug
+and saves `compact_mode` in `~/.config/hypermesh/companion.toml`. Hover shows
+session/tool details and the current status. Usage is labeled unavailable until
+a measured token/contract source is connected. Menus and the Continue prompt
+stay expanded; clicking during automation keeps the existing pause behavior.
+Compact mode starts off unless explicitly selected. This is the local compact
+surface for #89; multi-companion selection and forum/editor/CLI destinations
+remain separate work.
+
 While a visor session is open it paints that session's purpose and the prefer-MCP mode (`mcp:<id>` when a healthy binding matches, else `view` / `watch` / `listen` / `mouse` / `type`) under the bug in a built-in bitmap face. It does not copy the screen into the window. Clicking it opens a short menu: a terminal running `hypermesh`, MCP profiles, MCP doctor, login, billing (`https://hyperme.sh/#pricing`), renting (`https://hyperme.sh/#offers`), the desk (`https://portal.test.hyperme.sh/dashboard/hypermesh`), Eyes follow, and Bug cursor. On a short display the window is capped to the screen and the wheel scrolls the rows, so the last item stays reachable. Eyes follow and the bug cursor are off unless that menu row turns them on. Both choices are stored in `~/.config/hypermesh/companion.toml` (`eyes_follow_pointer`, `bug_cursor`). Pupils track the pointer only on the idle animation, and only while a session is open and eyes follow is on. `sleep_after_secs` and `automation_resume_secs` (default 120) are read from that file when the companion starts. Polls and pause posts use the Unix socket `$XDG_RUNTIME_DIR/hypermesh/companion.sock` (directory mode 0700, socket mode 0600). `HYPERMESH_RUNTIME_DIR` overrides that directory. When `XDG_RUNTIME_DIR` is unset, both sides use `$XDG_STATE_HOME/hypermesh/run`, or `~/.local/state/hypermesh/run` when that is unset too. A path that does not fit in `sun_path` fails closed. Session tools and desktop MCP use the private control socket by default.
 `HYPERMESH_VISOR_URL` explicitly selects authenticated loopback TCP; it does
 not enable the daemon's TCP listener.

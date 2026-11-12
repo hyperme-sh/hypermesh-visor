@@ -8,6 +8,7 @@ use std::time::{Duration, Instant, SystemTime};
 use toml::Value;
 
 const EYES: &str = "eyes_follow_pointer";
+const COMPACT: &str = "compact_mode";
 const BUG_CURSOR: &str = "bug_cursor";
 const SLEEP_AFTER: &str = "sleep_after_secs";
 const RESUME_AFTER: &str = "automation_resume_secs";
@@ -38,6 +39,15 @@ pub fn bug_cursor(dir: &Path) -> bool {
 
 pub fn set_bug_cursor(dir: &Path, on: bool) -> Result<(), String> {
     write_value(dir, BUG_CURSOR, if on { "true" } else { "false" })
+}
+
+/// Compact mode is explicit and persists independently of automation settings.
+pub fn compact_mode(dir: &Path) -> bool {
+    read_bool(dir, COMPACT, false)
+}
+
+pub fn set_compact_mode(dir: &Path, on: bool) -> Result<(), String> {
+    write_value(dir, COMPACT, if on { "true" } else { "false" })
 }
 
 pub fn sleep_after_secs(dir: &Path) -> u64 {
@@ -235,6 +245,11 @@ mod tests {
         assert!(eyes_follow_pointer(&dir));
         set_eyes_follow_pointer(&dir, false).unwrap();
         assert!(!eyes_follow_pointer(&dir));
+        assert!(!compact_mode(&dir));
+        set_compact_mode(&dir, true).unwrap();
+        assert!(compact_mode(&dir));
+        set_compact_mode(&dir, false).unwrap();
+        assert!(!compact_mode(&dir));
         assert!(!bug_cursor(&dir));
         set_bug_cursor(&dir, true).unwrap();
         assert!(bug_cursor(&dir));

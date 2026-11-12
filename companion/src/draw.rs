@@ -19,6 +19,7 @@ pub const MENU_SCROLL_STEP: i32 = 52;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     ToggleMenu,
+    ToggleCompact,
     OpenCli,
     Login,
     OpenBilling,
@@ -251,6 +252,7 @@ pub fn render(
             "Bug cursor: off"
         };
         let rows = [
+            ("Compact / expanded icon", Action::ToggleCompact),
             ("Open CLI", Action::OpenCli),
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
@@ -333,6 +335,84 @@ pub fn render(
     }
 }
 
+/// Small icon with a hover card. Its lower-right anchor stays fixed as the card
+/// appears, so opening details does not move the icon away from the pointer.
+pub fn render_compact(
+    sprites: &Sprites,
+    pose: &Pose,
+    mascot: Mascot,
+    frame: usize,
+    status: &str,
+    hover: bool,
+    max_height: u32,
+) -> Scene {
+    let mut bug = scale_width(sprites.frame(mascot, frame), 96);
+    // A menu indicator, not a measured usage bar.
+    for y in [8, 13, 18] {
+        for dy in 0..2 {
+            for x in 72..88 {
+                put_px(&mut bug, x, y + dy, [230, 240, 245, 255]);
+            }
+        }
+    }
+    let details = hover.then(|| {
+        let mut lines = vec!["Companion".to_owned()];
+        match pose {
+            Pose::Idle => lines.push("No active session".into()),
+            Pose::Active {
+                purpose,
+                verb,
+                mode,
+            } => {
+                lines.extend(wrap_note(&format!("Session: {}", sanitize(purpose)), 42));
+                lines.extend(wrap_note(
+                    &format!(
+                        "Tool: {}",
+                        sanitize(mode.as_deref().or(verb.as_deref()).unwrap_or("none"))
+                    ),
+                    42,
+                ));
+            }
+        }
+        if !status.is_empty() {
+            lines.extend(wrap_note(&sanitize(status), 42));
+        }
+        lines.push("Token/contract usage: unavailable".into());
+        text_card(
+            360,
+            2,
+            &lines
+                .into_iter()
+                .flat_map(|line| wrap_note(&line, 27))
+                .collect::<Vec<_>>(),
+            [12, 18, 28, 245],
+            [230, 240, 245, 255],
+        )
+    });
+    let width = details.as_ref().map_or(bug.w, |card| card.w);
+    let height = (bug.h + details.as_ref().map_or(0, |card| card.h + 4)).min(max_height.max(1));
+    let mut rgba = vec![0; width as usize * height as usize * 4];
+    let icon_y = height.saturating_sub(bug.h) as i32;
+    let icon_x = (width - bug.w) as i32;
+    if let Some(card) = details {
+        blit(&mut rgba, width, &card, 0, icon_y - card.h as i32 - 4, 0);
+    }
+    blit(&mut rgba, width, &bug, icon_x, icon_y, 0);
+    Scene {
+        width,
+        height,
+        rgba,
+        scroll_max: 0,
+        hits: vec![Hit {
+            x: icon_x,
+            y: icon_y,
+            w: bug.w as i32,
+            h: (height - icon_y as u32) as i32,
+            action: Action::ToggleMenu,
+        }],
+    }
+}
+
 fn clip_hit(mut hit: Hit, scroll: i32, clip_top: i32, height: i32) -> Option<Hit> {
     hit.y -= scroll;
     if hit.y < clip_top {
@@ -392,6 +472,25 @@ pub fn dump_frames(dir: &Path) -> std::io::Result<()> {
         u32::MAX,
         0,
     );
+    for (name, hover) in [
+        ("visor-bug-compact.png", false),
+        ("visor-bug-compact-details.png", true),
+    ] {
+        let compact = render_compact(
+            &sprites,
+            &Pose::Active {
+                purpose: "review the desktop".into(),
+                verb: Some("view".into()),
+                mode: None,
+            },
+            Mascot::Idle,
+            0,
+            "Paused",
+            hover,
+            900,
+        );
+        write_png(&dir.join(name), &compact)?;
+    }
     write_png(&dir.join("visor-bug-idle.png"), &idle)?;
     write_png(&dir.join("visor-bug-active.png"), &active)?;
     Ok(())
@@ -1025,8 +1124,22 @@ mod tests {
     #[test]
     fn menu_exposes_mcp_trust_action() {
         let sprites = Sprites::load();
-        let menu = render(&sprites, &Pose::Idle, Mascot::Idle, 0, true, false, None, false, false, None, None, u32::MAX, 0);
-        assert!(menu.hits.iter().any(|hit| hit.action==Action::McpTrust));
+        let menu = render(
+            &sprites,
+            &Pose::Idle,
+            Mascot::Idle,
+            0,
+            true,
+            false,
+            None,
+            false,
+            false,
+            None,
+            None,
+            u32::MAX,
+            0,
+        );
+        assert!(menu.hits.iter().any(|hit| hit.action == Action::McpTrust));
     }
 
     #[test]
@@ -1277,6 +1390,36 @@ mod tests {
         assert!(lines
             .iter()
             .all(|line| line.chars().count() <= note_columns(400, 2)));
+    }
+
+    #[test]
+    fn compact_hover_preserves_icon_anchor_and_has_no_control_actions() {
+        let sprites = Sprites::load();
+        let pose = Pose::Active {
+            purpose: "working".into(),
+            verb: Some("type".into()),
+            mode: None,
+        };
+        let small = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", false, 900);
+        let detail = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", true, 900);
+        assert_eq!(small.width, 96);
+        assert_eq!(detail.width, 360);
+        assert!(detail.height > small.height);
+        for scene in [&small, &detail] {
+            assert_eq!(scene.hits.len(), 1);
+            let hit = scene.hits[0];
+            assert_eq!(hit.action, Action::ToggleMenu);
+            assert_eq!(hit.x + hit.w, scene.width as i32);
+            assert_eq!(hit.y + hit.h, scene.height as i32);
+            assert!(hit.contains(scene.width as i32 - 1, scene.height as i32 - 1));
+            assert_eq!(
+                scene.rgba.len(),
+                scene.width as usize * scene.height as usize * 4
+            );
+        }
+        let clipped = render_compact(&sprites, &pose, Mascot::Idle, 0, "Paused", true, 1);
+        assert_eq!(clipped.height, 1);
+        assert_eq!(clipped.hits[0].h, 1);
     }
 
     fn row_h() -> i32 {
