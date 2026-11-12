@@ -8,6 +8,7 @@ mod auth;
 mod automation;
 mod credentials;
 mod draw;
+mod destinations;
 #[path = "../../src/local_peer.rs"]
 mod local_peer;
 mod mascot;

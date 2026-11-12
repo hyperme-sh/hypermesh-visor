@@ -781,6 +781,19 @@ fn on_click(
                 *app.status.lock().unwrap() = error;
             }
         }
+        Action::OpenSessionForum | Action::OpenSessionEditor => {
+            app.menu = false;
+            let destination = if hit.action == Action::OpenSessionForum {
+                crate::destinations::Destination::Forum
+            } else {
+                crate::destinations::Destination::Editor
+            };
+            let result = app.session_id.as_deref()
+                .ok_or_else(|| "No active session is available".to_owned())
+                .and_then(|session| crate::destinations::configured(&app.config, session, destination))
+                .and_then(crate::destinations::open);
+            if let Err(error) = result { *app.status.lock().unwrap() = error; }
+        }
         Action::OpenCli => {
             app.menu = false;
             if let Err(err) = open_cli() {
