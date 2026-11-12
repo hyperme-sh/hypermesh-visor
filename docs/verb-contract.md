@@ -36,6 +36,9 @@ the deserializers in `src/api.rs`, `src/input.rs`, `src/harness.rs`, and
 | `GET …/listen` | PCM audio stream | Live session; PulseAudio-compatible service; s16le, 48 kHz, mono |
 | `POST …/mouse` | `action`: move/click/drag/scroll; `x`,`y`; drag adds `to_x`,`to_y`; optional left/right/middle `button`; move accepts `clickable` | Desktop automation gate; scroll adds required `delta_x`,`delta_y` in wheel ticks |
 | `POST …/type` | `text`, `keys:[{key,action}]`, or secret handle `secret`; actions tap/down/up | At most 4096 planned keystrokes; Desktop automation gate |
+| `POST …/tasks` | 1–16 validated desktop steps; returns task ID and queued status | At most 16 active/waiting jobs; same session and automation gate |
+| `GET …/tasks/{task}` | Status, step counts, bounded results and error | Task must belong to the URL session; 1 MiB results per task |
+| `DELETE …/tasks/{task}` | Requests cancellation; returns current state | Does not roll back completed steps; held input releases through the normal handler |
 | `GET …/feed` | Activity and latest snapshot handle | Does not return secret values or file bytes |
 | `GET …/feed/snapshot` | Cached PNG | Does not capture a new frame |
 | `POST …/stream` | Newline-delimited prompt/file/secret items; acknowledgement lines | `X-Api-Key`; at most 1 MiB body; prompt items enter prompt routing |
@@ -133,36 +136,51 @@ A tool-call notification without a request ID never executes input.
 Bounded tasks, result resources, request cancellation and approved verb parity
 are described in the [MCP task contract](queued-tasks.md).
 
-## Task coverage and evidence
+## Task classification
 
-| Task | Current implementation evidence | Gap / next acceptance |
+“Supported primitive” means the API implements the operation under its documented
+backend and authorization conditions. It does not promise that an arbitrary app,
+layout or device will accept it. “Excluded” means there is deliberately no public
+verb for that operation in the current contract. Platform and service gaps below
+remain tracked by their implementation issues; they do not keep this audit open.
+
+| User task | Classification and usable contract | Remaining scope |
 | --- | --- | --- |
-| Browser/editor/terminal interaction | X11 capture, typing and pointer primitives; live xev injection tests | App-specific end-to-end tasks remain unverified in #28 |
-| Scroll a document | Bounded HTTP/MCP scroll; X11 wheel and Tk editor scenarios | Browser-specific acceptance remains #38 |
-| Drag and keyboard chords | Live held-release/interruption tests; named-key planner | Application-specific shortcuts/layouts need acceptance |
-| Multiple windows | Root coordinates and best-effort focused-app identity | No semantic window enumeration/activation API |
-| Multiple displays / DPI | Root geometry validation | Display enumeration and explicit coordinate transforms absent |
-| Clipboard | No direct API | Must define scoped read/write and secret handling before adding |
-| File handoff | Stream/inbox retain file bytes | No filesystem materialization/shared resource authorization; #27/#37 |
-| Audio | Recorder implementation and deterministic fixture | No live audio acceptance or playback API |
-| Native Wayland | Refusal/access-control scenarios | Portal/libei scenario is skipped; #17 |
-| Windows/macOS | Linux compile guard | #18/#25/#26 |
-| Container bots | No supported production deployment yet | #27/#35 |
-| Conventional AI client | Eleven inverse MCP tools; binary-image and validation transport tests | Task/resource/cancellation contracts: #32 |
+| Browser, editor or terminal interaction | Supported X11 capture, pointer and typing primitives; app MCP is preferred when an approved matching tool is available | App behavior and compatibility are covered by the scheduled Linux lanes; no generic shell-execution shortcut |
+| Scroll a document | Supported bounded wheel ticks on both axes, direct HTTP and inverse MCP | Application scroll interpretation remains app-specific |
+| Drag and keyboard shortcuts | Supported bounded drag and named-key chords; held keys/buttons release on interruption | Layout-specific shortcuts require the client's chosen key names |
+| Multiple windows | Supported root-coordinate input and best-effort focused-app matching | Semantic window enumeration/activation is excluded from the current API |
+| Multiple displays and DPI | Root-window pixels only; geometry and numeric limits are checked | Display IDs, monitor selection, normalized coordinates and DPI transforms are excluded |
+| Clipboard | Excluded from the public verb set | No implicit clipboard read/write through another verb |
+| File handoff to an assigned session | Supported authenticated stream/inbox bytes and scoped container resource helper | Cross-bot shared-vault grants and materialization: #27/#37 |
+| Audio capture | Conditional PCM stream with the documented format | Capture depends on a PulseAudio-compatible service; playback and audio quality guarantees are excluded |
+| Native Wayland input | Disabled with an explicit refusal | Portal/libei input and physical-user interruption: #17 |
+| Windows/macOS automation | Native automation is unavailable or explicitly disabled | Authenticated native backends and distribution: #18/#25/#26 |
+| Container desktop bots | Private X11 image and scoped file-resource prototype | Distribution and remote assignment: #27/#30 |
+| Conventional AI client | Eleven inverse MCP tools, queued jobs and session-bound result resources | Protocol/transport behavior is covered by the MCP client contracts; see #32 |
+| Shared secrets and executable skills | Local session secret handles are scoped; they are not shared-file grants | Shared read/use/execute policy: #37 |
 
-The live X11 harness covers 17 scenarios: uinput channel, key state, TCP startup,
-injection, wheel press/release balance, real editor and browser scrolling, stop/resume ordering, physical key/motion pause, pausing-click behavior,
-menu behavior, synthetic-click rejection, watchdog, held-input release,
-auto-resume, and cross-user denial. These are primitive and security checks,
-not evidence that browser/editor task suites or all desktop platforms work.
+The audit in #28 is complete when this contract change merges with green CI.
+Unit and contract coverage checks capability refusal, argument bounds, structured
+errors, HTTP/MCP parity, queued progress, cancellation and resource ownership.
+Scheduled application and display scenarios remain regression coverage in the
+[central nightly batch](nightly-ci.md), not an issue-closing prerequisite. A
+nightly regression is filed as a new issue linked to the relevant closed issue.
 
-Issue #28 remains open until its application-level acceptance matrix is exercised.
-The shared vault (#37) must define read/use/execute distinctions before secret
-files and executable skills become shared resources. A generic shell verb is not
-an implicit fallback for missing desktop capabilities.
+## MCP preference and desktop fallback
 
-Browser scroll acceptance uses a real WebKitGTK viewport. Visor wheel requests move each axis forward and back to the origin while the other axis stays fixed. The page reports offsets through an in-process script-message handler; it does not inject input or open a debugging port.
+Focused-app matching uses configured stable identity selectors and deterministic
+binding precedence. A matching server must be attached, healthy and have directly
+callable tools. The companion reports the winning binding and why a match failed;
+see [match diagnostics](mcp-discovery.md#match-diagnostics).
 
-MCP catalog lifecycle: `POST /session/{id}/mcp/refresh` accepts `server` and `action` (`refresh` or `reconnect`). It returns 204 on success, 409 for a concurrent refresh, 404 for a closed session, and 502 on discovery/transport failure. See [MCP discovery](mcp-discovery.md#pagination-refresh-and-reconnect) for bounds, catalog invalidation, and no-replay semantics.
+Preference does not authorize execution. App MCP calls still require their
+explicit decision, and desktop fallback still requires an active session and the
+automation gate. An absent, unhealthy or task-only MCP server permits clients to
+choose the normal desktop primitives; Visor does not translate arbitrary tool
+calls into shell commands or replay a failed non-idempotent tool through input.
+Clients must observe and reconcile partial progress before choosing another path.
+
+MCP catalog refresh: `POST /session/{id}/mcp/refresh` accepts `server` and `action` (`refresh` or `reconnect`). It returns 204 on success, 409 for a concurrent refresh, 404 for a closed session, and 502 on discovery/transport failure. See [MCP discovery](mcp-discovery.md#pagination-refresh-and-reconnect) for bounds, catalog invalidation, and no-replay semantics.
 
 MCP source review is available through the companion menu. `/mcp/discovery` and `/mcp/trust` require the same-user companion socket and cannot grant trust through control or bearer-authenticated TCP. See [MCP discovery and trust](mcp-discovery.md#review-discovery-sources-in-the-companion) for snapshot approval, revocation, and scope.
