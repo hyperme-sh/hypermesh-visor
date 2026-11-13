@@ -11,6 +11,7 @@ default = ["os-keyring"]
 os-keyring = ["dep:keyring"]
 
 [dependencies]
+getrandom = "0.3.4"
 libc = "0.2"
 base64 = "0.22"
 keyring = { optional = true, version = "3.6.3", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
