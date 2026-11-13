@@ -34,7 +34,9 @@ remove its permission entries in System Settings if desired.
 Use the window's explicit permission buttons for Screen Recording, Accessibility
 and Input Monitoring. A local client must open a session using the control socket
 shown in the window. Then the user must select Allow in the visible native UI.
-Desktop access starts off. Pause, Stop, physical input, lost permissions, a lost
+Allow/Resume is bound to the session displayed when clicked. If that session
+closes or selection changes before the daemon handles the request, approval is
+refused; a replacement session needs a fresh click. Desktop access starts off. Pause, Stop, physical input, lost permissions, a lost
 input monitor or an unavailable engine disable access. Closing the window quits
 the app and releases held input. Resume requires another visible user action. If permission or input monitoring
 is lost, both window and menu disable Allow/Resume and show a restart instruction.
