@@ -337,11 +337,14 @@ fn timestamp(now: SystemTime) -> Option<String> {
         .try_into()
         .ok()?;
     let mut parts = std::mem::MaybeUninit::<libc::tm>::uninit();
-    // gmtime_r writes only this local output and does not use shared C time state.
+    // Both platform routines write only this local output, without shared C time state.
     let parts = unsafe {
+        #[cfg(not(windows))]
         if libc::gmtime_r(&seconds, parts.as_mut_ptr()).is_null() {
             return None;
         }
+        #[cfg(windows)]
+        if libc::gmtime_s(parts.as_mut_ptr(), &seconds) != 0 { return None; }
         parts.assume_init()
     };
     Some(format!(

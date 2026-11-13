@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "companion", "session"]
+members = [".", "companion", "session", "inverse-client"]
 resolver = "2"
 
 [package]
@@ -22,10 +22,11 @@ required-features = ["desktop"]
 
 [features]
 default = ["desktop"]
-desktop = ["dep:x11rb", "dep:zbus", "dep:tokio-rustls", "dep:webpki-roots", "hypermesh-session/os-keyring"]
+desktop = ["dep:hypermesh-visor-client", "dep:x11rb", "dep:zbus", "dep:tokio-rustls", "dep:webpki-roots", "hypermesh-session/os-keyring"]
 headless = []
 
 [dependencies]
+hypermesh-visor-client = { path = "inverse-client", optional = true }
 axum = "0.7"
 base64 = "0.22"
 bytes = "1"
