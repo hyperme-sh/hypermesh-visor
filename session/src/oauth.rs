@@ -337,16 +337,16 @@ pub fn poll_device<C: Clock>(
 }
 
 pub fn display_available() -> bool {
-    env_set("DISPLAY") || env_set("WAYLAND_DISPLAY")
+    // Native desktop platforms do not set X11/Wayland variables. Launch failure
+    // still selects device login; callers can explicitly force device login.
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    { true }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    { env_set("DISPLAY") || env_set("WAYLAND_DISPLAY") }
 }
 
 pub fn open_system_browser(url: &str) -> Result<(), AuthError> {
-    // xdg-open hands the URL to the user's browser. It is not an embedded webview.
-    std::process::Command::new("xdg-open")
-        .arg(url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|err| AuthError::BrowserUnavailable(err.to_string()))
+    crate::browser::open(url)
 }
 
 pub fn sign_in<S: SessionStore>(
@@ -671,6 +671,7 @@ fn html_escape(value: &str) -> String {
     out
 }
 
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn env_set(name: &str) -> bool {
     std::env::var_os(name)
         .map(|value| !value.to_string_lossy().trim().is_empty())
