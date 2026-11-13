@@ -82,6 +82,8 @@ pub fn config_dir() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
+    #[cfg(windows)]
+    if let Some(base) = std::env::var_os("LOCALAPPDATA") { return PathBuf::from(base).join("HypermeshVisor"); }
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         let xdg = xdg.trim();
         if !xdg.is_empty() {

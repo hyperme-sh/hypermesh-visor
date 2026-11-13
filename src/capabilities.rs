@@ -3,14 +3,14 @@ use serde_json::{json, Value};
 
 pub(crate) fn describe(backend: &str) -> Value {
     let capture = match backend {
-        "x11" | "wayland" | "macos-embedded" => "conditional",
-        "macos" => "disabled",
+        "x11" | "wayland" | "macos-embedded" | "windows-embedded" => "conditional",
+        "macos" | "windows" => "disabled",
         "fixture" => "fixture",
         _ => "unavailable",
     };
     let input = match backend {
-        "x11" | "macos-embedded" => "conditional",
-        "macos" => "disabled",
+        "x11" | "macos-embedded" | "windows-embedded" => "conditional",
+        "macos" | "windows" => "disabled",
         "fixture" => "fixture",
         "wayland" => "disabled",
         _ => "unavailable",
@@ -23,14 +23,14 @@ pub(crate) fn describe(backend: &str) -> Value {
         "authorization_granted": false,
         "desktop": {
             "view": capture, "watch": capture,
-            "listen": if backend.starts_with("macos") { "unavailable" } else { capture },
+            "listen": if backend.starts_with("macos") || backend.starts_with("windows") { "unavailable" } else { capture },
             "mouse": input, "type": input,
             "input_disabled_reason": match backend {
                 "wayland" => Some(crate::desktop::WAYLAND_AUTOMATION),
-                "macos" => Some("native automation disabled pending authenticated daemon integration"),
+                "macos" | "windows" => Some("native automation disabled pending authenticated daemon integration"),
                 _ => None
             },
-            "capture_disabled_reason": if backend == "macos" {
+            "capture_disabled_reason": if matches!(backend, "macos" | "windows") {
                 Some("native automation disabled pending authenticated daemon integration")
             } else { None },
             "mouse_actions": ["move", "click", "drag", "scroll"],

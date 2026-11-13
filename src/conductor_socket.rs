@@ -5,10 +5,12 @@ use http_body_util::{BodyExt, Full, Limited};
 use hyper::{Request, StatusCode};
 use hyper_util::rt::TokioIo;
 use serde_json::json;
+#[cfg(unix)]
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+#[cfg(unix)]
 pub fn default_path(
     mut env: impl FnMut(&str) -> Option<std::ffi::OsString>,
 ) -> Result<PathBuf, String> {
@@ -24,6 +26,7 @@ pub fn default_path(
         .unwrap_or_else(|| PathBuf::from(home).join(".cache"));
     validate_path(base.join("hypermesh/conductor/run/conductor.sock"))
 }
+#[cfg(unix)]
 fn validate_path(path: PathBuf) -> Result<PathBuf, String> {
     if !path.is_absolute()
         || path.as_os_str().len() >= crate::local_peer::SUN_PATH_MAX
@@ -35,6 +38,7 @@ fn validate_path(path: PathBuf) -> Result<PathBuf, String> {
     }
     Ok(path)
 }
+#[cfg(unix)]
 fn private_socket(path: &Path, uid: u32) -> Result<(), String> {
     let parent = std::fs::symlink_metadata(path.parent().ok_or("invalid Conductor socket")?)
         .map_err(|_| "Conductor is unavailable; configure and start its local service")?;
@@ -68,6 +72,8 @@ impl SocketDoor {
         cancel: &PromptCancellation,
         attribution: &crate::telemetry::UpstreamScope,
     ) -> Result<PromptCompletion, String> {
+        #[cfg(unix)]
+        let stream = {
         let uid = unsafe { libc::geteuid() };
         private_socket(&self.path, uid)?;
         let stream = tokio::time::timeout(
@@ -82,6 +88,10 @@ impl SocketDoor {
         {
             return Err("Conductor peer belongs to another user".into());
         }
+        stream
+        };
+        #[cfg(windows)]
+        let stream = hypermesh_local_transport::connect(&hypermesh_local_transport::Endpoint::conductor_path(self.path.clone()).map_err(|_| "invalid Conductor pipe")?).await.map_err(|_| "Conductor connection failed")?;
         if cancel.cancelled() {
             return Err("prompt cancelled".into());
         }
@@ -192,7 +202,7 @@ impl PromptDoor for SocketDoor {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
@@ -306,7 +316,8 @@ mod tests {
     }
     impl Fixture {
         fn new() -> Self {
-            use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+            #[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
             let directory = std::env::temp_dir().join(format!(
                 "v{}",
                 &uuid::Uuid::new_v4().simple().to_string()[..12]
@@ -427,7 +438,8 @@ mod tests {
     }
     #[test]
     fn refuses_nonprivate_socket_before_sending_credentials() {
-        use std::os::unix::fs::PermissionsExt;
+        #[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
         let fixture = Fixture::new();
         std::fs::set_permissions(&fixture.path, std::fs::Permissions::from_mode(0o666)).unwrap();
         let door = SocketDoor::connect(fixture.path.clone(), None).unwrap();
@@ -439,4 +451,16 @@ mod tests {
         });
         assert!(result.unwrap_err().contains("not private"));
     }
+}
+
+#[cfg(windows)]
+pub fn default_path(mut env: impl FnMut(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    if let Some(path) = env("HYPERMESH_CONDUCTOR_SOCKET") { return validate_path(path.into()); }
+    let instance = env("HYPERMESH_CONDUCTOR_INSTANCE").unwrap_or_else(|| "default".into());
+    let instance = instance.to_str().ok_or("invalid Conductor instance")?;
+    hypermesh_local_transport::Endpoint::conductor(instance).map(|e| e.path().into()).map_err(|_| "invalid Conductor instance".into())
+}
+#[cfg(windows)]
+fn validate_path(path: PathBuf) -> Result<PathBuf, String> {
+    hypermesh_local_transport::Endpoint::conductor_path(path).map(|e| e.path().into()).map_err(|_| "invalid Conductor pipe".into())
 }

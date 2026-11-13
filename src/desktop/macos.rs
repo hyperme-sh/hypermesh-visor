@@ -1,4 +1,4 @@
-//! Native macOS desktop bridge. The bundled helper uses public Apple APIs.
+//! Native desktop callback bridge owned by the visible app.
 use super::*;
 use crate::input::{Button, MouseOp, PointerStep, Stroke};
 use base64::Engine;
@@ -10,11 +10,11 @@ use std::sync::{Condvar, Mutex};
 pub(crate) type NativeCall =
     unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32;
 #[derive(Default)]
-pub struct MacDesktop {
+pub struct NativeDesktop {
     callback: Option<NativeCall>,
     sequence: Sequence,
 }
-impl MacDesktop {
+impl NativeDesktop {
     pub(crate) fn embedded(callback: NativeCall) -> Self {
         Self {
             callback: Some(callback),
@@ -61,7 +61,7 @@ struct Bridge<'a> {
 }
 fn unavailable(_: impl std::fmt::Display) -> DesktopError {
     DesktopError::Unavailable(
-        "macOS desktop requires the native app and its visible automation approval".into(),
+        "Desktop requires the native app and its visible automation approval".into(),
     )
 }
 impl Bridge<'_> {
@@ -128,7 +128,7 @@ impl KeyboardPipe for Bridge<'_> {
             .map(|_| ())
     }
 }
-impl Desktop for MacDesktop {
+impl Desktop for NativeDesktop {
     fn view(&self) -> Result<Frame, DesktopError> {
         let value = self.bridge()?.call(json!({"action":"view"}))?;
         let png = value["png"].as_str().ok_or_else(|| unavailable("image"))?;
@@ -140,7 +140,7 @@ impl Desktop for MacDesktop {
     }
     fn open_audio(&self) -> Result<Box<dyn AudioRead>, DesktopError> {
         Err(DesktopError::AudioUnavailable(
-            "macOS audio capture is not yet available".into(),
+            "Native audio capture is not yet available".into(),
         ))
     }
     fn mouse(&self, op: &MouseOp) -> Result<(), DesktopError> {
@@ -229,10 +229,11 @@ impl Desktop for MacDesktop {
         }))
     }
     fn backend_name(&self) -> &'static str {
-        if self.callback.is_some() {
-            "macos-embedded"
-        } else {
-            "macos"
+        match (cfg!(windows), self.callback.is_some()) {
+            (true, true) => "windows-embedded",
+            (true, false) => "windows",
+            (false, true) => "macos-embedded",
+            (false, false) => "macos",
         }
     }
 }
@@ -242,7 +243,7 @@ mod tests {
     use super::*;
     #[test]
     fn standalone_backend_cannot_acquire_native_permissions() {
-        let desktop = MacDesktop::default();
+        let desktop = NativeDesktop::default();
         assert!(desktop.view().is_err());
         assert!(desktop.open_keyboard().is_err());
         assert!(desktop.open_pointer().is_err());
@@ -255,7 +256,7 @@ mod tests {
         unsafe extern "C" fn refuse(_: *const u8, _: usize, _: *mut *mut u8, _: *mut usize) -> i32 {
             1
         }
-        let desktop = MacDesktop::embedded(refuse);
+        let desktop = NativeDesktop::embedded(refuse);
         assert!(desktop.view().is_err());
         assert!(!*desktop.sequence.held.lock().unwrap());
         let keyboard = desktop.open_keyboard().unwrap();

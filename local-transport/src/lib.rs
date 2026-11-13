@@ -42,6 +42,31 @@ impl Endpoint {
             r"\\.\pipe\hypermesh-visor-{user}-{instance}-{channel}"
         ))))
     }
+    #[cfg(windows)]
+    pub fn conductor(instance: &str) -> io::Result<Self> {
+        if instance.is_empty()
+            || instance.len() > 64
+            || !instance
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(invalid());
+        }
+        let user = hypermesh_local_storage::windows_user_sid()?;
+        Ok(Self(PathBuf::from(format!(
+            r"\\.\pipe\hypermesh-conductor-{user}-{instance}"
+        ))))
+    }
+    #[cfg(windows)]
+    pub fn conductor_path(path: PathBuf) -> io::Result<Self> {
+        let user = hypermesh_local_storage::windows_user_sid()?;
+        let prefix = format!(r"\\.\pipe\hypermesh-conductor-{user}-");
+        let instance = path
+            .to_str()
+            .and_then(|p| p.strip_prefix(&prefix))
+            .ok_or_else(invalid)?;
+        Self::conductor(instance)
+    }
     pub fn path(&self) -> &Path {
         &self.0
     }
@@ -171,6 +196,15 @@ mod tests {
             assert!(Endpoint::windows(name, "control").is_err());
         }
         assert!(Endpoint::windows("valid", "other").is_err());
+        let conductor = Endpoint::conductor("unit").unwrap();
+        assert_eq!(
+            Endpoint::conductor_path(conductor.path().into())
+                .unwrap()
+                .path(),
+            conductor.path()
+        );
+        assert!(Endpoint::conductor_path(r"\\remote\pipe\conductor".into()).is_err());
+        assert!(Endpoint::conductor("../remote").is_err());
         let fixture = Fixture::new();
         // The OS default pipe descriptor is broader than this protocol permits.
         let _server = ServerOptions::new()

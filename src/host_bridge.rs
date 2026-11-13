@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{path::PathBuf, sync::Arc, time::Duration};
-use tokio::{net::UnixStream, sync::Semaphore};
+use tokio::sync::Semaphore;
+#[cfg(unix)]
+use tokio::net::UnixStream;
 
 const WIRE_MAX: usize = 6 * 1048576 + 4096;
 #[derive(Clone)]
@@ -32,6 +34,7 @@ pub(crate) struct Call {
 }
 impl Bridge {
     pub fn new(socket: PathBuf) -> Result<Self, ()> {
+        if cfg!(windows) { return Err(()); }
         if !socket.is_absolute()
             || socket
                 .components()
@@ -45,6 +48,7 @@ impl Bridge {
             uid: 0,
         })
     }
+    #[cfg(unix)]
     async fn request(&self, method: &str, path: &str, body: Vec<u8>) -> Result<Value, ()> {
         let _permit = self.slots.try_acquire().map_err(|_| ())?;
         tokio::time::timeout(Duration::from_secs(40), async {
@@ -88,6 +92,8 @@ impl Bridge {
         .await
         .map_err(|_| ())?
     }
+    #[cfg(windows)]
+    async fn request(&self, _: &str, _: &str, _: Vec<u8>) -> Result<Value, ()> { Err(()) }
     pub async fn catalog(&self) -> Result<Vec<Entry>, ()> {
         let value = self.request("GET", "/catalog", vec![]).await?;
         let entries: Vec<Entry> = serde_json::from_value(value).map_err(|_| ())?;

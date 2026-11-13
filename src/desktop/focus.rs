@@ -244,3 +244,12 @@ mod tests {
         assert_eq!(hit["app_id"], "firefox");
     }
 }
+
+#[cfg(windows)]
+#[path = "focus_windows.rs"]
+mod windows;
+#[cfg(windows)]
+pub(super) use windows::process_executable;
+
+#[cfg(windows)]
+pub(crate) use windows::unelevated;

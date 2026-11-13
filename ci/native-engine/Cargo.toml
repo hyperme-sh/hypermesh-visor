@@ -1,0 +1,18 @@
+[package]
+name = "visor-native-engine-contract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+hypermesh-visor = { path = "../.." }
+hypermesh-local-transport = { path = "../../local-transport" }
+hypermesh-local-storage = { path = "../../local-storage" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+serde_json = "1"
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_Storage_FileSystem"] }

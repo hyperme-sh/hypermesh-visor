@@ -30,7 +30,7 @@ pub(crate) fn configuration(
         }
         if !model.is_empty() { config.default_model = model.into(); }
     }
-    if environment("HYPERMESH_CONDUCTOR_SOCKET").is_some() || (config.conductor_addr.is_none() && environment("HOME").is_some()) {
+    if environment("HYPERMESH_CONDUCTOR_SOCKET").is_some() || (config.conductor_addr.is_none() && (cfg!(windows) || environment("HOME").is_some())) {
         config.conductor_socket=Some(crate::conductor_socket::default_path(&mut environment)?);
     }
     if config.conductor_addr.is_some() && config.conductor_socket.is_some(){return Err("Conductor requires one local route".into());}

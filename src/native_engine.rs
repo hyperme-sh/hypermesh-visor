@@ -1,5 +1,5 @@
 //! Native app embedding. The privileged companion router is callable only in-process.
-use crate::{api, desktop::MacDesktop};
+use crate::{api, desktop::NativeDesktop};
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,6 +22,8 @@ type Callback = unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize)
 
 #[no_mangle]
 pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
+    #[cfg(windows)]
+    if !crate::desktop::unelevated() { return 1; }
     let Some(callback) = callback else {
         return 1;
     };
@@ -37,7 +39,7 @@ pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
             Err(error) => { eprintln!("native prompt configuration: {error}"); return 1; }
         };
         let state = match api::AppState::with_orchestrator(
-            Arc::new(MacDesktop::embedded(callback)), Duration::from_millis(250), config,
+            Arc::new(NativeDesktop::embedded(callback)), Duration::from_millis(250), config,
         ) {
             Ok(state) => Arc::new(state),
             Err(error) => { eprintln!("native prompt startup: {error}"); return 1; }
@@ -246,7 +248,7 @@ mod tests {
     #[tokio::test]
     async fn external_native_companion_socket_has_no_pause_lift_authority() {
         let state = Arc::new(api::AppState::new(
-            Arc::new(MacDesktop::default()),
+            Arc::new(NativeDesktop::default()),
             Duration::from_millis(250),
         ));
         let control = |action: &str| {
@@ -309,3 +311,12 @@ mod tests {
         );
     }
 }
+
+/// Allocate and release callback buffers through this DLL's allocator.
+#[no_mangle]
+pub unsafe extern "C" fn hypermesh_native_alloc(length: usize) -> *mut u8 {
+    if length == 0 || length > 48 * 1024 * 1024 { return std::ptr::null_mut(); }
+    libc::malloc(length).cast()
+}
+#[no_mangle]
+pub unsafe extern "C" fn hypermesh_native_free(buffer: *mut u8) { libc::free(buffer.cast()); }

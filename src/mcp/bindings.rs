@@ -2,7 +2,10 @@
 
 use std::fs;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -114,7 +117,7 @@ impl BindingCache {
 fn read_bindings(dir: &Path) -> Result<BindingsFile, BindingStatus> {
     let file = fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NONBLOCK)
+        .custom_flags(config_open_flags())
         .open(dir.join("mcp-bindings.json"))
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -518,3 +521,8 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(unix)]
+fn config_open_flags() -> i32 { libc::O_NONBLOCK }
+#[cfg(windows)]
+fn config_open_flags() -> u32 { windows_sys::Win32::Storage::FileSystem::SECURITY_SQOS_PRESENT | windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION }
