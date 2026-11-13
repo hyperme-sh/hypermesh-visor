@@ -1,38 +1,28 @@
 //! Companion profile editor. Secrets/overrides stay on disk, never in responses.
 use super::{trust::TrustStore, trust_disk, McpError};
+use hypermesh_local_storage as storage;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    fs::{self, OpenOptions},
+    fs,
     io::{Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt},
-    },
     path::Path,
+};
+#[cfg(test)]
+use std::{
+    fs::OpenOptions,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
 };
 const LIMIT: u64 = 256 * 1024;
 fn error(message: &str) -> McpError {
     McpError::message(message)
 }
 pub(super) fn read(path: &Path) -> Result<Option<Vec<u8>>, McpError> {
-    let file = match OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-    {
+    let file = match storage::open(path, storage::Open::Read { private: false }) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(error("Cannot read MCP profile configuration")),
     };
-    let meta = file
-        .metadata()
-        .map_err(|_| error("Cannot inspect MCP configuration"))?;
-    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.nlink() != 1 {
-        return Err(error(
-            "MCP configuration must be a same-user regular file without links",
-        ));
-    }
     let mut bytes = Vec::new();
     file.take(LIMIT + 1)
         .read_to_end(&mut bytes)
@@ -153,46 +143,23 @@ pub enum Edit {
 }
 pub(super) fn config_lock(base: &Path) -> Result<std::fs::File, McpError> {
     fs::create_dir_all(base).map_err(|_| error("Cannot create MCP configuration directory"))?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(base.join(".mcp-profiles.lock"))
+    let lock = storage::open(&base.join(".mcp-profiles.lock"), storage::Open::Lock)
         .map_err(|_| error("Cannot lock MCP profiles"))?;
-    let meta = lock
-        .metadata()
-        .map_err(|_| error("Cannot inspect profile lock"))?;
-    if !meta.is_file()
-        || meta.nlink() != 1
-        || meta.uid() != unsafe { libc::geteuid() }
-        || meta.mode() & 0o077 != 0
-        || unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
-    {
-        return Err(error("MCP profiles are busy or their lock is unsafe"));
-    }
+    storage::lock(&lock).map_err(|_| error("MCP profiles are busy or their lock is unsafe"))?;
     Ok(lock)
 }
 
 pub(super) fn atomic_write(base: &Path, name: &str, data: &[u8]) -> Result<(), McpError> {
     let temp = base.join(format!(".mcp-edit-{}", uuid::Uuid::new_v4()));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)
+        let mut file = storage::open(&temp, storage::Open::New)
             .map_err(|_| error("Cannot write MCP configuration"))?;
         file.write_all(data)
             .and_then(|_| file.sync_all())
             .map_err(|_| error("Cannot persist MCP configuration"))?;
-        fs::rename(&temp, base.join(name))
+        storage::replace(&temp, &base.join(name))
             .map_err(|_| error("Cannot replace MCP configuration"))?;
-        fs::File::open(base)
-            .and_then(|d| d.sync_all())
-            .map_err(|_| error("Cannot sync MCP configuration directory"))?;
+        storage::sync_dir(base).map_err(|_| error("Cannot sync MCP configuration directory"))?;
         Ok(())
     })();
     if result.is_err() {

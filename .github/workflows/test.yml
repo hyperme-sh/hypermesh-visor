@@ -45,6 +45,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@stable
+      - name: Native private storage unit contracts
+        run: cargo test --locked -p hypermesh-local-storage
       - name: Native session and PKCE unit contracts
         run: cargo test --locked -p hypermesh-session
       - name: Native inverse MCP client unit contracts and build

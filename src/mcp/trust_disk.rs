@@ -1,16 +1,18 @@
 //! Private, atomic trust receipts. Never writes server definitions or secrets.
 use super::McpError;
+use hypermesh_local_storage as storage;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions},
+    fs,
     io::{Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
-    },
     path::{Path, PathBuf},
+};
+#[cfg(test)]
+use std::{
+    fs::OpenOptions,
+    os::{fd::AsRawFd, unix::fs::OpenOptionsExt},
 };
 use uuid::Uuid;
 
@@ -46,26 +48,11 @@ fn error() -> McpError {
 fn directory(base: &Path) -> PathBuf {
     base.join("mcp-trust")
 }
-fn private(meta: &fs::Metadata) -> bool {
-    meta.uid() == unsafe { libc::geteuid() } && meta.mode() & 0o077 == 0
-}
 fn check_dir(path: &Path) -> Result<(), McpError> {
-    let meta = fs::symlink_metadata(path).map_err(|_| error())?;
-    if !meta.is_dir() || !private(&meta) {
-        return Err(error());
-    }
-    Ok(())
+    storage::check_dir(path).map_err(|_| error())
 }
 fn read_file(path: &Path) -> Result<Vec<u8>, McpError> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)
-        .map_err(|_| error())?;
-    let meta = file.metadata().map_err(|_| error())?;
-    if !meta.is_file() || !private(&meta) || meta.nlink() != 1 {
-        return Err(error());
-    }
+    let file = storage::open(path, storage::Open::Read { private: true }).map_err(|_| error())?;
     let mut data = Vec::new();
     file.take(LIMIT + 1)
         .read_to_end(&mut data)
@@ -117,41 +104,13 @@ pub fn decode(base: &Path, bytes: &[u8]) -> Result<Ledger, McpError> {
     }
     Ok(ledger)
 }
-// Explicit unlock matters even with CLOEXEC: another thread can fork while
-// this descriptor is open, temporarily retaining the same open-file description.
-pub(super) struct UnlockOnDrop<'a>(pub &'a File);
-impl Drop for UnlockOnDrop<'_> {
-    fn drop(&mut self) {
-        unsafe {
-            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
-        }
-    }
-}
+pub(super) use storage::UnlockOnDrop;
 pub fn save(base: &Path, expected: Option<&[u8]>, ledger: &Ledger) -> Result<Vec<u8>, McpError> {
     let dir = directory(base);
     fs::create_dir_all(base).map_err(|_| error())?;
-    let created = match fs::DirBuilder::new().mode(0o700).create(&dir) {
-        Ok(()) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
-        Err(_) => return Err(error()),
-    };
-    check_dir(&dir)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(dir.join("lock"))
-        .map_err(|_| error())?;
-    let meta = lock.metadata().map_err(|_| error())?;
-    if !meta.is_file() || !private(&meta) || meta.nlink() != 1 {
-        return Err(error());
-    }
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        return Err(McpError::message("MCP trust is being updated; retry"));
-    }
+    let created = storage::create_dir(&dir).map_err(|_| error())?;
+    let lock = storage::open(&dir.join("lock"), storage::Open::Lock).map_err(|_| error())?;
+    storage::lock(&lock).map_err(|_| McpError::message("MCP trust is being updated; retry"))?;
     let _unlock = UnlockOnDrop(&lock);
     let current = if created { None } else { read(base)? };
     if current.as_deref() != expected {
@@ -166,19 +125,12 @@ pub fn save(base: &Path, expected: Option<&[u8]>, ledger: &Ledger) -> Result<Vec
     decode(base, &data)?;
     let path = dir.join(format!(".{}", Uuid::new_v4()));
     let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|_| error())?;
+        let mut file = storage::open(&path, storage::Open::New).map_err(|_| error())?;
         file.write_all(&data)
             .and_then(|_| file.sync_all())
             .map_err(|_| error())?;
-        fs::rename(&path, dir.join("approvals.json")).map_err(|_| error())?;
-        File::open(&dir)
-            .and_then(|d| d.sync_all())
-            .map_err(|_| error())?;
+        storage::replace(&path, &dir.join("approvals.json")).map_err(|_| error())?;
+        storage::sync_dir(&dir).map_err(|_| error())?;
         Ok(data)
     })();
     if result.is_err() {
