@@ -47,10 +47,26 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Native session and PKCE unit contracts
         run: cargo test --locked -p hypermesh-session
+      - uses: actions/setup-go@v6
+        if: matrix.os == 'windows-latest'
+        with:
+          go-version-file: third_party/hypermesh-cli/go.mod
+          cache: false
+      - name: Build isolated CLI credential contract helper
+        if: matrix.os == 'windows-latest'
+        working-directory: third_party/hypermesh-cli
+        env:
+          CGO_ENABLED: '0'
+          GOWORK: 'off'
+        run: |
+          New-Item -ItemType Directory -Path cmd/visor-credential-contract
+          Copy-Item ../../native/windows/credential-contract.go cmd/visor-credential-contract/main.go
+          go build -mod=readonly -buildvcs=false -o "$env:RUNNER_TEMP/visor-credential-contract.exe" ./cmd/visor-credential-contract
       - name: Isolated Windows Credential Manager unit contract
         if: matrix.os == 'windows-latest'
         env:
           HYPERMESH_CREDENTIAL_CONTRACT: '1'
+          HYPERMESH_CREDENTIAL_HELPER: ${{ runner.temp }}/visor-credential-contract.exe
         run: cargo test --locked -p hypermesh-session store::tests::windows_credential_store_contract -- --ignored --exact
 
   native-mcp-discovery:
