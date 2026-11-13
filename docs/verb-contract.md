@@ -48,7 +48,7 @@ the deserializers in `src/api.rs`, `src/input.rs`, `src/harness.rs`, and
 | `POST …/mcp/resources` | `server`, `action` list/templates/read, `decision` approve/deny, optional `params` | Explicit resource operation; requires advertised resource capability; returns outcome/result |
 | `POST …/mcp/prompts` | `server`, `action` list/get, `decision` approve/deny, optional `params` | Explicit template retrieval; requires advertised prompts capability; returns untrusted content without inference |
 | `GET /companion` | Desktop/session state, focus and preferred MCP binding | Does not grant execution permission |
-| `POST /companion/automation` | `action` | Trusted companion link required to lift a user pause |
+| `POST /companion/automation` | `action`; optional `expected_session` UUID for start/resume | Trusted companion link required to lift a user pause; a changed/closed selection with the guard returns 409. Native Allow/Resume always supplies it |
 | `POST /companion/interrupt`, `/companion/notice` | Companion control messages | See API request types; not task submission APIs |
 | `POST /prompt` | JSON `prompt`, `api_key`, and optional `model` | API key is in the JSON body (not `X-Api-Key`); configured routing and model validation |
 | `GET /audit`, `/mcp-audit` | Operation metadata | Not secret storage |
@@ -69,11 +69,21 @@ transform, screenshot crop transform, or normalized coordinate API. Clients must
 not assume CSS pixels equal input pixels. The contract deliberately publishes no
 Wayland coordinate promise while injection is disabled (#17).
 
-The checked-in native macOS helper deliberately refuses automation until it has
-an authenticated daemon channel. Discovery reports capture and input as
-`disabled`, with that restriction, and audio as `unavailable`. It publishes no
-usable coordinate contract for that disabled channel. OS permission grants alone
-do not enable it; discovery never prompts for permissions or probes the helper.
+The embedded native macOS app reports `active_desktop_logical_pixels`: capture
+and input cover the bounding rectangle of active displays in logical pixels.
+The API origin is the top-left of that rectangle, including displays left of or
+above the primary screen. `x`/`y` are nonnegative offsets from this origin, not
+absolute AppKit coordinates. Gaps between displays reject input. Layout changes
+pause access until the user approves the new layout; the client must obtain a
+new frame before choosing coordinates. There is no display-ID selection or
+client-supplied DPI transform. Clients must refuse an unrecognized coordinate
+space rather than guessing a primary-monitor origin. Capture/input remain conditional on native
+permissions, the input monitor and local session approval. Audio is unavailable.
+
+The nonembedded macOS backend still reports `disabled` capture/input and
+`unspecified` coordinates. The standalone permission-bearing helper refuses
+stdin automation; only the native app's in-process callback supplies desktop
+access. Discovery itself never prompts for permissions or grants access.
 
 Input runs in batches under a shared automation gate. Physical input, pause/stop,
 session close, and watchdog events can interrupt an operation. Held keys/buttons
@@ -148,21 +158,22 @@ remain tracked by their implementation issues; they do not keep this audit open.
 
 | User task | Classification and usable contract | Remaining scope |
 | --- | --- | --- |
-| Browser, editor or terminal interaction | Supported X11 capture, pointer and typing primitives; app MCP is preferred when an approved matching tool is available | App behavior and compatibility are covered by the scheduled Linux lanes; no generic shell-execution shortcut |
+| Browser, editor or terminal interaction | Supported X11 and embedded macOS capture, pointer and typing primitives; app MCP is preferred when an approved matching tool is available | App behavior and compatibility are covered by the scheduled Linux lanes; no generic shell-execution shortcut |
 | Scroll a document | Supported bounded wheel ticks on both axes, direct HTTP and inverse MCP | Application scroll interpretation remains app-specific |
 | Drag and keyboard shortcuts | Supported bounded drag and named-key chords; held keys/buttons release on interruption | Layout-specific shortcuts require the client's chosen key names |
 | Multiple windows | Supported root-coordinate input and best-effort focused-app matching | Semantic window enumeration/activation is excluded from the current API |
-| Multiple displays and DPI | Root-window pixels only; geometry and numeric limits are checked | Display IDs, monitor selection, normalized coordinates and DPI transforms are excluded |
+| Multiple displays and DPI | X11 root-window pixels or embedded macOS active-desktop logical pixels; geometry and numeric limits are checked | Display IDs, monitor selection, normalized coordinates and DPI transforms are excluded |
 | Clipboard | Excluded from the public verb set | No implicit clipboard read/write through another verb |
 | File handoff to an assigned session | Supported authenticated stream/inbox bytes and scoped container resource helper | Cross-bot shared-vault grants and materialization: #27/#37 |
 | Audio capture | Conditional PCM stream with the documented format | Capture depends on a PulseAudio-compatible service; playback and audio quality guarantees are excluded |
 | Native Wayland input | Disabled with an explicit refusal | Portal/libei input and physical-user interruption: #17 |
-| Windows/macOS automation | Native automation is unavailable or explicitly disabled | Authenticated native backends and distribution: #18/#25/#26 |
-| Container desktop bots | Private X11 image and scoped file-resource prototype | Distribution and remote assignment: #27/#30 |
+| macOS automation | Embedded capture/input with local approval, physical-input pause and active-display geometry; standalone helper remains disabled | Remaining companion controls and isolated workers: #18; signing: #84 |
+| Windows automation | Daemon, IPC and desktop backend are unimplemented; native session/discovery units do not imply desktop support | Native runtime and unsigned installer: #18/#25 |
+| Container desktop bots | Private X11 image, scoped file resources, native x64/ARM64 packaging and opt-in remote assignment are implemented | Configuration and owner assignment remain required; shared credentials stay in #37 |
 | Conventional AI client | Eleven inverse MCP tools, queued jobs and session-bound result resources | Protocol/transport behavior is covered by the MCP client contracts; see #32 |
 | Shared secrets and executable skills | Local session secret handles are scoped; they are not shared-file grants | Shared read/use/execute policy: #37 |
 
-The audit in #28 is complete when this contract change merges with green CI.
+The audit in #28 is complete; this document tracks subsequent implementation changes.
 Unit and contract coverage checks capability refusal, argument bounds, structured
 errors, HTTP/MCP parity, queued progress, cancellation and resource ownership.
 Scheduled application and display scenarios remain regression coverage in the
