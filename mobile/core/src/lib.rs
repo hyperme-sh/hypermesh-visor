@@ -13,6 +13,13 @@ pub enum StoreError {
     InvalidCredential,
 }
 
+// Unexpected native exceptions must not become panics containing store details.
+impl From<uniffi::UnexpectedUniFFICallbackError> for StoreError {
+    fn from(_: uniffi::UnexpectedUniFFICallbackError) -> Self {
+        Self::Unavailable
+    }
+}
+
 /// Implement with the native app's secure store. Never fall back to a plain file.
 /// Calls may arrive off the UI thread; implementations must be thread-safe.
 #[uniffi::export(foreign)]
