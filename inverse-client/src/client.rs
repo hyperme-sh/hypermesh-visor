@@ -6,8 +6,6 @@
 
 use std::cell::RefCell;
 use std::io::{self, BufRead, Read, Write};
-#[cfg(unix)]
-use std::path::{Path, PathBuf};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc, Arc, Weak,
@@ -176,8 +174,7 @@ struct CallResult {
 }
 
 enum VisorEndpoint {
-    #[cfg(unix)]
-    Unix(PathBuf),
+    Local(hypermesh_local_transport::Endpoint),
     Http { base: String, token: Option<String> },
 }
 
@@ -189,10 +186,17 @@ impl VisorEndpoint {
         #[cfg(unix)]
         {
             let dir = crate::local_runtime::runtime_dir().map_err(|err| err.to_string())?;
-            Ok(Self::Unix(crate::local_runtime::control_socket_file(&dir)))
+            Ok(Self::Local(hypermesh_local_transport::Endpoint::unix(crate::local_runtime::control_socket_file(&dir)).map_err(|_| "invalid local endpoint")?))
         }
-        #[cfg(not(unix))]
-        { Err("Local Windows transport is not available; set HYPERMESH_VISOR_URL and HYPERMESH_VISOR_TOKEN".into()) }
+        #[cfg(windows)]
+        {
+            let instance = match std::env::var("HYPERMESH_VISOR_INSTANCE") {
+                Ok(value) => value,
+                Err(std::env::VarError::NotPresent) => "default".into(),
+                Err(_) => return Err("invalid local instance".into()),
+            };
+            Ok(Self::Local(hypermesh_local_transport::Endpoint::windows(&instance, "control").map_err(|_| "invalid local endpoint")?))
+        }
     }
 }
 
@@ -613,8 +617,7 @@ fn visor_exchange(
     body: Option<&str>,
 ) -> Result<VisorResponse, String> {
     match visor {
-        #[cfg(unix)]
-        VisorEndpoint::Unix(socket) => unix_exchange(socket, method, path, body),
+        VisorEndpoint::Local(endpoint) => local_exchange(endpoint, method, path, body),
         VisorEndpoint::Http { base, token } => http_exchange(
             &format!("{}{path}", base.trim_end_matches('/')),
             method,
@@ -1103,17 +1106,16 @@ fn http_exchange(
     })
 }
 
-#[cfg(unix)]
-fn unix_exchange(
-    socket: &Path,
+fn local_exchange(
+    endpoint: &hypermesh_local_transport::Endpoint,
     method: &str,
     path: &str,
     body: Option<&str>,
 ) -> Result<VisorResponse, String> {
     with_transport(async {
-        let stream = tokio::net::UnixStream::connect(socket)
+        let stream = hypermesh_local_transport::connect(endpoint)
             .await
-            .map_err(|_| "visor socket connection failed")?;
+            .map_err(|_| "visor local connection unavailable or untrusted")?;
         exchange_stream(stream, method, path, "localhost", body, None).await
     })
 }
@@ -1121,6 +1123,57 @@ fn unix_exchange(
 #[cfg(test)]
 mod capability_contract_tests {
     use super::*;
+
+    #[test]
+    fn native_local_http_exchange_uses_authenticated_transport() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let instance = uuid::Uuid::new_v4().to_string();
+        #[cfg(unix)]
+        let directory = {
+            use std::os::unix::fs::DirBuilderExt;
+            let path = std::path::Path::new("/tmp").join(format!("visor-client-{instance}"));
+            std::fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+            path
+        };
+        #[cfg(unix)]
+        let endpoint = hypermesh_local_transport::Endpoint::unix(directory.join("control.sock")).unwrap();
+        #[cfg(windows)]
+        let endpoint = hypermesh_local_transport::Endpoint::windows(&instance, "control").unwrap();
+        let server_endpoint = endpoint.clone();
+        let (ready, started) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            runtime.block_on(async {
+                let mut listener = hypermesh_local_transport::Listener::bind(&server_endpoint).unwrap();
+                ready.send(()).unwrap();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    let mut stream = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 1024];
+                    while request.len() < 4096 {
+                        let count = stream.read(&mut buffer).await.unwrap();
+                        assert_ne!(count, 0);
+                        request.extend_from_slice(&buffer[..count]);
+                        if request.ends_with(b"private-unit-body") { break; }
+                    }
+                    let text = String::from_utf8(request).unwrap();
+                    assert!(text.starts_with("POST /unit HTTP/1.1\r\n"));
+                    assert!(text.ends_with("private-unit-body"));
+                    stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await.unwrap();
+                    // Keep the pipe alive until the client consumes the reply.
+                    let mut closed = [0];
+                    let _ = stream.read(&mut closed).await;
+                }).await.unwrap();
+            });
+        });
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        let response = local_exchange(&endpoint, "POST", "/unit", Some("private-unit-body")).unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"{}");
+        worker.join().unwrap();
+        #[cfg(unix)]
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn native_http_selection_requires_explicit_endpoint_and_windows_token() {

@@ -119,12 +119,17 @@ fn validate(file: &File, directory: bool, private: bool) -> io::Result<()> {
         {
             return Err(refused());
         }
+        check_security(handle, SE_FILE_OBJECT, private)
+    }
+}
+fn check_security(handle: HANDLE, kind: SE_OBJECT_TYPE, private: bool) -> io::Result<()> {
+    unsafe {
         let mut owner = null_mut();
         let mut acl = null_mut();
         let mut descriptor = null_mut();
         let result = GetSecurityInfo(
             handle,
-            SE_FILE_OBJECT,
+            kind,
             OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
             &mut owner,
             null_mut(),
@@ -365,4 +370,25 @@ mod tests {
         assert!(check_dir(&junction).is_err());
         std::fs::remove_dir(junction).unwrap();
     }
+}
+
+/// Public SID used only to scope a local pipe name, never as authentication.
+pub fn user_sid() -> io::Result<String> {
+    current_user()
+}
+
+/// The pointer is valid only for the duration of the callback.
+pub fn private_attributes<T>(create: impl FnOnce(*mut c_void) -> io::Result<T>) -> io::Result<T> {
+    let descriptor = descriptor()?;
+    let mut attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor.0,
+        bInheritHandle: 0,
+    };
+    create(std::ptr::addr_of_mut!(attributes).cast())
+}
+
+/// Verify an opened local kernel object before exchanging application data.
+pub fn check_private_object(object: &impl AsRawHandle) -> io::Result<()> {
+    check_security(object.as_raw_handle(), SE_KERNEL_OBJECT, true)
 }

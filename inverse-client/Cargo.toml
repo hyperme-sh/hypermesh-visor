@@ -10,6 +10,7 @@ name = "hypermesh-desktop-mcp-client"
 path = "src/main.rs"
 
 [dependencies]
+hypermesh-local-transport = { path = "../local-transport" }
 base64 = "0.22"
 bytes = "1"
 http-body-util = "0.1"

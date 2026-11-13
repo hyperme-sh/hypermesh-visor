@@ -142,3 +142,9 @@ mod tests {
         assert!(create_dir(&dir.0).is_err());
     }
 }
+
+#[cfg(windows)]
+pub use platform::{
+    check_private_object as windows_check_private_object,
+    private_attributes as windows_private_attributes, user_sid as windows_user_sid,
+};
