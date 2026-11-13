@@ -10,6 +10,7 @@ mod file_store;
 #[cfg(unix)]
 pub use file_store::FileStore;
 
+mod browser;
 mod oauth;
 mod pkce;
 mod store;
