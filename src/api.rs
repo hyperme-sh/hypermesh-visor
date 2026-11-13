@@ -3114,6 +3114,14 @@ mod tests {
         desktop: Arc<FakeDesktop>,
         poll_timeout: Duration,
     ) -> (SocketAddr, std::path::PathBuf) {
+        let (addr, dir, _) = spawn_pair_state(desktop, poll_timeout).await;
+        (addr, dir)
+    }
+
+    async fn spawn_pair_state(
+        desktop: Arc<FakeDesktop>,
+        poll_timeout: Duration,
+    ) -> (SocketAddr, std::path::PathBuf, Arc<AppState>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let dir = std::env::temp_dir().join(format!(
@@ -3145,7 +3153,7 @@ mod tests {
             )
             .await;
         });
-        (addr, dir)
+        (addr, dir, state)
     }
 
     fn companion_post(dir: &std::path::Path, action: &str) -> u16 {
@@ -5741,7 +5749,8 @@ while True:
     #[tokio::test]
     async fn a_socket_poll_keeps_a_running_automation_alive() {
         let desktop = FakeDesktop::new();
-        let (addr, dir) = spawn_pair_timeout(Arc::clone(&desktop), Duration::from_millis(80)).await;
+        let timeout = Duration::from_secs(30);
+        let (addr, dir, state) = spawn_pair_state(Arc::clone(&desktop), timeout).await;
         let (_, _, id) = open_session_id(addr, serde_json::json!([])).await;
         let (status, _, _) = send(
             addr,
@@ -5751,15 +5760,18 @@ while True:
         )
         .await;
         assert_eq!(status, 204);
-        let started = tokio::time::Instant::now();
-        while started.elapsed() < Duration::from_millis(400) {
-            let poll_dir = dir.clone();
-            let snap = tokio::task::spawn_blocking(move || companion_get(&poll_dir))
-                .await
-                .unwrap();
-            assert_eq!(snap["automation"]["phase"], "running");
-            tokio::time::sleep(Duration::from_millis(25)).await;
+        // Give the transport ample scheduling time, then assert refresh directly
+        // against a deliberately older heartbeat instead of racing an 80 ms timer.
+        let before = Instant::now();
+        {
+            let mut gate = lock(&state.automation);
+            assert!(!gate.note_poll(before - Duration::from_secs(2), timeout));
+            assert!(!gate.poll_fresh(before, Duration::from_secs(1)));
         }
+        let poll_dir = dir.clone();
+        let snap = tokio::task::spawn_blocking(move || companion_get(&poll_dir)).await.unwrap();
+        assert_eq!(snap["automation"]["phase"], "running");
+        assert!(lock(&state.automation).poll_fresh(before, Duration::from_secs(1)));
         let (status, _, body) = send(
             addr,
             "POST",
