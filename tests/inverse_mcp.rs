@@ -3,6 +3,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 
@@ -160,8 +161,13 @@ fn roundtrip(
 ) -> (Value, String) {
     let directory = std::env::temp_dir().join(format!("hm-inverse-{}", uuid::Uuid::new_v4()));
     let (result, wire) = if unix {
-        std::fs::create_dir(&directory).unwrap();
-        let listener = UnixListener::bind(directory.join("control.sock")).unwrap();
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .unwrap();
+        let socket = directory.join("control.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
         let server = std::thread::spawn(move || {
             let (stream, _) = accept_bounded!(listener);
             stream
@@ -1160,8 +1166,13 @@ fn cancellation_closes_stalled_unix_and_http_requests_and_skips_queued_input() {
         let directory = std::env::temp_dir().join(format!("hm-cancel-{}", uuid::Uuid::new_v4()));
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (endpoint, server) = if unix {
-            std::fs::create_dir(&directory).unwrap();
-            let listener = UnixListener::bind(directory.join("control.sock")).unwrap();
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&directory)
+                .unwrap();
+            let socket = directory.join("control.sock");
+            let listener = UnixListener::bind(&socket).unwrap();
+            std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
             let endpoint = directory.to_str().unwrap().to_owned();
             (
                 endpoint,

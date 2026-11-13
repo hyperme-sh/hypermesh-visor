@@ -13,6 +13,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src src
 COPY session session
 COPY local-storage local-storage
+COPY local-transport local-transport
 COPY inverse-client inverse-client
 COPY companion companion
 COPY shared shared
