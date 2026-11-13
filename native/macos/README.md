@@ -83,10 +83,13 @@ preserve task scope and model selection. An unavailable socket reports an error.
 The legacy `HYPERMESH_CONDUCTOR_ADDR` remains an explicit numeric loopback route;
 combining it with an explicit socket is refused.
 
-Start Conductor independently before launching the native app with these settings.
-Managed `HYPERMESH_CONDUCTOR_CONFIG` and supervisor URL settings are refused by
-the permission-bearing app. Native bundled-child startup still needs an isolated
-worker; explicit external routing does not complete default bundled delivery in #90.
+Use the distribution's `bin/hypermesh-visor` launcher for automatic bundled startup
+with explicit configuration and journal paths. It starts Conductor outside the
+permission-bearing app and passes a unique private socket to the app. See
+[DISTRIBUTION.md](DISTRIBUTION.md) for startup, failure and shutdown behavior.
+Opening the app directly remains available for an independently managed socket.
+Managed `HYPERMESH_CONDUCTOR_CONFIG` and supervisor URL settings remain refused
+inside the permission-bearing app.
 
 The native menu-bar companion uses the bundled animated mascot for idle,
 automation and disconnected states. Reduce Motion selects a still frame. Hover
