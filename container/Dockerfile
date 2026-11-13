@@ -13,6 +13,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY src src
 COPY session session
 COPY companion companion
+COPY shared shared
 COPY third_party third_party
 COPY tests tests
 RUN cargo build --locked --release --workspace

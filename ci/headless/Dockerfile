@@ -17,6 +17,7 @@ COPY Cargo.toml Cargo.lock LICENSE ./
 COPY src src
 COPY session session
 COPY companion companion
+COPY shared shared
 COPY third_party third_party
 COPY tests tests
 COPY ci ci
