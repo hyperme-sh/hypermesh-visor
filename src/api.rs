@@ -449,7 +449,7 @@ impl AppState {
 
     // Only the in-process native companion calls these. A resume must consume
     // exactly the pause it created, never a later user or remote control.
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     pub(crate) fn native_idle_pause(&self, session: Uuid) -> Option<u64> {
         let sessions = lock(&self.sessions);
         let mut gate = lock(&self.automation);
@@ -459,7 +459,7 @@ impl AppState {
         Some(gate.epoch())
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", windows, test))]
     pub(crate) fn native_idle_resume(&self, session: Uuid, epoch: u64) -> Option<u64> {
         let sessions = lock(&self.sessions);
         let mut gate = lock(&self.automation);
@@ -646,9 +646,9 @@ pub fn router(state: Arc<AppState>) -> Router {
     routes(state, false)
 }
 
-/// Native macOS UI authority stays in-process, never on an external socket.
+/// Native UI authority stays in-process, never on an external socket.
 pub(crate) fn socket_companion_router(state: Arc<AppState>) -> Router {
-    if state.desktop.backend_name().starts_with("macos") { router(state) }
+    if state.desktop.backend_name().starts_with("macos") || state.desktop.backend_name().starts_with("windows") { router(state) }
     else { companion_router(state) }
 }
 
@@ -973,6 +973,8 @@ pub async fn serve_until(
     state: Arc<AppState>,
     dependency: impl std::future::Future<Output = std::io::Result<()>> + Send + 'static,
 ) -> std::io::Result<()> {
+    #[cfg(windows)]
+    if tcp.is_some() { return Err(std::io::Error::other("native Windows uses protected pipes; TCP is unavailable")); }
     let remote_bot = remote_bot::configured().map_err(std::io::Error::other)?;
     let runtime = crate::companion_sock::runtime_dir()?;
     crate::companion_sock::prepare_dir(&runtime)?;
@@ -983,6 +985,7 @@ pub async fn serve_until(
     let _runtime_lock = crate::companion_sock::lock_runtime(&runtime)?;
     // A second process must not unlink a live socket and then fail the TCP
     // bind, leaving the running visor unreachable.
+    #[cfg(unix)]
     if crate::companion_sock::unix_socket_listening(&companion_path)
         || crate::companion_sock::unix_socket_listening(&control_path)
     {
@@ -1155,6 +1158,7 @@ where
     }
 }
 
+#[cfg(unix)]
 async fn shutdown_signal() {
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .expect("terminate signal");
@@ -7991,3 +7995,6 @@ while True:
     }
 
 }
+
+#[cfg(windows)]
+async fn shutdown_signal() { let _ = tokio::signal::ctrl_c().await; }

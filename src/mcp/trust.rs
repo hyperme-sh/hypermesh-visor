@@ -9,7 +9,10 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
+#[cfg(windows)]
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -63,7 +66,7 @@ pub struct TrustedProfile {
 fn read(path: &Path, required: bool) -> Result<Option<String>, McpError> {
     let file = match OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NONBLOCK)
+        .custom_flags(config_open_flags())
         .open(path)
     {
         Ok(f) => f,
@@ -790,3 +793,8 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+#[cfg(unix)]
+fn config_open_flags() -> i32 { libc::O_NONBLOCK }
+#[cfg(windows)]
+fn config_open_flags() -> u32 { windows_sys::Win32::Storage::FileSystem::SECURITY_SQOS_PRESENT | windows_sys::Win32::Storage::FileSystem::SECURITY_IDENTIFICATION }

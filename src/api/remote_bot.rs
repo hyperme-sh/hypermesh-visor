@@ -2,7 +2,6 @@
 use super::*;
 use serde_json::{json, Value};
 use std::io::Read;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Deserialize, Serialize)]
@@ -25,17 +24,12 @@ pub(super) struct Client {
 }
 
 fn private_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
+    let file = hypermesh_local_storage::open(path, hypermesh_local_storage::Open::Read { private: true })
         .map_err(|_| "bot configuration cannot be opened")?;
     let meta = file
         .metadata()
         .map_err(|_| "bot configuration cannot be inspected")?;
     if !meta.is_file()
-        || meta.uid() != crate::current_euid()
-        || meta.mode() & 0o077 != 0
         || meta.len() > 8192
     {
         return Err("bot configuration must be an owner-only regular file under 8 KiB".into());

@@ -550,7 +550,7 @@ fn attach_one(name: &str, spec: &ServerSpec) -> Result<AttachedServer, McpError>
 }
 
 fn attach_stdio(name: &str, spec: &ServerSpec) -> Result<AttachedServer, McpError> {
-    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    #[cfg(all(any(target_os = "macos", windows), feature = "desktop"))]
     if crate::native_engine::is_embedded() {
         return Err(McpError::message("Native app stdio MCP requires an isolated worker; spawning permission-inheriting children is disabled"));
     }
@@ -577,6 +577,7 @@ fn attach_stdio(name: &str, spec: &ServerSpec) -> Result<AttachedServer, McpErro
         cmd.env(k, resolve_env(v));
     }
 
+    if cfg!(windows) { return Err(McpError::message("Windows stdio MCP requires an isolated worker")); }
     let mut child = cmd
         .spawn()
         .map_err(|e| McpError::message(format!("mcp server \"{name}\": spawn {command}: {e}")))?;
@@ -624,6 +625,7 @@ fn resolve_env(value: &str) -> String {
     value.to_string()
 }
 
+#[cfg(unix)]
 fn handshake(
     name: &str,
     stdin: ChildStdin,
@@ -1208,3 +1210,6 @@ for line in sys.stdin:
         drop(bundle);
     }
 }
+
+#[cfg(windows)]
+fn handshake(_: &str, _: ChildStdin, _: ChildStdout) -> Result<(Vec<ToolInfo>, StdioClient), McpError> { Err(McpError::message("Windows stdio MCP requires an isolated worker")) }

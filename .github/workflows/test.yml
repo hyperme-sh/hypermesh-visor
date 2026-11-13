@@ -35,6 +35,22 @@ jobs:
           cargo build --locked -p hypermesh-companion
           python3 companion/tests/session_cli_terminal.py
 
+  native-windows-engine:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build native engine DLL
+        run: cargo rustc --locked --lib --crate-type cdylib
+      - name: Native engine protocol contracts
+        run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-engine-development
+          retention-days: 1
+          if-no-files-found: error
+          path: target/debug/hypermesh_visor.dll
+
   native-session:
     name: Session units (${{ matrix.os }})
     strategy:
