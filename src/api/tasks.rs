@@ -192,13 +192,55 @@ pub(super) async fn submit(
     submit_bounded(state, session, body, DEADLINE, None).await
 }
 
+/// Short, absolute authorization lease for independently authenticated adapters.
+/// A lost adapter cannot leave a task running for the default two-minute budget.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LeasedSubmission {
+    task: Submission,
+    authorized_until_ms: u64,
+    resume_seq: u64,
+}
+
+fn lease_duration(until: u64, now: u64) -> Result<Duration, ApiError> {
+    let millis = until.checked_sub(now).filter(|v| (1..=15_000).contains(v))
+        .ok_or_else(|| ApiError::bad("task authorization lease must be within 15 seconds"))?;
+    Ok(Duration::from_millis(millis))
+}
+
+pub(super) async fn submit_leased(
+    State(state): State<Arc<AppState>>, Path(session): Path<String>, Json(body): Json<LeasedSubmission>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let session_id = parse_id(&session)?;
+    let started = Instant::now();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::bad("invalid clock"))?.as_millis();
+    let now = u64::try_from(now).map_err(|_| ApiError::bad("invalid clock"))?;
+    let deadline = lease_duration(body.authorized_until_ms, now)?;
+    let consent = {
+        let gate = lock(&state.automation);
+        if gate.phase() != Phase::Running || gate.session() != Some(session_id) || gate.resume_seq() != body.resume_seq {
+            return Err(ApiError::conflict("local consent changed"));
+        }
+        automation::pack_snap(gate.epoch(), gate.phase())
+    };
+    submit_until(state, session, body.task, started + deadline, Some(consent)).await
+}
+
 pub(super) async fn submit_bounded(
     state: Arc<AppState>, session: String, body: Submission, deadline: Duration, consent_word: Option<u64>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let session = parse_id(&session)?;
     if deadline.is_zero() || deadline > DEADLINE {
         return Err(ApiError::bad("invalid task deadline"));
     }
+    submit_until(state, session, body, Instant::now() + deadline, consent_word).await
+}
+
+async fn submit_until(
+    state: Arc<AppState>, session: String, body: Submission, expires_at: Instant, consent_word: Option<u64>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let session = parse_id(&session)?;
+    if expires_at <= Instant::now() { return Err(ApiError::conflict("task authorization expired")); }
     if body.steps.is_empty() || body.steps.len() > MAX_STEPS {
         return Err(ApiError::bad("task requires 1 to 16 steps"));
     }
@@ -241,7 +283,6 @@ pub(super) async fn submit_bounded(
         value
     };
     drop(sessions);
-    let expires_at = Instant::now() + deadline;
     tokio::spawn(async move {
         let _slot = slot;
         run(state, session, id, cancel, actions, expires_at, consent_word).await;
@@ -441,6 +482,18 @@ mod drag_tests {
                 arguments: invalid
             })
             .is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    #[test]
+    fn absolute_lease_is_short_and_never_wraps_or_extends() {
+        assert_eq!(lease_duration(1_015_000, 1_000_000).unwrap_or_else(|_| panic!("valid lease")).as_millis(), 15_000);
+        for until in [0, 999_999, 1_000_000, 1_015_001, u64::MAX] {
+            assert!(lease_duration(until, 1_000_000).is_err());
         }
     }
 }

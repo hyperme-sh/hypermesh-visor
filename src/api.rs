@@ -662,6 +662,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/session", post(open_session))
         .route("/session/:id", delete(close_session))
         .route("/session/:id/tasks", post(tasks::submit))
+        .route("/session/:id/tasks/leased", post(tasks::submit_leased))
         .route("/session/:id/tasks/:task", get(tasks::status).delete(tasks::cancel))
         .route("/session/:id/view", post(view))
         .route("/session/:id/watch", get(watch))
@@ -3441,6 +3442,7 @@ mod tests {
             ("POST", "/companion/interrupt"),
             ("POST", "/companion/notice"),
             ("POST", "/session"),
+            ("POST", "/session/00000000-0000-0000-0000-000000000001/tasks/leased"),
             ("DELETE", "/session/00000000-0000-0000-0000-000000000001"),
             ("POST", "/session/00000000-0000-0000-0000-000000000001/view"),
             ("GET", "/session/00000000-0000-0000-0000-000000000001/watch"),
@@ -7710,6 +7712,27 @@ while True:
         assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
         assert!(lock(&desktop.typed).len() < 1024);
     }
+    #[tokio::test]
+    async fn leased_task_route_requires_current_consent_and_short_deadline() {
+        let (state, desktop, session) = task_fixture();
+        lock(&state.automation).control(Some(session), Control::Start).unwrap();
+        let resume = lock(&state.automation).resume_seq();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let path = format!("/session/{session}/tasks/leased");
+        let body = serde_json::json!({"task":{"steps":[{"tool":"view","arguments":{}}]},
+            "authorized_until_ms":now + 10_000,"resume_seq":resume});
+        let mut stale = body.clone(); stale["resume_seq"] = serde_json::json!(resume + 1);
+        assert_eq!(task_request(state.clone(), "POST", &path, stale).await.0, StatusCode::CONFLICT);
+        let mut long = body.clone(); long["authorized_until_ms"] = serde_json::json!(now + 60_000);
+        assert_eq!(task_request(state.clone(), "POST", &path, long).await.0, StatusCode::BAD_REQUEST);
+        let (status, created) = task_request(state.clone(), "POST", &path, body.clone()).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let done = task_terminal(state.clone(), &format!("/session/{session}/tasks/{}", created["id"].as_str().unwrap())).await;
+        assert_eq!(done["status"], "completed"); assert_eq!(desktop.views.load(Ordering::SeqCst), 1);
+        lock(&state.automation).pause();
+        assert_eq!(task_request(state, "POST", &path, body).await.0, StatusCode::CONFLICT);
+    }
+
     #[tokio::test]
     async fn remote_deadline_cancels_work_while_it_waits_in_the_local_queue() {
         let (state, desktop, session) = task_fixture();
