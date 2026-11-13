@@ -44,8 +44,10 @@ mod tasks;
 mod remote_bot;
 mod mcp_resources;
 mod mcp_prompts;
+mod host;
 
 pub struct AppState {
+    host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
     sessions: Mutex<HashMap<Uuid, Session>>,
     desktop: Arc<dyn Desktop>,
@@ -163,6 +165,7 @@ impl AppState {
         let gate = automation::Gate::default();
         let published = gate.snapshot_handle();
         Self {
+            host_bridge: None,
             tasks: tasks::Queue::new(),
             sessions: Mutex::new(HashMap::new()),
             desktop,
@@ -192,6 +195,11 @@ impl AppState {
         self.companion_poll_timeout = companion_poll_timeout_from(
             std::env::var("HYPERMESH_COMPANION_POLL_MS").ok().as_deref(),
         );
+    }
+
+    pub fn apply_host_bridge_env(&mut self) {
+        self.host_bridge = std::env::var_os("HYPERMESH_HOST_BRIDGE_SOCKET")
+            .and_then(|path| crate::host_bridge::Bridge::new(path.into()).ok());
     }
 
     fn close_all(&self) {
@@ -669,6 +677,9 @@ struct CompanionLink(bool);
 fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
     Router::new()
         .route("/capabilities", get(capabilities))
+        .route("/host/capabilities", get(host::catalog))
+        .route("/host/call", post(host::call))
+        .route("/host/mcp", post(host::mcp))
         .route("/companion", get(companion))
         .route("/companion/automation", post(companion_automation))
         .route("/companion/interrupt", post(companion_interrupt))
@@ -923,7 +934,16 @@ async fn mcp_trust_decision(
 /// Reports implementation support without capturing a screen, opening audio,
 /// attaching MCP servers, or changing the automation gate.
 async fn capabilities(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(crate::capabilities::describe(state.desktop.backend_name()))
+    let mut value = crate::capabilities::describe(state.desktop.backend_name());
+    let (available, entries) = match &state.host_bridge {
+        Some(bridge) => match bridge.catalog().await {
+            Ok(entries) => (true, entries),
+            Err(()) => (false, Vec::new()),
+        },
+        None => (false, Vec::new()),
+    };
+    value["host"] = serde_json::json!({"configured":state.host_bridge.is_some(),"available":available,"capabilities":entries,"catalog":"/host/capabilities","mcp":"/host/mcp","authorization_granted":false});
+    Json(value)
 }
 
 /// `tcp` is the opt-in loopback listener. `None` does not bind a port.
@@ -3409,6 +3429,21 @@ mod tests {
         let extra = authorization.map(|value| ("authorization", value));
         let response = dispatch(addr, method, path, body, extra).await;
         response.status().as_u16()
+    }
+
+    #[tokio::test]
+    async fn host_routes_require_existing_transport_auth_and_default_off() {
+        let token = "a".repeat(64);
+        let addr = spawn_with_bearer(&token).await;
+        for (method, path, body) in [
+            ("GET", "/host/capabilities", None),
+            ("POST", "/host/call", Some(r#"{"scope":"org/a/site/b","capability_id":"clock/read","call_id":"00000000-0000-4000-8000-000000000001","arguments":{}}"#.to_string())),
+            ("POST", "/host/mcp", Some(r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_string())),
+        ] {
+            assert_eq!(status_with(addr, method, path, body.clone(), None).await, 401);
+            let status = status_with(addr, method, path, body, Some(&format!("Bearer {token}"))).await;
+            assert_eq!(status, if path == "/host/mcp" { 200 } else { 503 });
+        }
     }
 
     #[tokio::test]

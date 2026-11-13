@@ -14,6 +14,7 @@ mod capabilities;
 mod companion_sock;
 mod desktop;
 mod harness;
+mod host_bridge;
 mod input;
 mod local_peer;
 #[path = "../shared/local_runtime.rs"]

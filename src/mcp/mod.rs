@@ -8,7 +8,7 @@ mod bindings;
 mod config;
 mod discovery;
 mod http;
-mod protocol;
+pub(crate) mod protocol;
 mod resources;
 mod prompts;
 mod schema;

@@ -140,6 +140,7 @@ fn main() -> ExitCode {
     let state = match AppState::with_orchestrator(desktop, Duration::from_millis(250), config) {
         Ok(mut state) => {
             state.apply_companion_poll_env();
+            state.apply_host_bridge_env();
             Arc::new(state)
         }
         Err(message) => {
