@@ -13,6 +13,10 @@ internal static class Contracts
             Consent consent = new();
             consent.Select("first"); Require(!consent.Allowed);
             long generation = consent.BeginApproval();
+            consent.Pause(); Require(!consent.PendingApproval("first", generation) && !consent.Approve("first", generation));
+            generation = consent.BeginApproval();
+            consent.Stop(); Require(!consent.PendingApproval("first", generation) && !consent.Approve("first", generation));
+            generation = consent.BeginApproval();
             consent.Input(100); Require(!consent.Approve("first", generation));
             generation = consent.BeginApproval(); Require(consent.Approve("first", generation));
             var ticket = consent.Input(1000)!.Value; Require(!consent.Allowed);
@@ -33,6 +37,14 @@ internal static class Contracts
             Refuses(() => DesktopDriver.Normalize(-1, 0, 1920, 1080)); Refuses(() => DesktopDriver.Normalize(1920, 0, 1920, 1080));
             Win32.Input[] text = DesktopDriver.Keys(0x0101F680, true, false, 123);
             Require(text.Length == 2 && text.All(v => v.Data.Key.Flags == 4 && v.Data.Key.Extra == 123));
+            foreach (uint shift in new uint[] { 0xFFE1, 0xFFE2 })
+            {
+                Win32.Input modifier = DesktopDriver.Keys(shift, true, false, 123).Single();
+                Require(DesktopDriver.IsChordModifier(modifier));
+                Win32.Input letter = DesktopDriver.Keys('a', true, DesktopDriver.IsChordModifier(modifier), 123).Single();
+                Require(letter.Data.Key.Key == 'A' && letter.Data.Key.Flags == 0);
+            }
+            Require(DesktopDriver.Keys('a', true, false, 123).Single().Data.Key.Flags == 4);
             Require(DesktopDriver.Keys('c', true, true, 123).Single().Data.Key.Key == 'C');
             Require(DesktopDriver.Keys(0xFFE4, true, true, 123).Single().Data.Key.Flags == 1);
             Refuses(() => DesktopDriver.Keys('!', true, true, 123)); Refuses(() => DesktopDriver.Keys(0x0100D800, true, false, 123));

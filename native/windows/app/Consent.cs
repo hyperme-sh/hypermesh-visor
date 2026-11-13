@@ -17,9 +17,10 @@ internal sealed class Consent
         Selected = session; Approved = null; Pause();
     }
     internal long BeginApproval() { Pause(); pendingApproval = true; return Generation; }
+    internal bool PendingApproval(string session, long generation) => !MonitorLost && pendingApproval && generation == Generation && session == Selected;
     internal bool Approve(string session, long generation)
     {
-        if (MonitorLost || !pendingApproval || generation != Generation || session != Selected) return false;
+        if (!PendingApproval(session, generation)) return false;
         pendingApproval = false; Approved = session; Allowed = true; Idle = null; return true;
     }
     internal void Pause() { pendingApproval = false; Allowed = false; Idle = null; Generation++; }

@@ -93,7 +93,7 @@ internal sealed class DesktopDriver
                     {
                         Check(epoch);
                         if (!Win32.NormalUserWindow(Win32.GetForegroundWindow())) throw new InvalidOperationException();
-                        bool shortcut = held.Values.Any(v => v.Type == 1 && v.Data.Key.Key is 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x5B or 0x5C);
+                        bool shortcut = held.Values.Any(IsChordModifier);
                         foreach (Win32.Input input in Keys(stroke.GetProperty("keysym").GetUInt32(), stroke.GetProperty("down").GetBoolean(), shortcut, marker)) Send(input, epoch);
                     }
                     return new { };
@@ -104,6 +104,7 @@ internal sealed class DesktopDriver
             catch { Release(); fault(); throw; }
         }
     }
+    internal static bool IsChordModifier(Win32.Input input) => input.Type == 1 && input.Data.Key.Key is 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x5B or 0x5C;
     internal static (int X, int Y) Normalize(int x, int y, int width, int height)
     {
         if (width < 1 || height < 1 || x < 0 || y < 0 || x >= width || y >= height) throw new ArgumentOutOfRangeException();

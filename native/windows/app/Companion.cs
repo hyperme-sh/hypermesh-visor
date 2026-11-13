@@ -129,11 +129,12 @@ internal sealed class Companion : Form
         if (!started || approving || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
         approving = true;
         Revoke();
-        try { await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1)); } catch { Pause("Input cleanup is unavailable; restart Visor"); approving = false; return; }
         long generation = consent.BeginApproval();
         long baseline = Interlocked.Read(ref serial); approvalBaseline = baseline;
         try
         {
+            await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1));
+            if (closing || baseline != Interlocked.Read(ref serial) || !consent.PendingApproval(session, generation)) return;
             if (!desktop.Released || !desktop.ApproveLayout()) { Pause("Input cleanup is unavailable; restart after returning to your desktop"); return; }
             JsonElement? response = await Engine.Control(phase == "paused" ? "resume" : "start", session);
             if (!closing && Success(response) && desktop.LayoutMatches && baseline == Interlocked.Read(ref serial) && monitor.Healthy && Win32.Interactive() && !Win32.HeldInput() && consent.Approve(session, generation))
