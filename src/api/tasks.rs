@@ -192,13 +192,71 @@ pub(super) async fn submit(
     submit_bounded(state, session, body, DEADLINE, None).await
 }
 
-pub(super) async fn submit_bounded(
-    state: Arc<AppState>, session: String, body: Submission, deadline: Duration, consent_word: Option<u64>,
+#[derive(Clone, Copy)]
+pub(super) struct Consent {
+    pub(super) word: u64,
+    pub(super) session: Uuid,
+    pub(super) resume_seq: u64,
+}
+impl Consent {
+    pub(super) fn capture(gate: &automation::Gate, session: Uuid) -> Self {
+        Self { word: automation::pack_snap(gate.epoch(), gate.phase()), session, resume_seq: gate.resume_seq() }
+    }
+    pub(super) fn matches(self, gate: &automation::Gate) -> bool {
+        gate.phase() == Phase::Running && gate.session() == Some(self.session) &&
+            gate.resume_seq() == self.resume_seq && automation::pack_snap(gate.epoch(), gate.phase()) == self.word
+    }
+}
+
+/// Short, absolute authorization lease for independently authenticated adapters.
+/// A lost adapter cannot leave a task running for the default two-minute budget.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LeasedSubmission {
+    task: Submission,
+    authorized_until_ms: u64,
+    resume_seq: u64,
+}
+
+fn lease_duration(until: u64, now: u64) -> Result<Duration, ApiError> {
+    let millis = until.checked_sub(now).filter(|v| (1..=15_000).contains(v))
+        .ok_or_else(|| ApiError::bad("task authorization lease must be within 15 seconds"))?;
+    Ok(Duration::from_millis(millis))
+}
+
+pub(super) async fn submit_leased(
+    State(state): State<Arc<AppState>>, Path(session): Path<String>, Json(body): Json<LeasedSubmission>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let session = parse_id(&session)?;
+    let session_id = parse_id(&session)?;
+    let started = Instant::now();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ApiError::bad("invalid clock"))?.as_nanos().div_ceil(1_000_000);
+    let now = u64::try_from(now).map_err(|_| ApiError::bad("invalid clock"))?;
+    let deadline = lease_duration(body.authorized_until_ms, now)?;
+    let consent = {
+        let gate = lock(&state.automation);
+        if gate.phase() != Phase::Running || gate.session() != Some(session_id) || gate.resume_seq() != body.resume_seq {
+            return Err(ApiError::conflict("local consent changed"));
+        }
+        Consent::capture(&gate, session_id)
+    };
+    submit_until(state, session, body.task, started + deadline, Some(consent)).await
+}
+
+pub(super) async fn submit_bounded(
+    state: Arc<AppState>, session: String, body: Submission, deadline: Duration, consent_word: Option<Consent>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
     if deadline.is_zero() || deadline > DEADLINE {
         return Err(ApiError::bad("invalid task deadline"));
     }
+    submit_until(state, session, body, Instant::now() + deadline, consent_word).await
+}
+
+async fn submit_until(
+    state: Arc<AppState>, session: String, body: Submission, expires_at: Instant, consent_word: Option<Consent>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let session = parse_id(&session)?;
+    if expires_at <= Instant::now() { return Err(ApiError::conflict("task authorization expired")); }
     if body.steps.is_empty() || body.steps.len() > MAX_STEPS {
         return Err(ApiError::bad("task requires 1 to 16 steps"));
     }
@@ -241,7 +299,6 @@ pub(super) async fn submit_bounded(
         value
     };
     drop(sessions);
-    let expires_at = Instant::now() + deadline;
     tokio::spawn(async move {
         let _slot = slot;
         run(state, session, id, cancel, actions, expires_at, consent_word).await;
@@ -297,7 +354,7 @@ async fn run(
     cancel: Arc<AtomicBool>,
     actions: Vec<Action>,
     expires_at: Instant,
-    consent_word: Option<u64>,
+    consent_word: Option<Consent>,
 ) {
     let timer_flag = Arc::clone(&cancel);
     let timer = tokio::spawn(async move {
@@ -312,7 +369,7 @@ async fn run(
         .expect("task semaphore stays open");
     let mut size = 0;
     for action in actions {
-        if consent_word.is_some_and(|word| gate_word(&state) != word) {
+        if consent_word.is_some_and(|consent| !consent.matches(&lock(&state.automation))) {
             cancel.store(true, Ordering::SeqCst);
         }
         if cancel.load(Ordering::SeqCst) || !state.has_session(session) {
@@ -328,7 +385,7 @@ async fn run(
             }
             record.status = "running";
         }
-        let result = execute(Arc::clone(&state), session, Arc::clone(&cancel), action, consent_word.map(|word| automation::unpack_snap(word).0)).await;
+        let result = execute(Arc::clone(&state), session, Arc::clone(&cancel), action, consent_word).await;
         let mut records = lock(&state.tasks.records);
         let Some(record) = records.iter_mut().find(|r| r.id == id) else {
             break;
@@ -372,11 +429,15 @@ async fn execute(
     session: Uuid,
     cancel: Arc<AtomicBool>,
     action: Action,
-    task_epoch: Option<u64>,
+    task_epoch: Option<Consent>,
 ) -> Result<Value, ApiError> {
     match action {
         Action::View => {
-            let response = view(State(state), Path(session.to_string())).await?;
+            let response = view(State(Arc::clone(&state)), Path(session.to_string())).await?;
+            if task_epoch.is_some_and(|consent| !consent.matches(&lock(&state.automation))) {
+                cancel.store(true, Ordering::SeqCst);
+                return Err(ApiError::conflict("local consent changed"));
+            }
             let bytes = axum::body::to_bytes(response.into_body(), MAX_RESULT_BYTES / 2)
                 .await
                 .map_err(|_| ApiError::bad("task image exceeds result limit"))?;
@@ -441,6 +502,18 @@ mod drag_tests {
                 arguments: invalid
             })
             .is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+    #[test]
+    fn absolute_lease_is_short_and_never_wraps_or_extends() {
+        assert_eq!(lease_duration(1_015_000, 1_000_000).unwrap_or_else(|_| panic!("valid lease")).as_millis(), 15_000);
+        for until in [0, 999_999, 1_000_000, 1_015_001, u64::MAX] {
+            assert!(lease_duration(until, 1_000_000).is_err());
         }
     }
 }

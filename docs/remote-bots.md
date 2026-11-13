@@ -77,3 +77,26 @@ configuration disables automatic restart: after failure, the owner must launch
 the container again and assign the newly created session. With the flag absent
 or `0`, startup retains the normal explicit local consent requirement. Any other
 flag value or a non-container enrollment config is refused.
+
+## Short leases for local forum adapters
+
+An independently authenticated adapter can submit an already approved task to
+`POST /session/{id}/tasks/leased` using the normal local API authentication:
+
+```json
+{"task":{"steps":[{"tool":"view","arguments":{}}]},"authorized_until_ms":1794530001000,"resume_seq":4}
+```
+
+Replace the example deadline with an absolute Unix millisecond deadline strictly
+in the future and no more than 15 seconds away. Use the current `resume_seq` from
+`GET /companion`. The active automation session must match `{id}` and its phase
+must be `running`. This endpoint cannot start or resume automation. It captures
+the consent generation and deadline before queueing, and retains both through
+execution. Waiting in the queue consumes the lease. A pause/stop or expired lease
+cancels the task even if the adapter disappears. The response, status and cancel
+routes are the same as ordinary bounded tasks. A caller must not retry an
+uncertain submission; recover its durable task state instead.
+
+The adapter remains responsible for current forum/tenant permissions and task
+reference access, and should cancel immediately when either is revoked. This
+local endpoint grants no forum membership or artifact access.

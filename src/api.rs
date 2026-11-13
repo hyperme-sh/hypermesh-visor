@@ -662,6 +662,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/session", post(open_session))
         .route("/session/:id", delete(close_session))
         .route("/session/:id/tasks", post(tasks::submit))
+        .route("/session/:id/tasks/leased", post(tasks::submit_leased))
         .route("/session/:id/tasks/:task", get(tasks::status).delete(tasks::cancel))
         .route("/session/:id/view", post(view))
         .route("/session/:id/watch", get(watch))
@@ -2205,9 +2206,10 @@ struct InjectGuard<'a> {
 }
 
 impl<'a> InjectGuard<'a> {
-    fn arm(gate: &'a Mutex<automation::Gate>, session: Uuid, epoch: u64) -> Result<Self, ApiError> {
-        lock(gate)
-            .begin_inject(session, epoch)
+    fn arm(gate: &'a Mutex<automation::Gate>, session: Uuid, epoch: u64, consent: Option<tasks::Consent>) -> Result<Self, ApiError> {
+        let mut held = lock(gate);
+        if consent.is_some_and(|value| !value.matches(&held)) { return Err(ApiError::conflict("local consent changed")); }
+        held.begin_inject(session, epoch)
             .map_err(|_| ApiError::conflict("automation paused"))?;
         Ok(Self { gate })
     }
@@ -2228,7 +2230,7 @@ async fn mouse(
 }
 
 async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
-                           task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<u64>) -> Result<StatusCode, ApiError> {
+                           task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<tasks::Consent>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     let backend = state.desktop.backend_name();
     if !mouse_in_bounds(backend, &op) {
@@ -2251,7 +2253,7 @@ async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
     // Captured before the phase check. A pause that publishes a new epoch
     // after this read cannot be adopted as the baseline inside the desktop task.
-    let epoch = task_epoch.unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
+    let epoch = task_epoch.map(|consent| automation::unpack_snap(consent.word).0).unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
     if backend == "wayland" {
         return Err(ApiError::not_implemented(
             crate::desktop::WAYLAND_AUTOMATION,
@@ -2288,7 +2290,7 @@ async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
         if cancelled() || stretch_ended(&state2) {
             return Err(ApiError::conflict("automation paused"));
         }
-        let _injecting = InjectGuard::arm(&state2.automation, id, epoch)?;
+        let _injecting = InjectGuard::arm(&state2.automation, id, epoch, task_epoch)?;
         let mut release = ReleaseGuard::arm(&*desktop);
         let generation = lock(&state2.automation).generation();
         let from = desktop.pointer_position().ok().flatten();
@@ -2316,10 +2318,10 @@ async fn type_keys(
 }
 
 async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
-                          task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<u64>) -> Result<StatusCode, ApiError> {
+                          task_cancel: Option<Arc<AtomicBool>>, task_epoch: Option<tasks::Consent>) -> Result<StatusCode, ApiError> {
     let id = parse_id(&id)?;
     lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
-    let epoch = task_epoch.unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
+    let epoch = task_epoch.map(|consent| automation::unpack_snap(consent.word).0).unwrap_or_else(|| automation::unpack_snap(gate_word(&state)).0);
     if state.desktop.backend_name() == "wayland" {
         return Err(ApiError::not_implemented(
             crate::desktop::WAYLAND_AUTOMATION,
@@ -2383,7 +2385,7 @@ async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
         if cancelled() || stretch_ended(&state2) {
             return Err(ApiError::conflict("automation paused"));
         }
-        let _injecting = InjectGuard::arm(&state2.automation, id, epoch)?;
+        let _injecting = InjectGuard::arm(&state2.automation, id, epoch, task_epoch)?;
         let mut release = ReleaseGuard::arm(&*desktop);
         let generation = lock(&state2.automation).generation();
         let mut rest = strokes.as_slice();
@@ -3441,6 +3443,7 @@ mod tests {
             ("POST", "/companion/interrupt"),
             ("POST", "/companion/notice"),
             ("POST", "/session"),
+            ("POST", "/session/00000000-0000-0000-0000-000000000001/tasks/leased"),
             ("DELETE", "/session/00000000-0000-0000-0000-000000000001"),
             ("POST", "/session/00000000-0000-0000-0000-000000000001/view"),
             ("GET", "/session/00000000-0000-0000-0000-000000000001/watch"),
@@ -7711,6 +7714,50 @@ while True:
         assert!(lock(&desktop.typed).len() < 1024);
     }
     #[tokio::test]
+    async fn leased_task_route_requires_current_consent_and_short_deadline() {
+        let (state, desktop, session) = task_fixture();
+        lock(&state.automation).control(Some(session), Control::Start).unwrap();
+        let resume = lock(&state.automation).resume_seq();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let path = format!("/session/{session}/tasks/leased");
+        let body = serde_json::json!({"task":{"steps":[{"tool":"view","arguments":{}}]},
+            "authorized_until_ms":now + 10_000,"resume_seq":resume});
+        let mut stale = body.clone(); stale["resume_seq"] = serde_json::json!(resume + 1);
+        assert_eq!(task_request(state.clone(), "POST", &path, stale).await.0, StatusCode::CONFLICT);
+        let mut long = body.clone(); long["authorized_until_ms"] = serde_json::json!(now + 60_000);
+        assert_eq!(task_request(state.clone(), "POST", &path, long).await.0, StatusCode::BAD_REQUEST);
+        let (status, created) = task_request(state.clone(), "POST", &path, body.clone()).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let done = task_terminal(state.clone(), &format!("/session/{session}/tasks/{}", created["id"].as_str().unwrap())).await;
+        assert_eq!(done["status"], "completed"); assert_eq!(desktop.views.load(Ordering::SeqCst), 1);
+        lock(&state.automation).pause();
+        assert_eq!(task_request(state, "POST", &path, body).await.0, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn leased_task_cannot_survive_a_new_running_session_or_resume_sequence() {
+        for switch_session in [false, true] {
+            let (state, desktop, session) = task_fixture();
+            lock(&state.automation).control(Some(session), Control::Start).unwrap();
+            let consent = tasks::Consent::capture(&lock(&state.automation), session);
+            let selected = if switch_session { Uuid::new_v4() } else { session };
+            lock(&state.automation).control(Some(selected), Control::Start).unwrap();
+            assert_eq!(gate_word(&state), consent.word, "regression requires an unchanged epoch/phase");
+            let op = MouseOp::Move { x: 1, y: 1, clickable: false };
+            assert!(mouse_with_cancel(state.clone(), session.to_string(), op, None, Some(consent)).await.is_err());
+            let body = serde_json::from_value(serde_json::json!({"text":"must not type"})).unwrap();
+            assert!(type_with_cancel(state.clone(), session.to_string(), body, None, Some(consent)).await.is_err());
+            assert!(lock(&desktop.mice).is_empty()); assert!(lock(&desktop.typed).is_empty());
+            assert_eq!(lock(&state.automation).session(), Some(selected));
+            let body = serde_json::from_value(serde_json::json!({"steps":[{"tool":"view","arguments":{}}]})).unwrap();
+            let (_, Json(task)) = tasks::submit_bounded(state.clone(), session.to_string(), body, Duration::from_secs(1), Some(consent))
+                .await.unwrap_or_else(|_| panic!("submission failed"));
+            let done = task_terminal(state, &format!("/session/{session}/tasks/{}", task["id"].as_str().unwrap())).await;
+            assert_eq!(done["status"], "cancelled"); assert_eq!(desktop.views.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn remote_deadline_cancels_work_while_it_waits_in_the_local_queue() {
         let (state, desktop, session) = task_fixture();
         let injection = lock(&state.injection);
@@ -7731,7 +7778,7 @@ while True:
     #[tokio::test]
     async fn remote_task_cannot_run_after_its_local_consent_epoch_changes() {
         let (state, desktop, session) = task_fixture();
-        let old_consent = gate_word(&state);
+        let old_consent = tasks::Consent::capture(&lock(&state.automation), session);
         lock(&state.automation).pause();
         let body = serde_json::from_value(serde_json::json!({"steps":[{"tool":"view","arguments":{}}]})).unwrap();
         let (_, Json(remote)) = tasks::submit_bounded(state.clone(), session.to_string(), body,
@@ -7744,7 +7791,7 @@ while True:
     #[tokio::test]
     async fn remote_input_handlers_reject_the_task_epoch_after_a_local_stop() {
         let (state, desktop, session) = task_fixture();
-        let epoch = lock(&state.automation).epoch();
+        let epoch = tasks::Consent::capture(&lock(&state.automation), session);
         lock(&state.automation).stop();
         let op = MouseOp::Move { x: 1, y: 1, clickable: false };
         assert!(mouse_with_cancel(state.clone(), session.to_string(), op, None, Some(epoch)).await.is_err());
