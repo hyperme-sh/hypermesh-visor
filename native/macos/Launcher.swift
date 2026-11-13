@@ -58,6 +58,20 @@ private func privatePath(_ path: String, type: mode_t) -> Bool {
         && info.st_mode & mode_t(S_IFMT) == type && info.st_mode & 0o077 == 0
 }
 
+private struct SocketIdentity: Equatable {
+    let device: dev_t
+    let inode: ino_t
+    static func read(_ path: String) -> SocketIdentity? {
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_uid == geteuid(),
+              info.st_mode & mode_t(S_IFMT) == mode_t(S_IFSOCK), info.st_mode & 0o077 == 0 else { return nil }
+        return SocketIdentity(device: info.st_dev, inode: info.st_ino)
+    }
+    func removeIfUnchanged(_ path: String) {
+        if Self.read(path) == self { _ = unlink(path) }
+    }
+}
+
 // Bounded readiness probe; it carries no credentials or model request.
 private func ready(_ path: String, childPID: Int32) -> Bool {
     guard privatePath(URL(fileURLWithPath: path).deletingLastPathComponent().path, type: mode_t(S_IFDIR)),
@@ -103,6 +117,7 @@ private final class Launcher {
     var opening = false
     var stopping = false
     var socketDirectory = ""
+    var socketIdentity: SocketIdentity?
     var lockFD: Int32 = -1
     var stopCode: Int32 = 0
     var stopDeadline: Date?
@@ -173,7 +188,9 @@ private final class Launcher {
             if !child.isRunning || Date() >= startupDeadline { stop(1) }
             return
         }
-        switch nextAction(childAlive: child.isRunning, ready: app == nil && ready(plan.socket, childPID: child.processIdentifier),
+        let socketReady = app == nil && ready(plan.socket, childPID: child.processIdentifier)
+        if socketReady { socketIdentity = SocketIdentity.read(plan.socket) }
+        switch nextAction(childAlive: child.isRunning, ready: socketReady,
                           appOpened: app != nil, appAlive: app?.isTerminated == false,
                           expired: Date() >= startupDeadline, stopping: false) {
         case .wait: break
@@ -210,7 +227,9 @@ private final class Launcher {
     }
 
     func finish(_ code: Int32) -> Never {
-        // Conductor removes its own socket. Never recursively delete a replaced path.
+        // Also remove a crash-left socket only if it is the authenticated instance.
+        // Never recursively delete a replaced path or unrelated directory content.
+        if let plan { socketIdentity?.removeIfUnchanged(plan.socket) }
         if !socketDirectory.isEmpty { _ = rmdir(socketDirectory) }
         if lockFD >= 0 { close(lockFD) }
         exit(code)
@@ -261,6 +280,17 @@ private func socketContracts() throws {
     }
     precondition(ready(path, childPID: getpid()))
     precondition(done.wait(timeout: .now() + 2) == .success)
+    let identity = SocketIdentity.read(path)!
+    // A replacement pathname must survive cleanup of the original socket.
+    let renamed = root + "/original.sock"
+    precondition(rename(path, renamed) == 0)
+    defer { unlink(renamed) }
+    precondition(FileManager.default.createFile(atPath: path, contents: Data("replacement".utf8)))
+    identity.removeIfUnchanged(path)
+    precondition(FileManager.default.fileExists(atPath: path))
+    precondition(unlink(path) == 0 && rename(renamed, path) == 0)
+    identity.removeIfUnchanged(path)
+    precondition(!FileManager.default.fileExists(atPath: path))
 }
 
 private func contracts() throws {
