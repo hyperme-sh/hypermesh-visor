@@ -2,10 +2,11 @@
 FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS conductor
 RUN apk add --no-cache curl
 WORKDIR /source
-RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/8c381046952863e8ba83f054d467402c959eb59a -o source.tar.gz && \
-    echo 'f19b825b28940b09b45c73170c7a13805b23e8b053f0b9ca2430137432a032de  source.tar.gz' | sha256sum -c - && \
+RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/01c81d8e5421204c410d226028c605658436f723 -o source.tar.gz && \
+    echo '9f6a9f154c8275ec875817f2055e6a88db76c775bfbd8db73349f125331a3d03  source.tar.gz' | sha256sum -c - && \
     tar xzf source.tar.gz --strip-components=1 && \
-    CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath -o /conductor ./cmd/conductor
+    CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath -o /conductor ./cmd/conductor && \
+    /conductor help | grep -F capability-review
 FROM ghcr.io/goreleaser/nfpm:v2.47.0@sha256:a662cb167d7b6d3a83920c83d76b12d02b8ac5dd2c13e5c62c15270b23f6df0c AS nfpm
 # Native musl unit/build lane; no emulation or desktop processes.
 FROM rust:1.90.0-alpine3.22@sha256:b4b54b176a74db7e5c68fdfe6029be39a02ccbcfe72b6e5a3e18e2c61b57ae26 AS build
