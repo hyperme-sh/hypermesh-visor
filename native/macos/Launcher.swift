@@ -188,8 +188,11 @@ private final class Launcher {
             if !child.isRunning || Date() >= startupDeadline { stop(1) }
             return
         }
-        let socketReady = app == nil && ready(plan.socket, childPID: child.processIdentifier)
-        if socketReady { socketIdentity = SocketIdentity.read(plan.socket) }
+        let candidate = SocketIdentity.read(plan.socket)
+        let socketReady = app == nil && candidate != nil
+            && ready(plan.socket, childPID: child.processIdentifier)
+            && SocketIdentity.read(plan.socket) == candidate
+        if socketReady { socketIdentity = candidate }
         switch nextAction(childAlive: child.isRunning, ready: socketReady,
                           appOpened: app != nil, appAlive: app?.isTerminated == false,
                           expired: Date() >= startupDeadline, stopping: false) {
