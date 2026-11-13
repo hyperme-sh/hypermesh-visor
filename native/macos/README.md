@@ -112,5 +112,7 @@ The icon animates with the current state and respects Reduce Motion. Below it,
 up/down arrows show the latest reported response input/output token counts;
 missing data says No usage. Hover shows the full counts and current status.
 These are response counts, not a budget or task total. Both the floating panel
-and the automation pointer overlay are excluded from captured frames. A removed
+and the automation pointer overlay are excluded from captured frames. While
+automation is allowed the panel passes clicks through to the underlying app;
+physical input pauses automation and restores companion interaction. A removed
 or rearranged display moves the panel back into a visible display area.

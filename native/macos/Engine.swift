@@ -51,6 +51,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var menuAllow: NSMenuItem?
     private var destinationItems: [NSMenuItem] = []
     private var compactUsage: String?
+    private let companionSettings = NativeCompanionSettings(defaults: .standard)
     private var floatingItem: NSMenuItem?
     weak var controlWindow: NSWindow?
     private var currentSession: String?
@@ -109,7 +110,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         controls.target = self; menu.insertItem(controls, at: 0)
         let floating = NSMenuItem(title: "Show floating companion", action: #selector(toggleFloating), keyEquivalent: "")
         floating.target = self; menu.insertItem(floating, at: 1); floatingItem = floating
-        NativeCompanionPanel.shared.enabled = UserDefaults.standard.object(forKey: "visor-floating-companion-visible") as? Bool ?? true
+        NativeCompanionPanel.shared.enabled = companionSettings.visible
         NativeCompanionPanel.shared.configure(target: self, action: #selector(openCompanionMenu))
         statusItem?.menu = menu
         installMonitor()
@@ -179,7 +180,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         floatingItem?.state = NativeCompanionPanel.shared.enabled ? .on : .off
         NativeCompanionPanel.shared.update(image: statusItem?.button?.image,
             state: !engineConnected ? "Disconnected" : (allowed ? "Running" : (currentPhase == "paused" ? "Paused" : "Off")),
-            usage: compactUsage, detail: detail)
+            usage: compactUsage, detail: detail, allowed: allowed)
 
     }
     private func poll() {
@@ -226,8 +227,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
     @objc func toggleFloating() {
-        NativeCompanionPanel.shared.enabled.toggle()
-        UserDefaults.standard.set(NativeCompanionPanel.shared.enabled, forKey: "visor-floating-companion-visible")
+        NativeCompanionPanel.shared.enabled = companionSettings.toggle()
         update()
     }
     @objc func openCompanionMenu() {

@@ -330,6 +330,18 @@ func nativeCompanionFrame(_ frame: CGRect, screens: [CGRect]) -> CGRect? {
                   y: min(max(y, screen.minY), screen.maxY - 96), width: 88, height: 96)
 }
 
+struct NativeCompanionSettings {
+    let defaults: UserDefaults
+    private let key = "visor-floating-companion-visible"
+    var visible: Bool { defaults.object(forKey: key) as? Bool ?? true }
+    func toggle() -> Bool {
+        let next = !visible
+        defaults.set(next, forKey: key)
+        return next
+    }
+}
+func nativeCompanionAcceptsClicks(allowed: Bool) -> Bool { !allowed }
+
 @MainActor final class NativeCompanionPanel {
     static let shared = NativeCompanionPanel()
     private var panel: NSPanel?
@@ -364,8 +376,9 @@ func nativeCompanionFrame(_ frame: CGRect, screens: [CGRect]) -> CGRect? {
         window.setFrameAutosaveName("visor-floating-companion")
         panel = window
     }
-    func update(image: NSImage?, state: String, usage: String?, detail: String) {
+    func update(image: NSImage?, state: String, usage: String?, detail: String, allowed: Bool) {
         guard let panel else { return }
+        panel.ignoresMouseEvents = !nativeCompanionAcceptsClicks(allowed: allowed)
         button?.image = image; button?.title = image == nil ? "Visor" : ""
         button?.imagePosition = image == nil ? .noImage : .imageOnly
         button?.toolTip = detail; panel.contentView?.toolTip = detail
@@ -531,6 +544,18 @@ func selfTest() throws {
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": true, "output_tokens": 1]]) == nil)
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "Latest response · Input 0 · Output 0 tokens")
     print("PASS native mascot state and reported usage contracts")
+    let preferenceSuite = "visor-companion-unit-" + UUID().uuidString
+    let preferences = UserDefaults(suiteName: preferenceSuite)!
+    defer { preferences.removePersistentDomain(forName: preferenceSuite) }
+    let settings = NativeCompanionSettings(defaults: preferences)
+    try verifyNativeUnit(settings.visible)
+    try verifyNativeUnit(!settings.toggle())
+    try verifyNativeUnit(!NativeCompanionSettings(defaults: preferences).visible)
+    try verifyNativeUnit(settings.toggle())
+    try verifyNativeUnit(NativeCompanionSettings(defaults: preferences).visible)
+    try verifyNativeUnit(!nativeCompanionAcceptsClicks(allowed: true))
+    try verifyNativeUnit(nativeCompanionAcceptsClicks(allowed: false))
+    print("PASS companion visibility persistence and automation click-through contracts")
     try verifyNativeUnit(nativeCompactUsage(nil) == nil)
     try verifyNativeUnit(nativeCompactUsage(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "↑0 ↓0")
     for bad in [true, -1, 1.5, "7"] as [Any] {
