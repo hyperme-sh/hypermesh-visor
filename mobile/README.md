@@ -36,13 +36,13 @@ Use the `.dylib` on macOS. The generator's `bindgen` feature is host-only and is
 not enabled for iOS/Android builds. See [UniFFI's foreign trait
 documentation](https://mozilla.github.io/uniffi-rs/next/proc_macro/traits.html).
 
-CI runs Rust units and generated Swift/Kotlin callback contracts using memory-only
-fixtures, builds the core for iOS ARM64 and Android ARM64/API 26, and generates
+CI runs Rust units and generated Swift/Kotlin callback contracts using fixture
+keys and stores (including encrypted temporary files), builds the core for iOS ARM64 and Android ARM64/API 26, and generates
 both language interfaces. The Kotlin contract runs on the hosted Linux JVM;
 it is not an Android app test.
 The iOS/Android libraries are build checks, not store packages or installed apps.
 
-SociACL device enrollment, Android secure storage, native UI, VPN,
+SociACL device enrollment, native UI, VPN,
 Conductor/AIuditor routing, intents/sharing, sensors and model execution remain
 unimplemented. This spike opens no listener, launches no browser, contacts no
 service and requests no device permissions. It does not implement the shared
@@ -79,3 +79,45 @@ Keychain backend and compiles it against the iOS SDK. Those are unit/contract an
 build checks; they do not access a user's Keychain, sign an app, or establish
 installed-device behavior. Device storage and entitlement validation remain part
 of native app delivery. Signing stays deferred.
+
+## Android Keystore adapter
+
+Compile `android/AndroidSessionStore.kt` and `android/EncryptedSessionStore.kt`
+with the generated Kotlin binding. Pass `androidSessionStore(appContext,
+accountNamespace)` to `MobileSession`. The namespace must identify the auth
+owner's complete account scope, including issuer/tenant where applicable; it
+must not be reused for another account. The factory hashes the app package plus
+that namespace into a private filename and Keystore alias. It accepts only
+credential-protected app storage and Android API 28 or newer. The Rust core's
+API 26 build remains separate from this adapter's minimum.
+
+The app's `noBackupFilesDir/visor-sessions` holds only versioned AES-256-GCM
+ciphertext, a fresh provider-generated 12-byte nonce, authentication tag and
+non-secret lock files. The namespace and format version are authenticated data.
+The key is generated in Android Keystore and is never exported; there is no
+software-key or plaintext fallback. No hardware-backed, StrongBox or biometric
+presence claim is made. The key requires an unlocked device, and the adapter
+also checks lock state before operations. Key failures return fixed errors.
+
+Android documents availability bugs for unlocked-device-required keys on
+Android 12–14, fixed in Android 15. This adapter keeps the lock requirement and
+fails closed on those failures. It does not replace a missing/invalidated key
+while ciphertext exists. Recovery is explicit local deletion and authorized
+sign-in; it never silently discards a credential. See the [Keystore API notes](https://developer.android.com/reference/android/security/keystore/KeyGenParameterSpec.Builder#setUnlockedDeviceRequired(boolean)).
+The no-backup directory is excluded from Android Auto Backup, per [Android's
+backup documentation](https://developer.android.com/identity/data/autobackup).
+
+The file store serializes all instances/processes for one account with an OS
+file lock. Busy access fails instead of waiting indefinitely. Writes stage
+ciphertext privately, sync it and replace atomically; a failed encryption or
+write preserves the prior token. Malformed, tampered, oversized, cross-account,
+symlinked and keyless blobs are refused. Reads do not cache tokens. Local deletion
+removes the ciphertext and its Keystore key, while leaving harmless lock files;
+it still does not revoke a remote grant. Native/generated strings may leave
+runtime copies, so no complete memory-zeroization promise is made.
+
+Bugtest and CI run JVM contracts through the generated Kotlin/Rust boundary with
+fixture keys. CI also compiles the real Android factory against SDK 35. These
+checks do not claim Android Keystore, device backup or lock-screen validation on
+an installed app. Native app delivery still needs those platform checks; APK
+packaging, UI and signing remain unfinished/deferred.
