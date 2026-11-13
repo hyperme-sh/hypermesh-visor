@@ -183,7 +183,7 @@ enum VisorEndpoint {
 
 impl VisorEndpoint {
     fn from_env() -> Result<Self, String> {
-        if let Some(endpoint) = configured_http(std::env::var("HYPERMESH_VISOR_URL").ok().as_deref(), configured_token(), cfg!(windows))? {
+        if let Some(endpoint) = configured_http(std::env::var("HYPERMESH_VISOR_URL").ok().as_deref(), configured_token, cfg!(windows))? {
             return Ok(endpoint);
         }
         #[cfg(unix)]
@@ -196,8 +196,9 @@ impl VisorEndpoint {
     }
 }
 
-fn configured_http(url: Option<&str>, token: Option<String>, require_token: bool) -> Result<Option<VisorEndpoint>, String> {
+fn configured_http(url: Option<&str>, token: impl FnOnce() -> Option<String>, require_token: bool) -> Result<Option<VisorEndpoint>, String> {
     let Some(url) = url.filter(|url| !url.trim().is_empty()) else { return Ok(None); };
+    let token = token();
     if require_token && token.as_ref().is_none_or(|token| token.trim().is_empty()) {
         return Err("Windows client requires HYPERMESH_VISOR_TOKEN".into());
     }
@@ -1123,12 +1124,12 @@ mod capability_contract_tests {
 
     #[test]
     fn native_http_selection_requires_explicit_endpoint_and_windows_token() {
-        assert!(configured_http(None, Some("synthetic-token".into()), true).unwrap().is_none());
-        assert!(configured_http(Some("  "), None, true).unwrap().is_none());
+        assert!(configured_http(None, || panic!("local socket must not read a TCP token"), true).unwrap().is_none());
+        assert!(configured_http(Some("  "), || panic!("blank URL must not read a TCP token"), true).unwrap().is_none());
         for token in [None, Some("".into()), Some("  ".into())] {
-            assert!(configured_http(Some("https://visor.example"), token, true).is_err());
+            assert!(configured_http(Some("https://visor.example"), || token, true).is_err());
         }
-        match configured_http(Some("https://visor.example"), Some("synthetic-token".into()), true).unwrap().unwrap() {
+        match configured_http(Some("https://visor.example"), || Some("synthetic-token".into()), true).unwrap().unwrap() {
             VisorEndpoint::Http { base, token } => {
                 assert_eq!(base, "https://visor.example");
                 assert_eq!(token.as_deref(), Some("synthetic-token"));
@@ -1136,7 +1137,7 @@ mod capability_contract_tests {
             #[cfg(unix)]
             _ => panic!("unexpected local endpoint"),
         }
-        assert!(configured_http(Some("http://127.0.0.1:9000"), None, false).unwrap().is_some());
+        assert!(configured_http(Some("http://127.0.0.1:9000"), || None, false).unwrap().is_some());
     }
 
     #[test]
