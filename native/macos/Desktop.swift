@@ -203,7 +203,9 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
             let configuration = SCStreamConfiguration()
             configuration.width = Int(geometry.bounds.width); configuration.height = Int(geometry.bounds.height)
             configuration.showsCursor = true
-            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:[]), configuration:configuration)
+            let overlayID = NativePointerOverlay.shared.windowNumber
+            let excluded = content.windows.filter { Int($0.windowID) == overlayID }
+            let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:excluded), configuration:configuration)
             try checkpoint()
             canvas.draw(image, in: layout.imageRect(geometry))
         }
@@ -224,6 +226,78 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
     default: throw NativeError.invalid
     }
 }
+// AppKit pointer and window coordinates share the same screen space, including
+// displays left of or below the primary screen. Do not mix in CG desktop y.
+func nativePointerOverlayFrame(pointer: CGPoint, screens: [CGRect]) -> CGRect? {
+    guard pointer.x.isFinite, pointer.y.isFinite,
+          screens.contains(where: { $0.contains(pointer) }) else { return nil }
+    return CGRect(x: pointer.x - 24, y: pointer.y - 24, width: 48, height: 48)
+}
+func nativePointerOverlayVisible(connected: Bool, sessionOpen: Bool, allowed: Bool,
+                                 phase: String, restartRequired: Bool) -> Bool {
+    connected && sessionOpen && allowed && phase == "running" && !restartRequired
+}
+
+@MainActor private final class PointerPanel: NSPanel {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+@MainActor final class NativePointerOverlay {
+    static let shared = NativePointerOverlay()
+    private var panel: PointerPanel?
+    private var imageView: NSImageView?
+    private var frames: [NSImage] = []
+    private var timer: Timer?
+    private var tick = 0
+    private var active = false
+    var windowNumber: Int? { panel?.windowNumber }
+
+    func setVisible(_ visible: Bool) {
+        guard visible else { hide(); return }
+        guard timer == nil else { return }
+        if panel == nil {
+            frames = (0..<8).compactMap { frame in
+                guard let path = Bundle.main.path(forResource: "automation_\(frame)_128", ofType: "png", inDirectory: "companion") else { return nil }
+                return NSImage(contentsOfFile: path)
+            }
+            guard frames.count == 8 else { frames.removeAll(); return }
+            let window = PointerPanel(contentRect: CGRect(x: 0, y: 0, width: 48, height: 48),
+                                      styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            window.isReleasedWhenClosed = false
+            window.isOpaque = false; window.backgroundColor = .clear; window.hasShadow = false
+            window.ignoresMouseEvents = true; window.hidesOnDeactivate = false
+            window.level = .statusBar
+            window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+            let view = NSImageView(frame: CGRect(x: 0, y: 0, width: 48, height: 48))
+            view.imageScaling = .scaleProportionallyUpOrDown
+            window.contentView = view
+            panel = window; imageView = view
+        }
+        active = true; tick = 0; refresh()
+        let clock = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        timer = clock
+        RunLoop.main.add(clock, forMode: .common)
+    }
+    func hide() {
+        active = false; timer?.invalidate(); timer = nil
+        panel?.orderOut(nil)
+    }
+    private func refresh() {
+        // A queued timer callback cannot restore an overlay after pause.
+        guard active, let panel, frames.count == 8 else { return }
+        guard let frame = nativePointerOverlayFrame(pointer: NSEvent.mouseLocation, screens: NSScreen.screens.map { $0.frame }) else {
+            panel.orderOut(nil); return
+        }
+        let index = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : (tick / 4) % frames.count
+        imageView?.image = frames[index]
+        panel.setFrame(frame, display: true)
+        if !panel.isVisible { panel.orderFrontRegardless() }
+        tick = (tick + 1) % 32
+    }
+}
+
 struct DesktopAccessControl: Equatable {
     let enabled: Bool
     let title: String
@@ -365,6 +439,26 @@ func selfTest() throws {
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": true, "output_tokens": 1]]) == nil)
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "Latest response · Input 0 · Output 0 tokens")
     print("PASS native mascot state and reported usage contracts")
+    for connected in [false, true] {
+        for open in [false, true] {
+            for allowed in [false, true] {
+                for phase in ["off", "paused", "running", "unknown"] {
+                    for restart in [false, true] {
+                        try verifyNativeUnit(nativePointerOverlayVisible(connected: connected, sessionOpen: open, allowed: allowed,
+                            phase: phase, restartRequired: restart) == (connected && open && allowed && phase == "running" && !restart))
+                    }
+                }
+            }
+        }
+    }
+    let overlayScreens = [CGRect(x: 0, y: 0, width: 1920, height: 1080), CGRect(x: -1280, y: -200, width: 1280, height: 1024)]
+    try verifyNativeUnit(nativePointerOverlayFrame(pointer: CGPoint(x: -100, y: -100), screens: overlayScreens) == CGRect(x: -124, y: -124, width: 48, height: 48))
+    try verifyNativeUnit(nativePointerOverlayFrame(pointer: CGPoint(x: 1920, y: 200), screens: overlayScreens) == nil)
+    try verifyNativeUnit(nativePointerOverlayFrame(pointer: CGPoint(x: -100, y: 1000), screens: overlayScreens) == nil)
+    try verifyNativeUnit(nativePointerOverlayFrame(pointer: CGPoint(x: Double.nan, y: 0), screens: overlayScreens) == nil)
+    try verifyNativeUnit(nativePointerOverlayFrame(pointer: .zero, screens: []) == nil)
+    print("PASS pointer overlay consent, interruption and screen-coordinate contracts")
+
     for started in [false, true] {
         for sessionOpen in [false, true] {
             for allowed in [false, true] {

@@ -81,6 +81,11 @@ The native menu-bar companion uses the bundled animated mascot for idle,
 automation and disconnected states. Reduce Motion selects a still frame. Hover
 shows session/engine state and the latest reported input/output token counts
 when available; missing counts stay absent. Its menu retains explicit local
-Allow/Resume, Pause and Stop controls. This adds compact native status; an
-animated desktop cursor, floating companion and isolated worker processes
-remain tracked in #18.
+Allow/Resume, Pause and Stop controls. While the current session is running with desktop access allowed, a 48-point
+animated bug follows the pointer in a nonactivating, click-through panel. It
+uses AppKit screen coordinates across displays and is excluded from Visor screen
+captures. Reduce Motion freezes its animation. Pause, Stop, session loss,
+permission/monitor loss and Quit hide it; a crash removes the process's windows.
+The system cursor stays visible and is never replaced or hidden. A missing sprite
+bundle leaves the overlay absent without changing desktop permissions. Windows,
+floating companion controls and isolated worker processes remain tracked in #18.

@@ -105,6 +105,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     func applicationWillTerminate(_ notification: Notification) {
         allowed = false; epoch &+= 1; releaseHeld()
+        NativePointerOverlay.shared.hide()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         timer?.invalidate()
     }
@@ -127,6 +128,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
     }
     private func update() {
+        NativePointerOverlay.shared.setVisible(nativePointerOverlayVisible(connected: engineConnected,
+            sessionOpen: sessionOpen, allowed: allowed, phase: currentPhase, restartRequired: restartRequired))
         let readiness = restartRequired ? "Restore permissions in System Settings, then quit and reopen Visor. Desktop access remains off." : (started && !sessionOpen ? "Waiting for a local client to open a session" : message)
         label?.stringValue = "\(readiness)\nSession: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
