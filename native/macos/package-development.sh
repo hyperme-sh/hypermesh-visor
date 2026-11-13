@@ -27,7 +27,10 @@ tar -xzf "$source_dir/source.tar.gz" -C "$source_dir" --strip-components=1
 (cd "$source_dir" && CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath -o "$bundle/libexec/conductor" ./cmd/conductor)
 printf '%s\n' "$conductor_revision" > "$bundle/conductor-source-revision"
 printf '%s\n' "$conductor_sha256" > "$bundle/conductor-source-archive.sha256"
-for program in hypermesh hypermesh-desktop-mcp conductor; do
+swiftc -O native/macos/Launcher.swift -o "$bundle/libexec/hypermesh-visor"
+codesign --force --sign - --options runtime --identifier sh.hyperme.visor.launcher "$bundle/libexec/hypermesh-visor"
+"$bundle/libexec/hypermesh-visor" --self-test
+for program in hypermesh hypermesh-desktop-mcp conductor hypermesh-visor; do
   cp native/macos/launch-tool.sh "$bundle/bin/$program"
   chmod 755 "$bundle/bin/$program"
 done

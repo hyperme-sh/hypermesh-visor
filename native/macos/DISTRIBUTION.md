@@ -28,7 +28,9 @@ shasum -a 256 -c hypermesh-visor-macos-arm64.zip.sha256
 unzip hypermesh-visor-macos-arm64.zip
 cd hypermesh-visor-macos-arm64
 shasum -a 256 -c checksums.sha256
-open 'Hypermesh Visor Development.app'
+export HYPERMESH_CONDUCTOR_CONFIG=/absolute/path/to/endpoints.json
+export HYPERMESH_CONDUCTOR_JOURNAL=/absolute/path/to/private/measurements.jsonl
+bin/hypermesh-visor
 ```
 
 The checksums identify the downloaded bytes; they do not authenticate the publisher.
@@ -57,16 +59,31 @@ explicit endpoint configuration and journal. The launcher preserves argument
 boundaries and does not read, print, or persist credentials. Service-review
 credentials follow Conductor's dedicated credential configuration.
 
-The permission-bearing app does not spawn this runtime or pass its desktop
-permissions to it. This archive does not register a background service. Automatic
-isolated startup remains tracked in #90; bundling alone does not complete it.
-Stop the independent Conductor process before replacing or removing its bundle.
+`bin/hypermesh-visor` starts the bundled Conductor automatically, waits up to ten
+seconds for its private socket, and opens this exact desktop app as a new instance.
+Set both configuration and journal paths explicitly as shown above. The launcher
+refuses a second managed instance or an already open development app. It must run
+as the desktop user, never as root. Quit Visor to stop its Conductor. Startup or
+runtime failure stops the managed pair, reports a generic error, and never routes
+directly to a provider. Restart the launcher after correcting the configuration.
+
+The standalone launcher starts Conductor before opening the permission-bearing
+app; the app does not spawn Conductor. Service credentials go only to Conductor;
+the app receives its private socket, selected model and optional lease. The
+launcher never requests desktop permissions. Grant those only to the desktop app.
+This archive does not register a background service or login item. If the launcher
+is forcibly killed, Conductor detects parent loss and stops; the desktop window
+may remain open with its private model route unavailable. Quit that window before
+restarting. No automatic retry of an interrupted model request occurs.
+
+Opening the app directly still supports an independently managed Conductor socket.
+Stop an independent Conductor process yourself before removing its bundle.
 
 ## Upgrade and remove
 
 Quit the old app before upgrading. Extract and verify the new archive into a
 separate directory, update external MCP client paths to that directory, and open
-the new app. Keep the prior directory if rollback is needed. Do not run both app
+the new app through its `bin/hypermesh-visor` launcher. Keep the prior directory if rollback is needed. Do not run both app
 versions at once: they use the same local socket directory. Replacing a development
 app may require granting its OS permissions again.
 
