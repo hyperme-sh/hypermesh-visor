@@ -30,9 +30,13 @@ pub(crate) fn configuration(
         }
         if !model.is_empty() { config.default_model = model.into(); }
     }
+    if environment("HYPERMESH_CONDUCTOR_SOCKET").is_some() || (config.conductor_addr.is_none() && environment("HOME").is_some()) {
+        config.conductor_socket=Some(crate::conductor_socket::default_path(&mut environment)?);
+    }
+    if config.conductor_addr.is_some() && config.conductor_socket.is_some(){return Err("Conductor requires one local route".into());}
     match &config.conductor_addr {
         Some(address) => { ConductorDoor::connect(address, config.conductor_lease)?; }
-        None if config.conductor_lease.is_some() => return Err("Conductor lease ID requires a Conductor route".into()),
+        None if config.conductor_lease.is_some() && config.conductor_socket.is_none() => return Err("Conductor lease ID requires a Conductor route".into()),
         None => {}
     }
     Ok(config)
@@ -44,6 +48,14 @@ mod tests {
     fn configured(values: &[(&str, &str)]) -> Result<DoorConfig, String> {
         configuration(|key| values.iter().find(|(name, _)| *name == key).map(|(_, value)| OsString::from(value)))
     }
+    #[test]
+    fn native_defaults_to_private_conductor_and_refuses_ambiguous_routes() {
+        let config = configured(&[("HOME", "/home/user")]).unwrap();
+        assert!(config.conductor_socket.unwrap().ends_with("hypermesh/conductor/run/conductor.sock"));
+        assert!(config.conductor_addr.is_none());
+        assert!(configured(&[("HYPERMESH_CONDUCTOR_ADDR", "127.0.0.1:1234"), ("HYPERMESH_CONDUCTOR_SOCKET", "/tmp/c.sock")]).is_err());
+    }
+
     #[test]
     fn native_route_retains_model_and_task_scope() {
         let lease = "11111111-1111-4111-8111-111111111111";

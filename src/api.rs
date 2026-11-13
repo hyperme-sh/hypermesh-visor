@@ -47,6 +47,7 @@ mod mcp_prompts;
 mod host;
 
 pub struct AppState {
+    prompts_stopped: AtomicBool,
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
     sessions: Mutex<HashMap<Uuid, Session>>,
@@ -165,6 +166,7 @@ impl AppState {
         let gate = automation::Gate::default();
         let published = gate.snapshot_handle();
         Self {
+            prompts_stopped: AtomicBool::new(false),
             host_bridge: None,
             tasks: tasks::Queue::new(),
             sessions: Mutex::new(HashMap::new()),
@@ -202,6 +204,14 @@ impl AppState {
             .and_then(|path| crate::host_bridge::Bridge::new(path.into()).ok());
     }
 
+    fn prompt_cancellation(self: &Arc<Self>, session: Option<Uuid>) -> prompt::PromptCancellation {
+        let weak = Arc::downgrade(self);
+        prompt::PromptCancellation::watching(move || weak.upgrade().is_none_or(|state| {
+            state.prompts_stopped.load(Ordering::SeqCst)
+                || session.is_some_and(|id| !state.has_session(id))
+        }))
+    }
+
     fn close_all(&self) {
         self.shutdown(automation::SHUTDOWN_INJECTION_WAIT);
     }
@@ -210,6 +220,7 @@ impl AppState {
     /// to `bound` for the injection lock, then reset even if that call is
     /// still inside a desktop request.
     fn shutdown(&self, bound: Duration) {
+        self.prompts_stopped.store(true, Ordering::SeqCst);
         lock(&self.automation).shutdown_cancel();
         let _held = lock_for(&self.injection, bound);
         lock(&self.sessions).clear();
@@ -266,7 +277,10 @@ impl AppState {
         true
     }
 
-    fn deliver_stream(&self, id: Uuid, body: &str, api_key: &str) -> Result<String, StreamError> {
+    fn deliver_stream(&self,id:Uuid,body:&str,api_key:&str)->Result<String,StreamError>{
+        self.deliver_stream_cancellable(id,body,api_key,&prompt::PromptCancellation::default())
+    }
+    fn deliver_stream_cancellable(&self, id: Uuid, body: &str, api_key: &str,cancel:&prompt::PromptCancellation) -> Result<String, StreamError> {
         let (parked, mut secrets, usage_generation) = {
             let mut sessions = lock(&self.sessions);
             let session = sessions.get_mut(&id).ok_or(StreamError::Closed)?;
@@ -280,7 +294,7 @@ impl AppState {
             .iter()
             .map(|prompt| (prompt.prompt.clone(), prompt.model.clone()))
             .collect::<Vec<_>>();
-        let usage = self.prompts.drive_parked(&prompts, &parked.file_texts, api_key, &secrets);
+        let usage = self.prompts.drive_parked_cancellable(&prompts, &parked.file_texts, api_key, &secrets,cancel);
         if let Some(generation) = usage_generation {
             if let Some(session) = lock(&self.sessions).get_mut(&id) {
                 session.finish_response_usage(generation, usage);
@@ -2493,8 +2507,10 @@ async fn submit_prompt(
     let mut api_key = std::mem::take(&mut body.api_key);
     let model = body.model.clone();
     let state = Arc::clone(&state);
+    let cancel=state.prompt_cancellation(None);
+    let _cancel_on_drop=prompt::CancelOnDrop(cancel.clone());
     let result = tokio::task::spawn_blocking(move || {
-        let result = state.prompts.submit(&prompt, &api_key, model.as_deref());
+        let result = state.prompts.submit_cancellable(&prompt, &api_key, model.as_deref(),&cancel);
         api_key.zeroize();
         result
     })
@@ -2553,15 +2569,14 @@ async fn session_stream(
             return Err(ApiError::bad("stream body is not utf-8"));
         }
     };
-    let rendered = match state.deliver_stream(id, &text, &api_key) {
-        Ok(rendered) => rendered,
-        Err(err) => {
-            api_key.zeroize();
-            return Err(ApiError::from_stream(err));
-        }
-    };
-    let rendered = redact_key(&rendered, &api_key);
-    api_key.zeroize();
+    let cancel=state.prompt_cancellation(Some(id));
+    let _cancel_on_drop=prompt::CancelOnDrop(cancel.clone());
+    let rendered=tokio::task::spawn_blocking(move||{
+        let result=state.deliver_stream_cancellable(id,&text,&api_key,&cancel);
+        let result=result.map(|rendered|redact_key(&rendered,&api_key));
+        api_key.zeroize();
+        result
+    }).await.map_err(|_|ApiError::internal("prompt task failed"))?.map_err(ApiError::from_stream)?;
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-ndjson")
@@ -3376,6 +3391,15 @@ mod tests {
         assert_eq!(value["skills"][0]["name"], "typing");
         assert!(value.get("secrets").is_none());
         assert!(!text.contains("hunter2"));
+    }
+
+    #[test]
+    fn shutdown_cancels_inflight_prompt_work() {
+        let state = Arc::new(AppState::new(FakeDesktop::new(), Duration::from_millis(20)));
+        let cancel = state.prompt_cancellation(None);
+        assert!(!cancel.cancelled());
+        state.close_all();
+        assert!(cancel.cancelled());
     }
 
     #[test]

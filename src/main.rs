@@ -70,7 +70,7 @@ fn main() -> ExitCode {
         let desktop = hypermesh_visor::HeadlessDesktop;
         Arc::new(desktop)
     };
-    let mut conductor_addr = std::env::var("HYPERMESH_CONDUCTOR_ADDR").ok();
+    let conductor_addr = std::env::var("HYPERMESH_CONDUCTOR_ADDR").ok();
     let lease = std::env::var_os("HYPERMESH_CONDUCTOR_LEASE_ID");
     let lease = match lease
         .map(|s| uuid::Uuid::parse_str(&s.to_string_lossy()))
@@ -82,6 +82,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    let mut managed_socket = None;
     #[cfg(target_os = "linux")]
     let mut managed = None;
     if let Some(path) = std::env::var_os("HYPERMESH_CONDUCTOR_CONFIG") {
@@ -96,8 +97,8 @@ fn main() -> ExitCode {
                 eprintln!("managed Conductor requires HYPERMESH_CONDUCTOR_JOURNAL");
                 return ExitCode::from(2);
             };
-            if conductor_addr.is_some() || lease.is_none() {
-                eprintln!("managed Conductor requires a lease ID and allocates its own address");
+            if conductor_addr.is_some() || std::env::var_os("HYPERMESH_CONDUCTOR_SOCKET").is_some() || lease.is_none() {
+                eprintln!("managed Conductor requires a lease ID and allocates its own private socket");
                 return ExitCode::from(2);
             }
             let child = match managed_conductor::ManagedConductor::start(&path, &journal) {
@@ -110,15 +111,28 @@ fn main() -> ExitCode {
                     return ExitCode::from(1);
                 }
             };
-            conductor_addr = Some(child.address().expect("bound Conductor listener"));
+            managed_socket = Some(child.socket_path().to_path_buf());
             managed = Some(Arc::new(child));
         }
     }
-    if lease.is_some() && conductor_addr.is_none() {
+    let explicit_socket=std::env::var_os("HYPERMESH_CONDUCTOR_SOCKET").is_some();
+    let default_socket = conductor_addr.is_none()
+        && options.supervisor_url.is_none() && options.supervisor_url_2.is_none()
+        && options.routes.is_empty() && options.experts.is_empty() && options.answers.is_empty()
+        && std::env::var_os("HYPERMESH_SUPERVISOR_URL").is_none()
+        && std::env::var_os("HYPERMESH_SUPERVISOR_URL_2").is_none();
+    let conductor_socket=if managed_socket.is_some(){managed_socket} else if explicit_socket || default_socket {
+        match hypermesh_visor::default_conductor_socket(|name|std::env::var_os(name)) {
+            Ok(path)=>Some(path),
+            Err(error)=>{eprintln!("{error}");return ExitCode::from(2);}
+        }
+    } else {None};
+    if lease.is_some() && conductor_addr.is_none() && conductor_socket.is_none() {
         eprintln!("Conductor lease ID requires a Conductor route");
         return ExitCode::from(2);
     }
     let config = DoorConfig {
+        conductor_socket,
         conductor_addr,
         conductor_lease: lease,
         default_model: resolve_default_model(
