@@ -98,3 +98,21 @@ permission/monitor loss and Quit hide it; a crash removes the process's windows.
 The system cursor stays visible and is never replaced or hidden. A missing sprite
 bundle leaves the overlay absent without changing desktop permissions. Windows,
 floating companion controls and isolated worker processes remain tracked in #18.
+
+### Floating companion
+
+A single movable bug icon stays available when the control window is minimized.
+Drag its background border to move it. Click the bug for the same session-bound
+Allow/Resume, Pause, Stop, forum and VS Code actions as the menu-bar companion;
+Open control window restores onboarding and permission status. The menu-bar
+Show floating companion toggle and the panel position persist across launches.
+This surface does not create another agent or grant desktop access.
+
+The icon animates with the current state and respects Reduce Motion. Below it,
+up/down arrows show the latest reported response input/output token counts;
+missing data says No usage. Hover shows the full counts and current status.
+These are response counts, not a budget or task total. Both the floating panel
+and the automation pointer overlay are excluded from captured frames. While
+automation is allowed the panel passes clicks through to the underlying app;
+physical input pauses automation and restores companion interaction. A removed
+or rearranged display moves the panel back into a visible display area.

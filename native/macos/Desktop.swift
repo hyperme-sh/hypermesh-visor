@@ -204,7 +204,8 @@ func handle(_ request: [String: Any], checkpoint: () throws -> Void = {}) async 
             configuration.width = Int(geometry.bounds.width); configuration.height = Int(geometry.bounds.height)
             configuration.showsCursor = true
             let overlayID = NativePointerOverlay.shared.windowNumber
-            let excluded = content.windows.filter { Int($0.windowID) == overlayID }
+            let companionID = NativeCompanionPanel.shared.windowNumber
+            let excluded = content.windows.filter { Int($0.windowID) == overlayID || Int($0.windowID) == companionID }
             let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(display:display,excludingWindows:excluded), configuration:configuration)
             try checkpoint()
             canvas.draw(image, in: layout.imageRect(geometry))
@@ -318,6 +319,84 @@ struct NativeIdleResume {
     }
 }
 
+// Keep the movable companion reachable when displays are removed or rearranged.
+func nativeCompanionFrame(_ frame: CGRect, screens: [CGRect]) -> CGRect? {
+    let usable = screens.filter { $0.width >= 88 && $0.height >= 96 &&
+        [$0.minX, $0.minY, $0.width, $0.height].allSatisfy { $0.isFinite } }
+    guard let screen = usable.first(where: { $0.contains(CGPoint(x: frame.midX, y: frame.midY)) }) ?? usable.first else { return nil }
+    let x = frame.minX.isFinite ? frame.minX : screen.maxX - 100
+    let y = frame.minY.isFinite ? frame.minY : screen.minY + 12
+    return CGRect(x: min(max(x, screen.minX), screen.maxX - 88),
+                  y: min(max(y, screen.minY), screen.maxY - 96), width: 88, height: 96)
+}
+
+struct NativeCompanionSettings {
+    let defaults: UserDefaults
+    private let key = "visor-floating-companion-visible"
+    var visible: Bool { defaults.object(forKey: key) as? Bool ?? true }
+    func toggle() -> Bool {
+        let next = !visible
+        defaults.set(next, forKey: key)
+        return next
+    }
+}
+func nativeCompanionAcceptsClicks(allowed: Bool) -> Bool { !allowed }
+
+@MainActor final class NativeCompanionPanel {
+    static let shared = NativeCompanionPanel()
+    private var panel: NSPanel?
+    private var button: NSButton?
+    private var stateLabel: NSTextField?
+    private var usageLabel: NSTextField?
+    var windowNumber: Int? { panel?.windowNumber }
+    var enabled = true
+    func configure(target: AnyObject, action: Selector) {
+        guard panel == nil else { return }
+        let window = NSPanel(contentRect: CGRect(x: 24, y: 24, width: 88, height: 96),
+            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false; window.hidesOnDeactivate = false
+        window.level = .floating; window.isMovableByWindowBackground = true
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
+        window.backgroundColor = .windowBackgroundColor; window.hasShadow = true
+        let content = NSView(frame: CGRect(x: 0, y: 0, width: 88, height: 96))
+        let icon = NSButton(frame: CGRect(x: 16, y: 32, width: 56, height: 56))
+        icon.isBordered = false; icon.imagePosition = .imageOnly
+        icon.imageScaling = .scaleProportionallyUpOrDown; icon.target = target; icon.action = action
+        icon.setAccessibilityLabel("Hypermesh companion controls")
+        content.addSubview(icon); button = icon
+        let state = NSTextField(labelWithString: "Off")
+        state.frame = CGRect(x: 4, y: 18, width: 80, height: 16); state.alignment = .center
+        state.font = .systemFont(ofSize: 11, weight: .semibold); content.addSubview(state); stateLabel = state
+        let usage = NSTextField(labelWithString: "")
+        usage.frame = CGRect(x: 4, y: 2, width: 80, height: 15); usage.alignment = .center
+        usage.font = .monospacedDigitSystemFont(ofSize: 9, weight: .regular)
+        usage.lineBreakMode = .byTruncatingTail; content.addSubview(usage); usageLabel = usage
+        window.contentView = content
+        _ = window.setFrameUsingName("visor-floating-companion")
+        window.setFrameAutosaveName("visor-floating-companion")
+        panel = window
+    }
+    func update(image: NSImage?, state: String, usage: String?, detail: String, allowed: Bool) {
+        guard let panel else { return }
+        panel.ignoresMouseEvents = !nativeCompanionAcceptsClicks(allowed: allowed)
+        button?.image = image; button?.title = image == nil ? "Visor" : ""
+        button?.imagePosition = image == nil ? .noImage : .imageOnly
+        button?.toolTip = detail; panel.contentView?.toolTip = detail
+        button?.setAccessibilityLabel("Hypermesh companion: " + detail)
+        stateLabel?.stringValue = state; usageLabel?.stringValue = usage ?? "No usage"
+        guard enabled, let frame = nativeCompanionFrame(panel.frame, screens: NSScreen.screens.map { $0.visibleFrame }) else {
+            panel.orderOut(nil); return
+        }
+        if panel.frame != frame { panel.setFrame(frame, display: true) }
+        if !panel.isVisible { panel.orderFrontRegardless() }
+    }
+    func showMenu(_ menu: NSMenu) {
+        guard let button else { return }
+        menu.popUp(positioning: nil, at: CGPoint(x: 0, y: button.bounds.maxY), in: button)
+    }
+    func hide() { panel?.orderOut(nil) }
+}
+
 struct DesktopAccessControl: Equatable {
     let enabled: Bool
     let title: String
@@ -359,6 +438,7 @@ func desktopAccessControl(started: Bool, sessionOpen: Bool, allowed: Bool, pause
         #if EMBEDDED_ENGINE
         let native = NativeRuntime.shared
         NSApplication.shared.delegate = native
+        native.controlWindow = window
         let runtimeLabel = NSTextField(wrappingLabelWithString: "")
         runtimeLabel.frame = NSRect(x: 24, y: 290, width: 630, height: 100)
         content.addSubview(runtimeLabel); native.label = runtimeLabel
@@ -415,13 +495,18 @@ func nativeMascotState(connected: Bool, allowed: Bool, phase: String) -> String 
     return allowed && phase == "running" ? "automation" : "idle"
 }
 
-func nativeUsageSummary(_ session: [String:Any]?) -> String? {
+func nativeUsageCounts(_ session: [String:Any]?) -> (UInt64, UInt64)? {
     guard let usage = session?["last_response_usage"] as? [String:Any],
-          let input = usage["input_tokens"] as? NSNumber,
-          let output = usage["output_tokens"] as? NSNumber,
-          CFGetTypeID(input) != CFBooleanGetTypeID(), CFGetTypeID(output) != CFBooleanGetTypeID(),
-          input.doubleValue >= 0, output.doubleValue >= 0 else { return nil }
-    return "Latest response · Input \(input.uint64Value) · Output \(output.uint64Value) tokens"
+          let input = nativeEpoch(usage["input_tokens"]), let output = nativeEpoch(usage["output_tokens"]) else { return nil }
+    return (input, output)
+}
+func nativeUsageSummary(_ session: [String:Any]?) -> String? {
+    guard let (input, output) = nativeUsageCounts(session) else { return nil }
+    return "Latest response · Input \(input) · Output \(output) tokens"
+}
+func nativeCompactUsage(_ session: [String:Any]?) -> String? {
+    guard let (input, output) = nativeUsageCounts(session) else { return nil }
+    return "↑\(input) ↓\(output)"
 }
 
 func nativeDestinationResponse(_ result: [String:Any]?, expected: String, current: String?, editor: Bool) -> URL? {
@@ -459,6 +544,32 @@ func selfTest() throws {
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": true, "output_tokens": 1]]) == nil)
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "Latest response · Input 0 · Output 0 tokens")
     print("PASS native mascot state and reported usage contracts")
+    let preferenceSuite = "visor-companion-unit-" + UUID().uuidString
+    let preferences = UserDefaults(suiteName: preferenceSuite)!
+    defer { preferences.removePersistentDomain(forName: preferenceSuite) }
+    let settings = NativeCompanionSettings(defaults: preferences)
+    try verifyNativeUnit(settings.visible)
+    try verifyNativeUnit(!settings.toggle())
+    try verifyNativeUnit(!NativeCompanionSettings(defaults: preferences).visible)
+    try verifyNativeUnit(settings.toggle())
+    try verifyNativeUnit(NativeCompanionSettings(defaults: preferences).visible)
+    try verifyNativeUnit(!nativeCompanionAcceptsClicks(allowed: true))
+    try verifyNativeUnit(nativeCompanionAcceptsClicks(allowed: false))
+    print("PASS companion visibility persistence and automation click-through contracts")
+    try verifyNativeUnit(nativeCompactUsage(nil) == nil)
+    try verifyNativeUnit(nativeCompactUsage(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "↑0 ↓0")
+    for bad in [true, -1, 1.5, "7"] as [Any] {
+        try verifyNativeUnit(nativeCompactUsage(["last_response_usage": ["input_tokens": bad, "output_tokens": 1]]) == nil)
+    }
+    try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": 1.5, "output_tokens": 1]]) == nil)
+    let leftScreen = CGRect(x: -1280, y: -200, width: 1280, height: 800)
+    let moved = nativeCompanionFrame(CGRect(x: -2000, y: 900, width: 88, height: 96), screens: [leftScreen])!
+    try verifyNativeUnit(leftScreen.contains(moved))
+    let visible = CGRect(x: -300, y: 0, width: 88, height: 96)
+    try verifyNativeUnit(nativeCompanionFrame(visible, screens: [leftScreen]) == visible)
+    try verifyNativeUnit(nativeCompanionFrame(visible, screens: []) == nil)
+    try verifyNativeUnit(nativeCompanionFrame(visible, screens: [CGRect(x: 0, y: 0, width: 40, height: 40)]) == nil)
+    print("PASS floating companion display recovery and reported usage contracts")
     var idle = NativeIdleResume(session: "session-a", now: 10)
     try verifyNativeUnit(!idle.ready(now: 1000, inputHeld: false))
     idle.epoch = 7
