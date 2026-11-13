@@ -294,7 +294,7 @@ impl AppState {
             .iter()
             .map(|prompt| (prompt.prompt.clone(), prompt.model.clone()))
             .collect::<Vec<_>>();
-        let usage = self.prompts.drive_parked_cancellable(&prompts, &parked.file_texts, api_key, &secrets,cancel);
+        let usage = self.prompts.drive_parked_cancellable(&prompts, &parked.file_texts, api_key, &secrets,cancel,Some(id));
         if let Some(generation) = usage_generation {
             if let Some(session) = lock(&self.sessions).get_mut(&id) {
                 session.finish_response_usage(generation, usage);
@@ -7471,6 +7471,27 @@ while True:
     }
 
     #[tokio::test]
+    async fn session_prompts_reuse_their_task_and_do_not_share_another_session() {
+        let door = crate::prompt::RecordingDoor::ok("ok");
+        let mut state = AppState::with_prompt_door(FakeDesktop::new(), Duration::from_millis(20), door.clone());
+        state.mcp_dir = std::env::temp_dir().join(format!("visor-task-{}", Uuid::new_v4()));
+        let state = Arc::new(state);
+        let mut ids = Vec::new();
+        for purpose in ["first", "second"] {
+            let request = serde_json::from_value(serde_json::json!({
+                "purpose": purpose, "recipes": [], "agent": {"name":"fixture", "instructions":""}, "skills": []
+            })).unwrap();
+            let (_, Json(opened)) = open_session(State(state.clone()), Json(request)).await.ok().expect("session opens");
+            ids.push(opened.id);
+        }
+        for id in [ids[0], ids[0], ids[1]] {
+            state.deliver_stream(id, r#"{"kind":"prompt","prompt":"next step"}"#, "org_fixture_ok").unwrap();
+        }
+        assert_eq!(door.calls().iter().map(|call| call.task_id).collect::<Vec<_>>(),
+            vec![Some(ids[0]), Some(ids[0]), Some(ids[1])]);
+    }
+
+    #[tokio::test]
     async fn response_usage_is_reported_per_session_and_old_completions_are_ignored() {
         let fixture = crate::prompt::ChatFixture::spawn(200,
             r#"{"choices":[{"message":{"content":"done"}}],"usage":{"prompt_tokens":12,"completion_tokens":0,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":4}}}"#);
@@ -7490,6 +7511,7 @@ while True:
             ids.push(opened.id);
         }
         state.deliver_stream(ids[0], r#"{"kind":"prompt","prompt":"count"}"#, "org_fixture_ok").unwrap();
+        assert_eq!(fixture.hits()[0].conductor_task, ids[0].to_string());
         let expected = crate::ResponseUsage { input_tokens: 12, output_tokens: 0, cached_input_tokens: Some(4) };
         {
             let sessions = lock(&state.sessions);

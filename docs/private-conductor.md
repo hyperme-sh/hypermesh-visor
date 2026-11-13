@@ -17,7 +17,9 @@ The parent retains the descriptor, checks startup, observes child failure, and
 reaps the child and removes its own socket on shutdown. It refuses an explicit
 socket or address alongside managed configuration.
 
-Requests preserve the selected model and lease task ID, generate a unique step,
+Requests preserve the selected model and explicit lease task ID, or use the
+current Visor session ID as the task when no lease is configured. Repeated
+session prompts therefore share Conductor task limits. Each request gets a unique step,
 and report measured usage. Request cancellation, session closure, and daemon
 shutdown cancel socket work, including calls waiting for the prompt gate.
 Cancelled calls are not retried. Recipe and budget enforcement remain in

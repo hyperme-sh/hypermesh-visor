@@ -31,6 +31,7 @@ pub struct ForwardedPrompt {
     pub prompt: String,
     pub api_key: String,
     pub model: Option<String>,
+    pub task_id: Option<uuid::Uuid>,
 }
 
 impl fmt::Debug for ForwardedPrompt {
@@ -218,7 +219,7 @@ impl PromptDoor for ConductorDoor {
             .set("Content-Type", "application/json")
             .set("X-Conductor-Expected-Model", model)
             .set("Authorization", &format!("Bearer {}", call.api_key));
-        if let Some(id) = self.lease {
+        if let Some(id) = self.lease.or(call.task_id) {
             request = request.set("X-Conductor-Task", &id.to_string());
         }
         let response = match request.send_bytes(&payload) {
@@ -473,7 +474,7 @@ impl PromptPass {
     }
     pub fn submit_cancellable(&self,prompt:&str,api_key:&str,model:Option<&str>,cancel:&PromptCancellation)->Result<String,PromptError>{
         let _guard=self.gate_for(cancel)?;
-        self.submit_inner(prompt,api_key,model,cancel).map(|reply|reply.text)
+        self.submit_inner(prompt,api_key,model,cancel,None).map(|reply|reply.text)
     }
 
     fn gate_for(&self,cancel:&PromptCancellation)->Result<std::sync::MutexGuard<'_,()>,PromptError>{
@@ -495,7 +496,7 @@ impl PromptPass {
     /// Parked stream prompts enter here. Secret values are needles for the
     /// audit row only; they are not copied onto that row.
     pub(crate) fn drive_parked(&self,prompts:&[(String,Option<String>)],file_texts:&[String],api_key:&str,secret_values:&[String])->Option<crate::ResponseUsage>{
-        self.drive_parked_cancellable(prompts,file_texts,api_key,secret_values,&PromptCancellation::default())
+        self.drive_parked_cancellable(prompts,file_texts,api_key,secret_values,&PromptCancellation::default(),None)
     }
     pub(crate) fn drive_parked_cancellable(
         &self,
@@ -504,6 +505,7 @@ impl PromptPass {
         api_key: &str,
         secret_values: &[String],
         cancel: &PromptCancellation,
+        task_id: Option<uuid::Uuid>,
     ) -> Option<crate::ResponseUsage> {
         let Ok(_guard)=self.gate_for(cancel) else {return None;};
         self.arm_needles(secret_values);
@@ -512,7 +514,7 @@ impl PromptPass {
             if cancel.cancelled(){break;}
             self.flag_inbox(prompt);
             usage = self
-                .submit_inner(prompt, api_key, model.as_deref(),cancel)
+                .submit_inner(prompt, api_key, model.as_deref(),cancel,task_id)
                 .ok()
                 .and_then(|reply| reply.usage);
         }
@@ -530,6 +532,7 @@ impl PromptPass {
         api_key: &str,
         model: Option<&str>,
         cancel: &PromptCancellation,
+        task_id: Option<uuid::Uuid>,
     ) -> Result<PromptCompletion, PromptError> {
         let sent = prompt.trim().to_string();
         let requested = normalize_model(model);
@@ -557,6 +560,7 @@ impl PromptPass {
             }
         };
         let call = ForwardedPrompt {
+            task_id,
             prompt: sent.clone(),
             api_key: key.clone(),
             model: Some(selected.clone()),
@@ -1603,6 +1607,7 @@ mod tests {
         );
         let err = fan
             .forward(&ForwardedPrompt {
+                task_id: None,
                 prompt: FIXTURE_PROMPT.into(),
                 api_key: "  ".into(),
                 model: Some(DEFAULT_CATALOG_ID.into()),

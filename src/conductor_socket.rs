@@ -112,7 +112,10 @@ impl SocketDoor {
             .header("X-Conductor-Expected-Model", model)
             .header(
                 "X-Conductor-Task",
-                self.lease.unwrap_or_else(uuid::Uuid::new_v4).to_string(),
+                self.lease
+                    .or(call.task_id)
+                    .unwrap_or_else(uuid::Uuid::new_v4)
+                    .to_string(),
             )
             .header("X-Conductor-Step", uuid::Uuid::new_v4().to_string())
             .body(Full::new(Bytes::from(payload)))
@@ -193,6 +196,52 @@ impl PromptDoor for SocketDoor {
 mod tests {
     use super::*;
     #[test]
+    fn session_task_survives_multiple_steps_and_lease_takes_precedence() {
+        use std::io::Write;
+        for lease in [None, Some(uuid::Uuid::new_v4())] {
+            let fixture = Fixture::new();
+            let listener = fixture.listener.try_clone().unwrap();
+            let session = uuid::Uuid::new_v4();
+            let expected = lease.unwrap_or(session);
+            let server = std::thread::spawn(move || {
+                let mut steps = Vec::new();
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let request = read_request(&mut stream).to_ascii_lowercase();
+                    assert!(request.contains(&format!("x-conductor-task: {expected}")));
+                    let step = request
+                        .lines()
+                        .find_map(|line| line.strip_prefix("x-conductor-step: "))
+                        .unwrap()
+                        .trim()
+                        .to_owned();
+                    assert!(uuid::Uuid::parse_str(&step).is_ok());
+                    steps.push(step);
+                    let body = r#"{"choices":[{"message":{"content":"ok"}}]}"#;
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+                assert_ne!(steps[0], steps[1]);
+            });
+            let door = SocketDoor::connect(fixture.path.clone(), lease).unwrap();
+            for _ in 0..2 {
+                door.forward(&ForwardedPrompt {
+                    prompt: "hello".into(),
+                    api_key: "org_fixture".into(),
+                    model: Some("model".into()),
+                    task_id: Some(session),
+                })
+                .unwrap();
+            }
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
     fn socket_failures_keep_safe_conductor_attribution() {
         use std::io::Write;
         for (status, body, expected) in [
@@ -211,6 +260,7 @@ mod tests {
                 let door = SocketDoor::connect(fixture.path.clone(), None).unwrap();
                 assert!(door
                     .forward(&ForwardedPrompt {
+                        task_id: None,
                         prompt: "private prompt".into(),
                         api_key: "hm_org_fixture".into(),
                         model: Some("model".into())
@@ -333,6 +383,7 @@ mod tests {
         let door = SocketDoor::connect(fixture.path.clone(), Some(lease)).unwrap();
         let reply = door
             .forward_reported(&ForwardedPrompt {
+                task_id: None,
                 prompt: "private prompt".into(),
                 api_key: "hm_org_fixture".into(),
                 model: Some("selected-model".into()),
@@ -361,6 +412,7 @@ mod tests {
         let request = std::thread::spawn(move || {
             door.forward_reported_cancelled(
                 &ForwardedPrompt {
+                    task_id: None,
                     prompt: "private".into(),
                     api_key: "hm_org_fixture".into(),
                     model: Some("model".into()),
@@ -380,6 +432,7 @@ mod tests {
         std::fs::set_permissions(&fixture.path, std::fs::Permissions::from_mode(0o666)).unwrap();
         let door = SocketDoor::connect(fixture.path.clone(), None).unwrap();
         let result = door.forward(&ForwardedPrompt {
+            task_id: None,
             prompt: "private".into(),
             api_key: "hm_org_fixture".into(),
             model: Some("model".into()),
