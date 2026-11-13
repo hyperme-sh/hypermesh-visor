@@ -214,7 +214,7 @@ pub(super) async fn submit_leased(
     let session_id = parse_id(&session)?;
     let started = Instant::now();
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| ApiError::bad("invalid clock"))?.as_millis();
+        .map_err(|_| ApiError::bad("invalid clock"))?.as_nanos().div_ceil(1_000_000);
     let now = u64::try_from(now).map_err(|_| ApiError::bad("invalid clock"))?;
     let deadline = lease_duration(body.authorized_until_ms, now)?;
     let consent = {
