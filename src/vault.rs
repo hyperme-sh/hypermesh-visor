@@ -358,12 +358,9 @@ impl Drop for Vault {
 
 impl fmt::Debug for Vault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let names: Vec<&str> = self
-            .secrets
-            .iter()
-            .map(|secret| secret.name.as_str())
-            .collect();
-        f.debug_struct("Vault").field("secrets", &names).finish()
+        f.debug_struct("Vault")
+            .field("secret_count", &self.secrets.len())
+            .finish()
     }
 }
 
@@ -419,11 +416,13 @@ mod tests {
     }
 
     #[test]
-    fn local_secret_round_trips_and_debug_hides_it() {
-        let vault = Vault::open(&[local("password", "hunter2")], empty_dir()).unwrap();
-        assert_eq!(vault.get("password").unwrap().as_slice(), b"hunter2");
+    fn local_secret_round_trips_without_debug_disclosing_names_or_values() {
+        let name = "private-customer-login";
+        let vault = Vault::open(&[local(name, "hunter2")], empty_dir()).unwrap();
+        assert_eq!(vault.get(name).unwrap().as_slice(), b"hunter2");
         let rendered = format!("{vault:?}");
-        assert!(rendered.contains("password"));
+        assert_eq!(rendered, "Vault { secret_count: 1 }");
+        assert!(!rendered.contains(name));
         assert!(!rendered.contains("hunter2"));
     }
 
