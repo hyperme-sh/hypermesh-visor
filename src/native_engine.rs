@@ -86,7 +86,11 @@ pub unsafe extern "C" fn hypermesh_native_control(
         let action = value["action"].as_str().unwrap_or("");
         let (method, path, body) = match action {
             "poll" | "destinations" => ("GET", "/companion", String::new()),
-            "start" | "pause" | "resume" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
+            "start" | "resume" => {
+                let Some(session) = value["session"].as_str().and_then(crate::session_destinations::canonical_session) else { return 1; };
+                ("POST", "/companion/automation", serde_json::json!({"action":action,"expected_session":session}).to_string())
+            },
+            "pause" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
             "monitor-lost" => ("POST", "/companion/interrupt", "{\"available\":false}".into()),
             _ => return 1,
         };

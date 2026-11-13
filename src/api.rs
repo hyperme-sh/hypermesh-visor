@@ -425,7 +425,10 @@ impl AppState {
         !lock(&self.automation).keyboard_interrupt()
     }
 
-    fn control_automation(&self, action: Control, companion: bool) -> Result<(), ApiError> {
+    fn control_automation(&self, action: Control, companion: bool, expected_session: Option<Uuid>) -> Result<(), ApiError> {
+        if expected_session.is_some() && !matches!(action, Control::Start | Control::Resume) {
+            return Err(ApiError::bad("expected_session applies only to start or resume"));
+        }
         if matches!(action, Control::Start | Control::Resume)
             && self.desktop.backend_name() == "wayland"
         {
@@ -457,8 +460,17 @@ impl AppState {
         }
         // Start and resume only publish. They do not wait on the injection
         // lock. An in-flight call sees the snapshot at its next check.
-        let session = self.control_session();
+        // Keep selection, existence and the transition atomic with session close.
+        // Other paths never retain the automation lock while acquiring sessions.
+        let sessions = lock(&self.sessions);
         let mut gate = lock(&self.automation);
+        let live = if gate.phase() == Phase::Off { None } else { gate.session() };
+        let session = live.filter(|id| sessions.contains_key(id)).or_else(|| {
+            sessions.values().max_by_key(|session| session.touched()).map(|session| session.id())
+        });
+        if expected_session.is_some() && expected_session != session {
+            return Err(ApiError::conflict("selected session changed; approve the current session"));
+        }
         // Decide under the same lock that applies the action. Only the
         // companion socket may leave a user pause. Loopback TCP never does.
         if automation::lifts_user_pause(action, gate.phase()) && !companion {
@@ -477,29 +489,6 @@ impl AppState {
                     ApiError::unavailable(automation::STALE_POLL)
                 }
             })
-    }
-
-    /// The gate's live session while one exists. The most recently touched
-    /// session is only the fallback when the gate is off, or that session is gone.
-    fn control_session(&self) -> Option<Uuid> {
-        let live = {
-            let gate = lock(&self.automation);
-            if gate.phase() == Phase::Off {
-                None
-            } else {
-                gate.session()
-            }
-        };
-        let sessions = lock(&self.sessions);
-        if let Some(id) = live {
-            if sessions.contains_key(&id) {
-                return Some(id);
-            }
-        }
-        sessions
-            .values()
-            .max_by_key(|session| session.touched())
-            .map(|session| session.id())
     }
 }
 
@@ -1647,6 +1636,8 @@ async fn companion(
 #[derive(Deserialize)]
 struct AutomationRequest {
     action: String,
+    #[serde(default)]
+    expected_session: Option<Uuid>,
 }
 
 /// `start`, `pause`, `resume`, or `stop`. `start` and `stop` are the seam for
@@ -1661,7 +1652,7 @@ async fn companion_automation(
 ) -> Result<StatusCode, ApiError> {
     let action = Control::parse(&body.action)
         .ok_or_else(|| ApiError::bad("action must be start, pause, resume, or stop"))?;
-    state.control_automation(action, companion)?;
+    state.control_automation(action, companion, body.expected_session)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -7424,6 +7415,38 @@ while True:
         session.finish_response_usage(current, Some(expected));
         session.finish_response_usage(old, None);
         assert_eq!(session.last_response_usage(), Some(expected));
+    }
+
+    #[test]
+    fn native_approval_cannot_start_or_resume_a_replacement_session() {
+        let (mut state, _, first) = task_fixture();
+        Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
+        lock(&state.automation).note_poll(Instant::now(), state.companion_poll_timeout);
+        let wrong = Uuid::new_v4();
+        assert!(state.control_automation(Control::Start, true, Some(wrong)).is_err());
+        assert_eq!(lock(&state.automation).phase(), Phase::Off);
+        assert!(state.control_automation(Control::Start, true, Some(first)).is_ok());
+        assert!(state.control_automation(Control::Pause, true, None).is_ok());
+        assert!(state.control_automation(Control::Resume, true, Some(wrong)).is_err());
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+        let original = lock(&state.sessions).remove(&first).unwrap();
+        let second = Uuid::new_v4();
+        // A fresh session is the selected fallback once the approved one closes.
+        let replacement = Session::create(second, Harness {
+            purpose: "replacement".into(), recipes: vec![],
+            agent: Agent { name: "fixture".into(), instructions: "".into() }, skills: vec![],
+        }, Vault::open(&[], std::env::temp_dir().join("unused-task-vault")).unwrap(), mcp::McpBundle::default());
+        lock(&state.sessions).insert(second, replacement);
+        lock(&state.automation).note_session_closed(first);
+        assert!(state.control_automation(Control::Resume, true, Some(first)).is_err());
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+        assert!(state.control_automation(Control::Resume, true, Some(second)).is_ok());
+        assert_eq!(lock(&state.automation).session(), Some(second));
+        assert!(state.control_automation(Control::Pause, true, Some(second)).is_err());
+        // Existing clients may still omit the additive guard.
+        assert!(state.control_automation(Control::Pause, true, None).is_ok());
+        assert!(state.control_automation(Control::Resume, true, None).is_ok());
+        drop(original);
     }
 
     fn task_fixture() -> (Arc<AppState>, Arc<FakeDesktop>, Uuid) {

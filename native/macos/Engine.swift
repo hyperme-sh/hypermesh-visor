@@ -50,6 +50,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var menuAllow: NSMenuItem?
     private var destinationItems: [NSMenuItem] = []
     private var currentSession: String?
+    private var approvedSession: String?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var approvedLayout: DesktopLayout?
@@ -131,7 +132,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         NativePointerOverlay.shared.setVisible(nativePointerOverlayVisible(connected: engineConnected,
             sessionOpen: sessionOpen, allowed: allowed, phase: currentPhase, restartRequired: restartRequired))
         let readiness = restartRequired ? "Restore permissions in System Settings, then quit and reopen Visor. Desktop access remains off." : (started && !sessionOpen ? "Waiting for a local client to open a session" : message)
-        label?.stringValue = "\(readiness)\nSession: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
+        label?.stringValue = "\(readiness)\nSession: \(currentSession ?? "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
         allowButton?.isEnabled = access.enabled
@@ -172,7 +173,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             self.currentSession = self.sessionOpen ? sessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() } : nil
             self.usageSummary = self.sessionOpen ? nativeUsageSummary(body["session"] as? [String:Any]) : nil
             self.currentPhase = automation["phase"] as? String ?? "off"
-            if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
+            if self.allowed && (!self.sessionOpen || self.currentPhase != "running" || self.currentSession != self.approvedSession) { self.pause("Session changed, stopped or paused") }
             if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
                 self.pause(interruption.message, lost: interruption.permanent)
             }
@@ -210,7 +211,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
     }
     @objc func allow() {
-        guard started && sessionOpen && !restartRequired else { return }
+        guard started && sessionOpen && !restartRequired, let selected = currentSession else { return }
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
                        ("Accessibility", CGPreflightPostEventAccess()),
@@ -220,16 +221,21 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         guard permissionsAndMonitor(), layoutMatchesApproval() else { message = "Desktop layout or input monitor unavailable. Check connected displays and restart Visor if needed."; update(); return }
         epoch &+= 1
         let generation = epoch
-        control(currentPhase == "paused" ? "resume" : "start") { result in
+        control(currentPhase == "paused" ? "resume" : "start", session: selected) { result in
             guard generation == self.epoch else { return }
             guard result?["status"] as? Int == 204 else { self.message = "Unable to start; check session and permissions"; self.update(); return }
+            guard self.currentSession == selected, self.sessionOpen,
+                  self.permissionsAndMonitor(), self.layoutMatchesApproval() else {
+                self.pause("Session or desktop access changed during approval"); return
+            }
+            self.approvedSession = selected
             self.allowed = true; self.message = "Desktop access allowed — real input pauses immediately"; self.currentPhase = "running"; self.update()
         }
     }
     @objc func pauseButton() { pause("Paused by user") }
     @objc func stopButton() { pause("Desktop access stopped"); control("stop") }
     func pause(_ reason: String, lost: Bool = false) {
-        allowed = false; epoch &+= 1; releaseHeld(); message = reason
+        allowed = false; approvedSession = nil; epoch &+= 1; releaseHeld(); message = reason
         restartRequired = restartRequired || lost
         if started { control(lost ? "monitor-lost" : "pause") }
         update()
