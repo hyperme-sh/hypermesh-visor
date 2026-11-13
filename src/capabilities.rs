@@ -41,7 +41,7 @@ pub(crate) fn describe(backend: &str) -> Value {
             "coordinates": {
                 "space": match backend {
                     "x11" => "root_window_pixels",
-                    "macos-embedded" => "primary_display_logical_pixels",
+                    "macos-embedded" => "active_desktop_logical_pixels",
                     "macos" => "unspecified",
                     _ => "unspecified"
                 },
@@ -90,7 +90,7 @@ mod tests {
         assert_eq!(value["desktop"]["listen"], "unavailable");
         assert_eq!(
             value["desktop"]["coordinates"]["space"],
-            "primary_display_logical_pixels"
+            "active_desktop_logical_pixels"
         );
         assert_eq!(value["authorization_granted"], false);
         assert_eq!(value["readiness_probed"], false);
