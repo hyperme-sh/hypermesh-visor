@@ -330,7 +330,33 @@ func nativeUsageSummary(_ session: [String:Any]?) -> String? {
     return "Latest response · Input \(input.uint64Value) · Output \(output.uint64Value) tokens"
 }
 
+func nativeDestinationResponse(_ result: [String:Any]?, expected: String, current: String?, editor: Bool) -> URL? {
+    guard expected == current, UUID(uuidString: expected) != nil, result?["status"] as? Int == 200,
+          let body = result?["body"] as? [String:Any], body["session"] as? String == expected,
+          let value = body[editor ? "workspace" : "forum"] as? String, value.utf8.count <= 4096,
+          !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return nil }
+    if editor { return value.hasPrefix("/") ? URL(fileURLWithPath: value, isDirectory: true) : nil }
+    guard let parts = URLComponents(string: value), parts.scheme == "https", let host = parts.host, !host.isEmpty,
+          parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil else { return nil }
+    return parts.url
+}
+
 func selfTest() throws {
+    let selected = "00000000-0000-4000-8000-000000000001", other = "00000000-0000-4000-8000-000000000002"
+    func destination(_ value: String, editor: Bool = false, current: String? = nil) -> URL? {
+        return nativeDestinationResponse(["status": 200, "body": ["session": selected, editor ? "workspace" : "forum": value]],
+                                         expected: selected, current: current ?? selected, editor: editor)
+    }
+    try verifyNativeUnit(destination("https://forum.example.test/t/123")?.absoluteString == "https://forum.example.test/t/123")
+    for value in ["http://forum.example.test/t/123", "file:///tmp/a", "javascript:alert(1)",
+                  "https://user:secret@forum.example.test/t/123", "https://forum.example.test/?token=x", "https://forum.example.test/#secret", "https://forum.example.test/\n"] {
+        try verifyNativeUnit(destination(value) == nil)
+    }
+    try verifyNativeUnit(destination("https://forum.example.test/t/123", current: other) == nil)
+    try verifyNativeUnit(destination("--install-extension", editor: true) == nil)
+    try verifyNativeUnit(destination("/tmp/work space$(false)", editor: true)?.path == "/tmp/work space$(false)")
+    try verifyNativeUnit(nativeDestinationResponse(nil, expected: selected, current: selected, editor: false) == nil)
+    print("PASS native session destination binding and literal URL/path contracts")
     try verifyNativeUnit(nativeMascotState(connected: false, allowed: true, phase: "running") == "disconnected")
     try verifyNativeUnit(nativeMascotState(connected: true, allowed: true, phase: "running") == "automation")
     try verifyNativeUnit(nativeMascotState(connected: true, allowed: true, phase: "paused") == "idle")

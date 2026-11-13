@@ -3,17 +3,7 @@ use std::io::{BufRead, IsTerminal, Read, Write};
 
 const MAX_PROMPT_BYTES: usize = 16 * 1024;
 
-pub fn canonical_session(value: &str) -> Option<String> {
-    (value.len() == 36
-        && value.bytes().enumerate().all(|(index, byte)| {
-            if [8, 13, 18, 23].contains(&index) {
-                byte == b'-'
-            } else {
-                byte.is_ascii_hexdigit()
-            }
-        }))
-    .then(|| value.to_ascii_lowercase())
-}
+pub use crate::destinations::canonical_session;
 
 pub fn run(
     mut input: impl BufRead,

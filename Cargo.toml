@@ -56,3 +56,6 @@ jsonschema = { version = "0.58.6", default-features = false }
 http = "1"
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+toml = "0.8"

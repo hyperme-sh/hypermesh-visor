@@ -21,6 +21,12 @@ command must be available. Both actions pass one literal argument without a
 shell or command template. Session purpose, task payload and model output do
 not configure these destinations.
 
+The native macOS status menu also offers **Session forum** and **Session in
+VS Code**. It reads the same per-session configuration and checks the selected
+session again when clicked. macOS opens the browser or installed Visual Studio
+Code application through its desktop API; it does not require the `code`
+command. A switched or closed session cannot launch a stale destination.
+
 These actions open an existing forum thread or workspace. They do not enroll a
 forum bot or deliver tasks; that transport remains tracked in #31. Native
 PowerShell/WSL launch and the shared nest destination remain in #18/#25/#88.

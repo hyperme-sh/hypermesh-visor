@@ -48,6 +48,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var usageSummary: String?
     private var engineConnected = false
     private var menuAllow: NSMenuItem?
+    private var destinationItems: [NSMenuItem] = []
+    private var currentSession: String?
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var approvedLayout: DesktopLayout?
@@ -90,6 +92,11 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             if action == #selector(allow) { menuAllow = item }
         }
         menu.addItem(.separator())
+        for (title, action) in [("Session forum", #selector(openForum)), ("Session in VS Code", #selector(openWorkspace))] {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self; menu.addItem(item); destinationItems.append(item)
+        }
+        menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
         statusItem?.menu = menu
         installMonitor()
@@ -101,9 +108,10 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         timer?.invalidate()
     }
-    private func control(_ action: String, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
+    private func control(_ action: String, session: String? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
         queue.async {
-            let data = try! JSONSerialization.data(withJSONObject: ["action": action])
+            let fields = session.map { ["action": action, "session": $0] } ?? ["action": action]
+            let data = try! JSONSerialization.data(withJSONObject: fields)
             var output: UnsafeMutablePointer<UInt8>?
             var size = 0
             let code = data.withUnsafeBytes { raw in hypermesh_native_control(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &output, &size) }
@@ -127,6 +135,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         allowButton?.title = access.title
         menuAllow?.isEnabled = access.enabled
         menuAllow?.title = access.title
+        for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
         if let frames = mascotFrames[state], frames.count == (state == "disconnected" ? 6 : 8) {
             let frame = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? 0 : mascotTick % frames.count
@@ -150,11 +159,14 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             guard generation == self.epoch else { return }
             guard let result, result["status"] as? Int == 200, let body = result["body"] as? [String:Any], let automation = body["automation"] as? [String:Any] else {
                 self.engineConnected = false
+                self.currentSession = nil
                 self.usageSummary = nil
                 self.pause("Native engine unavailable"); return
             }
             self.engineConnected = true
             self.sessionOpen = body["open"] as? Bool ?? false
+            let sessionID = (body["session"] as? [String:Any])?["id"] as? String
+            self.currentSession = self.sessionOpen ? sessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() } : nil
             self.usageSummary = self.sessionOpen ? nativeUsageSummary(body["session"] as? [String:Any]) : nil
             self.currentPhase = automation["phase"] as? String ?? "off"
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running") { self.pause("Session stopped or paused") }
@@ -162,6 +174,36 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                 self.pause(interruption.message, lost: interruption.permanent)
             }
             self.update()
+        }
+    }
+    @objc func openForum() { openDestination(editor: false) }
+    @objc func openWorkspace() { openDestination(editor: true) }
+    private func openDestination(editor: Bool) {
+        guard engineConnected, sessionOpen, let selected = currentSession else { return }
+        control("destinations", session: selected) { result in
+            guard self.engineConnected, self.sessionOpen, let destination = nativeDestinationResponse(result, expected: selected,
+                    current: self.currentSession, editor: editor) else {
+                self.message = "Configure this session's destination in companion.toml, then retry."; self.update(); return
+            }
+            let completed: @Sendable (NSRunningApplication?, Error?) -> Void = { _, error in
+                let failed = error != nil
+                Task { @MainActor in
+                    if failed && self.currentSession == selected {
+                        self.message = "Could not open this session destination."; self.update()
+                    }
+                }
+            }
+            let configuration = NSWorkspace.OpenConfiguration()
+            if editor {
+                var directory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: destination.path, isDirectory: &directory), directory.boolValue,
+                      let application = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") else {
+                    self.message = "Install Visual Studio Code and configure an existing workspace directory."; self.update(); return
+                }
+                NSWorkspace.shared.open([destination], withApplicationAt: application, configuration: configuration, completionHandler: completed)
+            } else {
+                NSWorkspace.shared.open(destination, configuration: configuration, completionHandler: completed)
+            }
         }
     }
     @objc func allow() {

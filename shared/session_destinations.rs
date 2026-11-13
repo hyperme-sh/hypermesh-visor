@@ -2,6 +2,18 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+pub fn canonical_session(value: &str) -> Option<String> {
+    (value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if [8, 13, 18, 23].contains(&index) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        }))
+    .then(|| value.to_ascii_lowercase())
+}
+
 #[derive(Clone, Copy)]
 pub enum Destination {
     Forum,
@@ -15,9 +27,8 @@ pub struct Launch {
 }
 
 pub fn configured(dir: &Path, session: &str, destination: Destination) -> Result<Launch, String> {
-    let session =
-        crate::session_cli::canonical_session(session).ok_or("No valid active session")?;
-    let file = std::fs::File::open(crate::settings::companion_path(dir))
+    let session = canonical_session(session).ok_or("No valid active session")?;
+    let file = std::fs::File::open(dir.join("companion.toml"))
         .map_err(|_| "Configure this session's destination in companion.toml")?;
     let mut text = String::new();
     file.take(65537)
@@ -26,8 +37,7 @@ pub fn configured(dir: &Path, session: &str, destination: Destination) -> Result
     if text.len() > 65536 {
         return Err("Companion configuration is too large".into());
     }
-    let table: toml::Value =
-        toml::from_str(&text).map_err(|_| "Invalid companion configuration")?;
+    let table: toml::Value = toml::from_str(&text).map_err(|_| "Invalid companion configuration")?;
     let key = match destination {
         Destination::Forum => "forum_url",
         Destination::Editor => "workspace",
@@ -127,7 +137,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let id = "00000000-0000-4000-8000-000000000001";
         std::fs::write(
-            crate::settings::companion_path(&dir),
+            dir.join("companion.toml"),
             format!("[sessions.\"{id}\"]\nforum_url = \"https://forum.example.test/t/123\"\n"),
         )
         .unwrap();
