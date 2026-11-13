@@ -303,13 +303,12 @@ mod tests {
     fn broad_acl_and_directory_junction_are_refused() {
         let directory = crate::tests::Temp::new();
         let path = directory.0.join("data");
-        let file = open(&path, Open::New).unwrap();
         let user = current_user().unwrap();
-        let sddl: Vec<u16> = format!("D:P(A;;FA;;;{user})(A;;FR;;;WD)")
+        let sddl: Vec<u16> = format!("O:{user}D:P(A;;FA;;;{user})(A;;FR;;;WD)")
             .encode_utf16()
             .chain([0])
             .collect();
-        unsafe {
+        let file = unsafe {
             let mut sd = null_mut();
             assert_ne!(
                 ConvertStringSecurityDescriptorToSecurityDescriptorW(
@@ -321,39 +320,25 @@ mod tests {
                 0
             );
             let _allocation = Allocation(sd);
-            let mut present = 0;
-            let mut acl = null_mut();
-            let mut defaulted = 0;
-            assert_ne!(
-                GetSecurityDescriptorDacl(sd, &mut present, &mut acl, &mut defaulted),
-                0
-            );
-            // The creating owner has WRITE_DAC, but this handle was deliberately
-            // opened with data rights only. Reopen for the test's explicit ACL change.
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: sd,
+                bInheritHandle: 0,
+            };
+            // Create an explicitly unsafe source, without mutating permissions
+            // on a handle opened with production data-only access rights.
             let handle = CreateFileW(
                 wide(&path).unwrap().as_ptr(),
-                WRITE_DAC,
+                GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT,
+                &attributes,
+                CREATE_NEW,
+                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
                 null_mut(),
             );
             assert_ne!(handle, INVALID_HANDLE_VALUE);
-            let handle = Handle(handle);
-            assert_eq!(
-                SetSecurityInfo(
-                    handle.0,
-                    SE_FILE_OBJECT,
-                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                    null_mut(),
-                    null_mut(),
-                    acl,
-                    null_mut()
-                ),
-                ERROR_SUCCESS
-            );
-        }
+            File::from_raw_handle(handle)
+        };
         assert!(validate(&file, false, true).is_err());
         assert!(open(&path, Open::Read { private: true }).is_err());
         assert!(open(&path, Open::Read { private: false }).is_ok());
