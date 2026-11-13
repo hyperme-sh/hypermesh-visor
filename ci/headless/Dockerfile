@@ -2,8 +2,8 @@
 FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS conductor
 RUN apk add --no-cache curl
 WORKDIR /source
-RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/01c81d8e5421204c410d226028c605658436f723 -o source.tar.gz && \
-    echo '9f6a9f154c8275ec875817f2055e6a88db76c775bfbd8db73349f125331a3d03  source.tar.gz' | sha256sum -c - && \
+RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/75ee07d4401232c0a8a5e1946dd5de1043b5d723 -o source.tar.gz && \
+    echo 'd864ed95cb95db95eeba86662ee59793e07b605d85df4f784f5dd7b4ca8c6d3b  source.tar.gz' | sha256sum -c - && \
     tar xzf source.tar.gz --strip-components=1 && \
     CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath -o /conductor ./cmd/conductor && \
     /conductor help | grep -F capability-review

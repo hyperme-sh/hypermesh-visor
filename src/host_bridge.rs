@@ -159,7 +159,7 @@ mod tests {
     }
     #[tokio::test]
     async fn refuses_peer_before_sending_http() {
-        let path = std::env::temp_dir().join(format!("visor-peer-{}.sock", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("v-{}.s", uuid::Uuid::new_v4().simple()));
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let mut bridge = Bridge::new(path.clone()).unwrap();
         bridge.uid = unsafe { libc::geteuid() } + 1;
@@ -176,8 +176,7 @@ mod tests {
     #[tokio::test]
     async fn binds_dispatch_to_catalog_and_never_retries_refusal() {
         use std::sync::atomic::{AtomicUsize, Ordering};
-        let path =
-            std::env::temp_dir().join(format!("visor-contract-{}.sock", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!("v-{}.s", uuid::Uuid::new_v4().simple()));
         let listener = tokio::net::UnixListener::bind(&path).unwrap();
         let count = Arc::new(AtomicUsize::new(0));
         let seen = count.clone();
