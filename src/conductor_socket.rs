@@ -66,6 +66,7 @@ impl SocketDoor {
         &self,
         call: &ForwardedPrompt,
         cancel: &PromptCancellation,
+        attribution: &crate::telemetry::UpstreamScope,
     ) -> Result<PromptCompletion, String> {
         let uid = unsafe { libc::geteuid() };
         private_socket(&self.path, uid)?;
@@ -120,20 +121,44 @@ impl SocketDoor {
             .send_request(request)
             .await
             .map_err(|_| "Conductor request failed")?;
+        attribution.response_metadata(
+            response
+                .headers()
+                .get("X-Hypermesh-Version")
+                .and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get("X-Hypermesh-Release-Color")
+                .and_then(|v| v.to_str().ok()),
+            response
+                .headers()
+                .get("X-Hypermesh-Canary")
+                .and_then(|v| v.to_str().ok()),
+        );
         if response.status() != StatusCode::OK {
+            if response.status().is_server_error() {
+                crate::telemetry::report(crate::telemetry::Failure::UpstreamHttp);
+            }
             return Err(format!("Conductor HTTP {}", response.status().as_u16()));
         }
-        let raw = Limited::new(response.into_body(), 1 << 20)
-            .collect()
-            .await
-            .map_err(|_| "invalid Conductor response")?
-            .to_bytes();
-        let text = std::str::from_utf8(&raw).map_err(|_| "invalid Conductor response")?;
-        let value = serde_json::from_str(text).map_err(|_| "invalid Conductor response")?;
-        Ok(PromptCompletion {
-            text: crate::prompt::completion_text(text)?,
-            usage: crate::ResponseUsage::from_openai(&value),
-        })
+        let result = async {
+            let raw = Limited::new(response.into_body(), 1 << 20)
+                .collect()
+                .await
+                .map_err(|_| "invalid Conductor response")?
+                .to_bytes();
+            let text = std::str::from_utf8(&raw).map_err(|_| "invalid Conductor response")?;
+            let value = serde_json::from_str(text).map_err(|_| "invalid Conductor response")?;
+            Ok(PromptCompletion {
+                text: crate::prompt::completion_text(text)?,
+                usage: crate::ResponseUsage::from_openai(&value),
+            })
+        }
+        .await;
+        if result.is_err() {
+            crate::telemetry::report(crate::telemetry::Failure::UpstreamResponse);
+        }
+        result
     }
 }
 impl PromptDoor for SocketDoor {
@@ -148,6 +173,8 @@ impl PromptDoor for SocketDoor {
         call: &ForwardedPrompt,
         cancel: &PromptCancellation,
     ) -> Result<PromptCompletion, String> {
+        let attribution =
+            crate::telemetry::UpstreamScope::enter(crate::telemetry::Service::Conductor);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -156,7 +183,7 @@ impl PromptDoor for SocketDoor {
             tokio::select! {
                 biased;
                 _=async {loop {if cancel.cancelled(){break;} tokio::time::sleep(Duration::from_millis(25)).await;}} => Err("prompt cancelled".into()),
-                result=tokio::time::timeout(Duration::from_secs(130),self.exchange(call,cancel)) => result.map_err(|_|"Conductor request timed out".to_string())?,
+                result=tokio::time::timeout(Duration::from_secs(130),self.exchange(call,cancel,&attribution)) => result.map_err(|_|"Conductor request timed out".to_string())?,
             }
         })
     }
@@ -165,6 +192,47 @@ impl PromptDoor for SocketDoor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn socket_failures_keep_safe_conductor_attribution() {
+        use std::io::Write;
+        for (status, body, expected) in [
+            (503, "private upstream body", Some("upstream_http")),
+            (200, "private malformed body", Some("upstream_response")),
+            (403, "private policy body", None),
+        ] {
+            let fixture = Fixture::new();
+            let listener = fixture.listener.try_clone().unwrap();
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                read_request(&mut stream);
+                write!(stream,"HTTP/1.1 {status} Status\r\nX-Hypermesh-Version: 1.2.3\r\nX-Hypermesh-Release-Color: green\r\nX-Hypermesh-Canary: false\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+            });
+            let reports = crate::telemetry::capture_reports(|| {
+                let door = SocketDoor::connect(fixture.path.clone(), None).unwrap();
+                assert!(door
+                    .forward(&ForwardedPrompt {
+                        prompt: "private prompt".into(),
+                        api_key: "hm_org_fixture".into(),
+                        model: Some("model".into())
+                    })
+                    .is_err());
+            });
+            server.join().unwrap();
+            if let Some(expected) = expected {
+                assert_eq!(reports.len(), 1);
+                let text = reports[0].to_string();
+                assert!(text.contains(expected));
+                let props = &reports[0]["data"]["baseData"]["properties"];
+                assert_eq!(props["upstream_service"], "conductor");
+                assert_eq!(props["upstream_version"], "1.2.3");
+                assert!(!text.contains("private"));
+                assert!(!text.contains("hm_org_fixture"));
+            } else {
+                assert!(reports.is_empty());
+            }
+        }
+    }
+
     #[test]
     fn explicit_socket_paths_are_bounded_and_absolute() {
         for path in ["relative", "/tmp/../other", ""] {

@@ -81,18 +81,27 @@ impl UpstreamScope {
         }))
     }
     pub fn response(&self, response: &ureq::Response) {
+        self.response_metadata(
+            response.header("X-Hypermesh-Version"),
+            response.header("X-Hypermesh-Release-Color"),
+            response.header("X-Hypermesh-Canary"),
+        );
+    }
+    pub(crate) fn response_metadata(
+        &self,
+        version: Option<&str>,
+        color: Option<&str>,
+        canary: Option<&str>,
+    ) {
         UPSTREAM.with(|cell| {
             if let Some(upstream) = cell.borrow_mut().as_mut() {
-                upstream.version = response
-                    .header("X-Hypermesh-Version")
-                    .filter(|v| valid_version(v))
-                    .map(str::to_owned);
-                upstream.color = match response.header("X-Hypermesh-Release-Color") {
+                upstream.version = version.filter(|v| valid_version(v)).map(str::to_owned);
+                upstream.color = match color {
                     Some("blue") => Some("blue"),
                     Some("green") => Some("green"),
                     _ => None,
                 };
-                upstream.canary = match response.header("X-Hypermesh-Canary") {
+                upstream.canary = match canary {
                     Some("true") => Some(true),
                     Some("false") => Some(false),
                     _ => None,
@@ -295,7 +304,43 @@ fn send_event(agent: &ureq::Agent, config: &Config, mut event: Value) -> bool {
         .is_ok_and(|response| (200..300).contains(&response.status()))
 }
 
+#[cfg(test)]
+thread_local! { static CAPTURED: RefCell<Option<Vec<Value>>> = const { RefCell::new(None) }; }
+#[cfg(test)]
+pub(crate) fn capture_reports(f: impl FnOnce()) -> Vec<Value> {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CAPTURED.with(|cell| {
+                cell.replace(None);
+            });
+        }
+    }
+    let _reset = Reset;
+    CAPTURED.with(|cell| {
+        cell.replace(Some(Vec::new()));
+    });
+    f();
+    CAPTURED.with(|cell| cell.replace(None).unwrap())
+}
+
 pub fn report(failure: Failure) {
+    #[cfg(test)]
+    CAPTURED.with(|cell| {
+        if let Some(reports) = cell.borrow_mut().as_mut() {
+            if let Some(value) = UPSTREAM.with(|upstream| {
+                envelope(
+                    Component::Daemon,
+                    "0.1.0",
+                    failure,
+                    upstream.borrow().as_ref(),
+                    SystemTime::now(),
+                )
+            }) {
+                reports.push(value);
+            }
+        }
+    });
     let Some(reporter) = REPORTER.get() else {
         return;
     };
@@ -344,7 +389,9 @@ fn timestamp(now: SystemTime) -> Option<String> {
             return None;
         }
         #[cfg(windows)]
-        if libc::gmtime_s(parts.as_mut_ptr(), &seconds) != 0 { return None; }
+        if libc::gmtime_s(parts.as_mut_ptr(), &seconds) != 0 {
+            return None;
+        }
         parts.assume_init()
     };
     Some(format!(
