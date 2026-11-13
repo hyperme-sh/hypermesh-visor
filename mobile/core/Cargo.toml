@@ -1,0 +1,24 @@
+[package]
+name = "hypermesh-visor-mobile"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Keep mobile's app-owned store separate from desktop feature unification.
+[workspace]
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[[bin]]
+name = "mobile-bindgen"
+path = "src/bin/bindgen.rs"
+required-features = ["bindgen"]
+
+[dependencies]
+hypermesh-session = { path = "../../session", default-features = false, features = ["external-store"] }
+uniffi = { version = "=0.32.2", default-features = false }
+thiserror = "2"

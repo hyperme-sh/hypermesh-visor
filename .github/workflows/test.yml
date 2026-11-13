@@ -69,13 +69,38 @@ jobs:
             target/debug/inverse-client-source-revision.txt
       - name: App-supplied session store unit contracts
         run: cargo test --locked -p hypermesh-session --no-default-features --features external-store
+      - name: Mobile store bridge unit contracts
+        run: cargo test --locked --manifest-path mobile/core/Cargo.toml
+      - name: Generate mobile language bindings
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: |
+          cargo build --locked --manifest-path mobile/core/Cargo.toml --features bindgen
+          extension=so
+          if [[ "$RUNNER_OS" == macOS ]]; then extension=dylib; fi
+          mobile/core/target/debug/mobile-bindgen generate --no-format \
+            --library "mobile/core/target/debug/libhypermesh_visor_mobile.$extension" \
+            --language swift --language kotlin --out-dir "$RUNNER_TEMP/mobile-bindings"
+      - name: Swift native store callback contract
+        if: matrix.os == 'macos-latest'
+        run: |
+          swiftc -I "$RUNNER_TEMP/mobile-bindings" \
+            -Xcc "-fmodule-map-file=$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobileFFI.modulemap" \
+            "$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobile.swift" mobile/tests/main.swift \
+            -L mobile/core/target/debug -lhypermesh_visor_mobile \
+            -Xlinker -rpath -Xlinker "$PWD/mobile/core/target/debug" \
+            -o "$RUNNER_TEMP/mobile-store-contract"
+          "$RUNNER_TEMP/mobile-store-contract"
       - name: iOS session core build
         if: matrix.os == 'macos-latest'
         run: |
           rustup target add aarch64-apple-ios
           cargo build --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-apple-ios
+          cargo build --locked --manifest-path mobile/core/Cargo.toml --lib --target aarch64-apple-ios
           cargo tree --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-session-deps.txt"
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-session-deps.txt"
+          cargo tree --locked --manifest-path mobile/core/Cargo.toml --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-mobile-deps.txt"
+          ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-mobile-deps.txt"
       - name: Android session core build
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -86,8 +111,11 @@ jobs:
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
           test -x "$CC_aarch64_linux_android"
           cargo build --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-linux-android
+          cargo build --locked --manifest-path mobile/core/Cargo.toml --lib --target aarch64-linux-android
           cargo tree --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-linux-android -e normal --prefix none > "$RUNNER_TEMP/android-session-deps.txt"
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/android-session-deps.txt"
+          cargo tree --locked --manifest-path mobile/core/Cargo.toml --target aarch64-linux-android -e normal --prefix none > "$RUNNER_TEMP/android-mobile-deps.txt"
+          ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/android-mobile-deps.txt"
           if cargo check --locked -p hypermesh-session --features external-store > "$RUNNER_TEMP/store-feature-conflict.txt" 2>&1; then
             echo 'Conflicting store features unexpectedly compiled' >&2
             exit 1
