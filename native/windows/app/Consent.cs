@@ -53,9 +53,10 @@ internal sealed class Consent
 internal sealed class InputAuthority
 {
     private long generation;
-    private long approvedGeneration = -1;
+    private sealed record GrantState(long Generation, string Session);
+    private GrantState? approved;
     internal long Generation => Interlocked.Read(ref generation);
-    internal bool Allowed => Interlocked.Read(ref approvedGeneration) == Generation;
+    internal bool AllowedFor(string? session) => Volatile.Read(ref approved) is { } grant && session != null && grant.Session == session && grant.Generation == Generation;
     internal void Revoke() => Interlocked.Increment(ref generation);
-    internal void Grant(long expectedGeneration) => Interlocked.Exchange(ref approvedGeneration, expectedGeneration);
+    internal void Grant(long expectedGeneration, string session) => Volatile.Write(ref approved, new GrantState(expectedGeneration, session));
 }

@@ -29,7 +29,7 @@ internal sealed class Companion : Form
     {
         tray.Icon = companionIcon;
         Text = "Hypermesh Visor"; Width = 500; Height = 300; MinimumSize = new Size(420, 280);
-        desktop = new DesktopDriver(marker, () => authority.Allowed && monitor?.Healthy == true,
+        desktop = new DesktopDriver(marker, session => authority.AllowedFor(session) && monitor?.Healthy == true,
             () => authority.Generation, Fault);
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8), AutoSize = true };
         buttons.Controls.Add(allow);
@@ -139,7 +139,7 @@ internal sealed class Companion : Form
             JsonElement? response = await Engine.Control(phase == "paused" ? "resume" : "start", session);
             if (!closing && Success(response) && desktop.LayoutMatches && baseline == authority.Generation && monitor.Healthy && Win32.Interactive() && !Win32.HeldInput() && consent.Approve(session, generation))
             {
-                authority.Grant(baseline); message = "Desktop access allowed for this session";
+                authority.Grant(baseline, session); message = "Desktop access allowed for this session";
             }
             else Pause("Approval changed or is unavailable. Select the current session and try again.");
         }
@@ -174,7 +174,7 @@ internal sealed class Companion : Form
                 long baseline = authority.Generation;
                 JsonElement? resumed = await Engine.Control("idle-resume", ticket.Session, ticket.Epoch);
                 if (!closing && Success(resumed) && desktop.LayoutMatches && baseline == authority.Generation && monitor.Healthy && Win32.Interactive() && consent.Resume(ticket.Session, ticket.Generation, Now, Win32.HeldInput()))
-                { approvalBaseline = baseline; authority.Grant(baseline); message = "Resumed after two idle minutes"; }
+                { approvalBaseline = baseline; authority.Grant(baseline, ticket.Session); message = "Resumed after two idle minutes"; }
                 else Pause("Automatic resume was interrupted. Allow desktop access to continue.");
                 resuming = false;
             }

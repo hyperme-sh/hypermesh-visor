@@ -3,7 +3,7 @@ use super::*;
 use crate::input::{Button, MouseOp, PointerStep, Stroke};
 use base64::Engine;
 use serde_json::{json, Value};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Trusted in-process ABI supplied by the native app. No socket, path, argument,
 /// environment variable or external process can register this callback.
@@ -12,13 +12,15 @@ pub(crate) type NativeCall =
 #[derive(Default)]
 pub struct NativeDesktop {
     callback: Option<NativeCall>,
-    sequence: Sequence,
+    sequence: Arc<Sequence>,
+    session: Option<uuid::Uuid>,
 }
 impl NativeDesktop {
     pub(crate) fn embedded(callback: NativeCall) -> Self {
         Self {
             callback: Some(callback),
-            sequence: Sequence::default(),
+            sequence: Arc::default(),
+            session: None,
         }
     }
     fn bridge(&self) -> Result<Bridge<'_>, DesktopError> {
@@ -26,6 +28,7 @@ impl NativeDesktop {
         let guard = self.sequence.acquire()?;
         Ok(Bridge {
             callback,
+            session: self.session,
             _guard: guard,
         })
     }
@@ -57,6 +60,7 @@ impl Drop for Permit<'_> {
 }
 struct Bridge<'a> {
     callback: NativeCall,
+    session: Option<uuid::Uuid>,
     _guard: Permit<'a>,
 }
 fn unavailable(_: impl std::fmt::Display) -> DesktopError {
@@ -65,7 +69,8 @@ fn unavailable(_: impl std::fmt::Display) -> DesktopError {
     )
 }
 impl Bridge<'_> {
-    fn call(&mut self, request: Value) -> Result<Value, DesktopError> {
+    fn call(&mut self, mut request: Value) -> Result<Value, DesktopError> {
+        request["session"] = self.session.map(|id| Value::String(id.to_string())).unwrap_or(Value::Null);
         let request = serde_json::to_vec(&request).map_err(unavailable)?;
         let mut output = std::ptr::null_mut();
         let mut length = 0usize;
@@ -129,6 +134,9 @@ impl KeyboardPipe for Bridge<'_> {
     }
 }
 impl Desktop for NativeDesktop {
+    fn for_session(&self, session: uuid::Uuid) -> Option<Arc<dyn Desktop>> {
+        Some(Arc::new(Self { callback: self.callback, sequence: Arc::clone(&self.sequence), session: Some(session) }))
+    }
     fn view(&self) -> Result<Frame, DesktopError> {
         let value = self.bridge()?.call(json!({"action":"view"}))?;
         let png = value["png"].as_str().ok_or_else(|| unavailable("image"))?;
@@ -241,6 +249,31 @@ impl Desktop for NativeDesktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_requests_keep_their_route_session() {
+        static REQUESTS: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+        unsafe extern "C" fn record(data: *const u8, length: usize, _: *mut *mut u8, _: *mut usize) -> i32 {
+            let value = serde_json::from_slice(std::slice::from_raw_parts(data, length)).unwrap();
+            REQUESTS.lock().unwrap().push(value);
+            1
+        }
+        let desktop = NativeDesktop::embedded(record);
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let a = desktop.for_session(first).unwrap();
+        let b = desktop.for_session(second).unwrap();
+        assert!(a.view().is_err());
+        assert!(b.type_input(&[]).is_err());
+        assert!(a.pointer_steps(&[]).is_err());
+        let requests = REQUESTS.lock().unwrap();
+        for (pair, session) in requests.chunks_exact(2).zip([first, second, first]) {
+            assert_eq!(pair[0]["session"], session.to_string());
+            assert_eq!(pair[1]["session"], session.to_string());
+            assert_eq!(pair[1]["action"], "release");
+        }
+        assert_eq!(requests.len(), 6);
+    }
+
     #[test]
     fn standalone_backend_cannot_acquire_native_permissions() {
         let desktop = NativeDesktop::default();

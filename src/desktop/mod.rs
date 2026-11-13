@@ -74,6 +74,10 @@ pub trait AudioRead: Send {
 /// What view, watch, listen, mouse, and type call.
 /// Version one is Linux. Later desktops implement the same trait.
 pub trait Desktop: Send + Sync {
+    /// Bind native callbacks to the route session without changing shared state.
+    fn for_session(&self, _session: uuid::Uuid) -> Option<std::sync::Arc<dyn Desktop>> {
+        None
+    }
     fn view(&self) -> Result<Frame, DesktopError>;
     fn open_audio(&self) -> Result<Box<dyn AudioRead>, DesktopError>;
     fn mouse(&self, op: &MouseOp) -> Result<(), DesktopError>;

@@ -9,14 +9,14 @@ internal sealed class DesktopDriver
 {
     private readonly object gate = new();
     private readonly Dictionary<string, Win32.Input> held = [];
-    private readonly Func<bool> allowed;
+    private readonly Func<string?, bool> allowed;
     private readonly Func<long> generation;
     private readonly Action fault;
     private readonly nuint marker;
     private Rectangle? approvedLayout;
     internal bool ApproveLayout() { lock (gate) { approvedLayout = Bounds(); return true; } }
     internal bool LayoutMatches { get { if (!Monitor.TryEnter(gate)) return false; try { return approvedLayout == Bounds(); } catch { return false; } finally { Monitor.Exit(gate); } } }
-    internal DesktopDriver(nuint marker, Func<bool> allowed, Func<long> generation, Action fault)
+    internal DesktopDriver(nuint marker, Func<string?, bool> allowed, Func<long> generation, Action fault)
     { this.marker = marker; this.allowed = allowed; this.generation = generation; this.fault = fault; }
 
     internal object Perform(JsonElement request)
@@ -32,10 +32,11 @@ internal sealed class DesktopDriver
                 Win32.GetWindowThreadProcessId(Win32.GetForegroundWindow(), out uint pid);
                 return new { width = bounds.Width, height = bounds.Height, x = point.X - bounds.X, y = point.Y - bounds.Y, pid };
             }
+            string? session = request.TryGetProperty("session", out JsonElement identity) && identity.ValueKind == JsonValueKind.String ? identity.GetString() : null;
             long epoch = generation();
             try
             {
-                Check(epoch);
+                Check(epoch, session);
                 if (action == "view")
                 {
                     Rectangle bounds = Bounds();
@@ -44,7 +45,7 @@ internal sealed class DesktopDriver
                     using MemoryStream bytes = new();
                     image.Save(bytes, ImageFormat.Png);
                     if (bytes.Length > 32 * 1024 * 1024) throw new InvalidOperationException();
-                    Check(epoch);
+                    Check(epoch, session);
                     return new { png = Convert.ToBase64String(bytes.ToArray()) };
                 }
                 if (action == "pointer")
@@ -53,7 +54,7 @@ internal sealed class DesktopDriver
                     if (steps.GetArrayLength() > 1024) throw new InvalidOperationException();
                     foreach (JsonElement step in steps.EnumerateArray())
                     {
-                        Check(epoch);
+                        Check(epoch, session);
                         string kind = step.GetProperty("kind").GetString() ?? "";
                         Win32.Input input = new() { Type = 0 };
                         input.Data.Mouse.Extra = marker;
@@ -81,7 +82,7 @@ internal sealed class DesktopDriver
                             }
                             else throw new InvalidOperationException();
                         }
-                        Send(input, epoch);
+                        Send(input, epoch, session);
                     }
                     return new { };
                 }
@@ -91,10 +92,10 @@ internal sealed class DesktopDriver
                     if (strokes.GetArrayLength() > 4096) throw new InvalidOperationException();
                     foreach (JsonElement stroke in strokes.EnumerateArray())
                     {
-                        Check(epoch);
+                        Check(epoch, session);
                         if (!Win32.NormalUserWindow(Win32.GetForegroundWindow())) throw new InvalidOperationException();
                         bool shortcut = held.Values.Any(IsChordModifier);
-                        foreach (Win32.Input input in Keys(stroke.GetProperty("keysym").GetUInt32(), stroke.GetProperty("down").GetBoolean(), shortcut, marker)) Send(input, epoch);
+                        foreach (Win32.Input input in Keys(stroke.GetProperty("keysym").GetUInt32(), stroke.GetProperty("down").GetBoolean(), shortcut, marker)) Send(input, epoch, session);
                     }
                     return new { };
                 }
@@ -117,14 +118,14 @@ internal sealed class DesktopDriver
         if (bounds.Width < 1 || bounds.Height < 1 || bounds.Width > 65535 || bounds.Height > 65535 || (long)bounds.Width * bounds.Height > 32_000_000) throw new InvalidOperationException();
         return bounds;
     }
-    private void Check(long epoch)
+    private void Check(long epoch, string? session)
     {
-        if (!allowed() || epoch != generation()) throw new OperationCanceledException();
+        if (!allowed(session) || epoch != generation()) throw new OperationCanceledException();
         if (!Win32.Interactive() || approvedLayout != Bounds()) throw new InvalidOperationException();
     }
-    private void Send(Win32.Input input, long epoch)
+    private void Send(Win32.Input input, long epoch, string? session)
     {
-        Check(epoch);
+        Check(epoch, session);
         if (Win32.SendInput(1, [input], Marshal.SizeOf<Win32.Input>()) != 1) throw new InvalidOperationException();
         (string? key, Win32.Input release, bool down) = Held(input);
         if (key != null) { if (down) held[key] = release; else held.Remove(key); }

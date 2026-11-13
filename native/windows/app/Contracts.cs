@@ -10,14 +10,16 @@ internal static class Contracts
     {
         try
         {
-            InputAuthority authority = new(); Require(!authority.Allowed);
+            InputAuthority authority = new(); Require(!authority.AllowedFor("first"));
             long inputGeneration = authority.Generation;
-            authority.Grant(inputGeneration); Require(authority.Allowed);
-            authority.Revoke(); Require(!authority.Allowed);
-            authority.Grant(inputGeneration); Require(!authority.Allowed);
+            authority.Grant(inputGeneration, "first"); Require(authority.AllowedFor("first"));
+            authority.Revoke(); Require(!authority.AllowedFor("first"));
+            authority.Grant(inputGeneration, "first"); Require(!authority.AllowedFor("first"));
             inputGeneration = authority.Generation;
-            authority.Grant(inputGeneration); Require(authority.Allowed);
-            authority.Revoke(); Require(!authority.Allowed);
+            authority.Grant(inputGeneration, "first"); Require(authority.AllowedFor("first"));
+            authority.Revoke(); Require(!authority.AllowedFor("first"));
+            authority.Grant(authority.Generation, "first");
+            Require(!authority.AllowedFor("second") && !authority.AllowedFor(null));
             Consent consent = new();
             consent.Select("first"); Require(!consent.Allowed);
             long generation = consent.BeginApproval();
