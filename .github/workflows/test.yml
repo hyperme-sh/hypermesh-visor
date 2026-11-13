@@ -61,7 +61,7 @@ jobs:
           Get-Content $stdout
           Get-Content $stderr
           if ($process.ExitCode -ne 0) { throw 'Native companion contracts failed' }
-          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
+          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
             if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
           }
       - uses: actions/upload-artifact@v4

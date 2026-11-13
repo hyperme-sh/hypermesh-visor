@@ -363,7 +363,8 @@ func (c *Client) PostVisorPrompt(visorBase, sessionID, prompt, model string) ([]
 		req.Header.Set("Content-Type", "application/x-ndjson")
 		req.Header.Set("Accept", "application/x-ndjson")
 		req.Header.Set(HeaderAPIKey, strings.TrimSpace(c.APIKey))
-		client := unixClient(socket)
+		client := localClient(socket)
+		defer client.CloseIdleConnections()
 		client.CheckRedirect = func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}

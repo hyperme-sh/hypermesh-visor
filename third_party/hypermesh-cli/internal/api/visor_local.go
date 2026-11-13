@@ -1,3 +1,5 @@
+//go:build !windows
+
 package api
 
 import (
@@ -60,7 +62,7 @@ type localError struct{ text string }
 
 func (e *localError) Error() string { return e.text }
 
-func unixClient(socket string) *http.Client {
+func localClient(socket string) *http.Client {
 	return &http.Client{
 		Timeout: 30 * time.Second,
 		Transport: &http.Transport{

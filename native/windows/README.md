@@ -33,7 +33,8 @@ from hypermesh-conductor PR #62. There is no requirement to run matching builds.
 | Capture/input | Visible native approval; PNG capture, SendInput, Unicode text and common key chords |
 | Audio and Linux machine bridge | Unavailable |
 | Native companion and physical-input pause | Low-level input hooks; manual continue or two-minute idle resume |
-| Installer, bundled session CLI and automatic startup | Pending #25 |
+| Bundled session CLI | Private control pipe, same instance as native companion |
+| Installer and automatic startup | Pending #25 |
 | Signing | Deferred to #84 |
 
 PR CI builds the DLL and checks local pipe metadata, external pause-authority
@@ -49,7 +50,7 @@ Build on Windows x64 with Rust, Go 1.25 and the .NET 10 SDK:
 ```
 
 The output is `dist/windows-development`. It includes the .NET desktop runtime,
-engine DLL, native companion, inverse MCP adapter, Conductor and checksums.
+engine DLL, native companion, inverse MCP adapter, session CLI, Conductor and checksums.
 Signing is deferred. Windows may show an unknown-publisher or SmartScreen prompt;
 this bundle does not request elevation or `uiAccess`.
 
@@ -62,8 +63,6 @@ Start the bundled Conductor independently with your existing endpoint settings:
 Then run `hypermesh-native-desktop.exe` as the same normal user. Do not pass the
 Conductor configuration environment variable into the native app. An assigned
 session must be opened by the client/bot before desktop access can be allowed.
-The existing Hypermesh CLI still needs Windows pipe wiring under #25; this
-bundle does not claim that CLI path is available yet.
 
 The control window shows the selected session and purpose. **Allow desktop
 access** grants that session screen capture and mouse/keyboard input. **Pause**
@@ -87,3 +86,16 @@ named navigation/modifier/function keys are supported.
 MCP discovery/protocol code is present, but the native trust-review editor and
 isolated stdio worker remain tracked under #29. There is no silent import or
 automatic server launch.
+
+## Session CLI
+
+The bundle includes `hypermesh.exe`. Run `hypermesh.exe prompt --session <UUID>`
+with the prompt on stdin or in `--message`. By default it uses this user's private
+Windows control pipe. `HYPERMESH_VISOR_INSTANCE` selects the same instance as the
+native companion (default `default`). The client validates the connected pipe's
+owner and access list before sending the request. It does not fall back to TCP.
+Use the normal CLI renter authentication configuration; credentials stay out of
+terminal arguments. Windows terminal launch actions are still tracked in #89.
+
+The CLI source is Visor's existing `third_party/hypermesh-cli` snapshot, including
+its local-session API changes; it is not replaced by the separate upstream CLI.
