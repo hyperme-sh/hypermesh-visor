@@ -47,6 +47,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Native session and PKCE unit contracts
         run: cargo test --locked -p hypermesh-session
+      - name: Isolated Windows Credential Manager unit contract
+        if: matrix.os == 'windows-latest'
+        env:
+          HYPERMESH_CREDENTIAL_CONTRACT: '1'
+        run: cargo test --locked -p hypermesh-session store::tests::windows_credential_store_contract -- --ignored --exact
 
   native-mcp-discovery:
     name: MCP discovery (${{ matrix.os }})
