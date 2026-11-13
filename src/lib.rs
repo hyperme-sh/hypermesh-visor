@@ -18,6 +18,9 @@ mod input;
 mod local_peer;
 #[cfg(all(target_os = "macos", feature = "desktop"))]
 mod native_engine;
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+#[path = "../shared/session_destinations.rs"]
+mod session_destinations;
 #[cfg(any(target_os = "macos", test))]
 mod native_prompt;
 mod mcp;

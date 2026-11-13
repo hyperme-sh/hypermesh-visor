@@ -85,7 +85,7 @@ pub unsafe extern "C" fn hypermesh_native_control(
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(std::slice::from_raw_parts(request, length)) else { return 1; };
         let action = value["action"].as_str().unwrap_or("");
         let (method, path, body) = match action {
-            "poll" => ("GET", "/companion", String::new()),
+            "poll" | "destinations" => ("GET", "/companion", String::new()),
             "start" | "pause" | "resume" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
             "monitor-lost" => ("POST", "/companion/interrupt", "{\"available\":false}".into()),
             _ => return 1,
@@ -99,7 +99,20 @@ pub unsafe extern "C" fn hypermesh_native_control(
                 Some(serde_json::json!({"status":status,"body":serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or(serde_json::Value::Null)}))
             }).await.ok().flatten()
         });
-        let Some(result) = result else { return 1; };
+        let Some(mut result) = result else { return 1; };
+        if action == "destinations" {
+            let expected = value["session"].as_str().and_then(crate::session_destinations::canonical_session);
+            let selected = result["body"]["session"]["id"].as_str();
+            if result["status"] != 200 || result["body"]["open"] != true || expected.as_deref().is_none() || expected.as_deref() != selected {
+                result = serde_json::json!({"status":409,"body":null});
+            } else {
+                let directory = crate::mcp::config_dir();
+                let session = expected.as_deref().unwrap();
+                let forum = crate::session_destinations::configured(&directory, session, crate::session_destinations::Destination::Forum).ok().map(|v| v.argument);
+                let workspace = crate::session_destinations::configured(&directory, session, crate::session_destinations::Destination::Editor).ok().map(|v| v.argument);
+                result = serde_json::json!({"status":200,"body":{"session":session,"forum":forum,"workspace":workspace}});
+            }
+        }
         let Ok(bytes) = serde_json::to_vec(&result) else { return 1; };
         let buffer = libc::malloc(bytes.len()) as *mut u8;
         if buffer.is_null() { return 1; }

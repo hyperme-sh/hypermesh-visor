@@ -8,6 +8,7 @@ mod auth;
 mod automation;
 mod credentials;
 mod draw;
+#[path = "../../shared/session_destinations.rs"]
 mod destinations;
 #[path = "../../src/local_peer.rs"]
 mod local_peer;
