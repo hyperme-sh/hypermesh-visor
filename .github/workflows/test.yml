@@ -35,6 +35,19 @@ jobs:
           cargo build --locked -p hypermesh-companion
           python3 companion/tests/session_cli_terminal.py
 
+  native-session:
+    name: Session units (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Native session and PKCE unit contracts
+        run: cargo test --locked -p hypermesh-session
+
   native-mcp-discovery:
     name: MCP discovery (${{ matrix.os }})
     strategy:

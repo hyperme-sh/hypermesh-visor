@@ -1,8 +1,5 @@
 //! PKCE S256 (RFC 7636) and the OAuth `state` value.
 
-use std::fs::File;
-use std::io::Read;
-
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -24,11 +21,8 @@ pub fn challenge_s256(verifier: &str) -> String {
 
 fn random_bytes(n: usize) -> Result<Vec<u8>, AuthError> {
     let mut buf = vec![0u8; n];
-    let mut file = File::open("/dev/urandom").map_err(|err| {
-        AuthError::message(format!("could not read randomness for sign-in: {err}"))
-    })?;
-    file.read_exact(&mut buf).map_err(|err| {
-        AuthError::message(format!("could not read randomness for sign-in: {err}"))
+    getrandom::fill(&mut buf).map_err(|_| {
+        AuthError::message("could not obtain operating-system randomness for sign-in")
     })?;
     Ok(buf)
 }
@@ -36,6 +30,20 @@ fn random_bytes(n: usize) -> Result<Vec<u8>, AuthError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_random_values_have_expected_size_and_independent_draws() {
+        let states = (0..16).map(|_| new_state().unwrap()).collect::<std::collections::HashSet<_>>();
+        let verifiers = (0..16).map(|_| new_verifier().unwrap()).collect::<std::collections::HashSet<_>>();
+        assert_eq!(states.len(), 16);
+        assert_eq!(verifiers.len(), 16);
+        for (values, bytes) in [(&states, 24), (&verifiers, 32)] {
+            for value in values {
+                assert!(!value.contains('='));
+                assert_eq!(URL_SAFE_NO_PAD.decode(value).unwrap().len(), bytes);
+            }
+        }
+    }
 
     #[test]
     fn s256_matches_the_rfc7636_vector() {
