@@ -31,7 +31,7 @@ they do not create a new bot identity or grant assignment authority.
 | [#89](https://github.com/hyperme-sh/hypermesh-visor/issues/89) Compact UI | Persistent compact mode, an anchored hover card and a session-bound Linux CLI are merged. Latest-response token counts reported by Conductor are shown without inventing task totals or budgets. Local session-specific forum and VS Code destinations are available. macOS #152 adds session-bound forum and VS Code menu launchers. The macOS floating companion adds persistent visibility, recoverable positioning and reported usage. Windows launchers and nest support remain open. | Native UI interactions and correct per-companion launch targets. |
 | [#90](https://github.com/hyperme-sh/hypermesh-visor/issues/90) Bundled Conductor | Linux packaging has a verified source bundle and managed sidecar. The native app honors explicit external Conductor routing. Linux managed routing requires explicit configuration and a lease. Native bundled child isolation and default managed routing remain open. Existing package contracts cover model selection and token limits; they do not implement native sidecar isolation. | Installed sidecar startup/exit, limits, cancellation, selected recipe/model and measured host use. |
 | [#99](https://github.com/hyperme-sh/hypermesh-visor/issues/99) Headless hosts | Headless build and explicit private credential storage are implemented. Package work is separate from host delivery, opt-in capability schema and Conductor/AIuditor authorization. | Installed headless sessions, on-request download verification/removal, network refusal and AIuditor denial. |
-| [#100](https://github.com/hyperme-sh/hypermesh-visor/issues/100) Mobile | Native app/core binding spike, enrolled device auth, VPN, share actions, sensor permissions and local model routing remain open. | Native Android/iOS simulator/device adapters; no claim of desktop-style iOS automation. |
+| [#100](https://github.com/hyperme-sh/hypermesh-visor/issues/100) Mobile | The session core builds for iOS and Android without desktop keyrings; embedding apps must supply a secure store. Native app/core bindings, enrolled device auth, VPN, share actions, sensor permissions and local model routing remain open. | Native Android/iOS simulator/device adapters; no claim of desktop-style iOS automation. |
 | [#101](https://github.com/hyperme-sh/hypermesh-visor/issues/101) Alpine | Complete implementation: native x86_64/ARM64 musl builds, APK/OpenRC and static bundles, Conductor, runtime image, install guide and verified release-asset wiring. Actual version publication still requires owner authorization. | Installed APK/native architecture, private sockets, non-display session and OpenRC remain scheduled regression coverage, not an issue-closing gate. |
 
 Crash reporting [#115](https://github.com/hyperme-sh/hypermesh-visor/issues/115)
@@ -48,8 +48,8 @@ interactive desktop or manually dispatch a full suite.
 
 ## Remaining delivery order
 
-There are 12 open issues after #31. The forum worker and concrete ACL source
-adapter are implemented; the client refuses execution when its independent
+The original platform backlog remains after #31. The forum worker and concrete
+ACL source adapter are implemented; the client refuses execution when its independent
 authority source is absent. Operators must configure the source and provision
 its private stores. Closing the implementation issue does not activate a worker
 or a provider. Artifact handles in
@@ -74,3 +74,11 @@ Client unit tests run on bugtest. J4012 is reserved for the authorized Visor/hos
 CI lanes; do not update its pinned packages. The X11 runner setup correction is
 Infra #889; its next scheduled batch supplies regression coverage. Do not run a
 manual batch to advance an implementation issue.
+
+## Additional design requests
+
+[#169: external MCP server](mcp-server-design.md) and
+[#170: SLOPCANNON client](slop-client-design.md) define transport and authorization
+boundaries only. Neither authorizes implementation or provider activation.
+#171 adds a separate opt-in health-agent requirement; the existing #115 crash
+reporter does not implement that broader scope.
