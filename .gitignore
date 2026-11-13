@@ -3,3 +3,5 @@
 /display-logs
 __pycache__/
 *.pyc
+/native/windows/app/bin/
+/native/windows/app/obj/
