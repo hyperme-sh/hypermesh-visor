@@ -84,25 +84,39 @@ pub unsafe extern "C" fn hypermesh_native_control(
         if engine.failed.load(Ordering::Acquire) { return 1; }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(std::slice::from_raw_parts(request, length)) else { return 1; };
         let action = value["action"].as_str().unwrap_or("");
-        let (method, path, body) = match action {
-            "poll" | "destinations" => ("GET", "/companion", String::new()),
-            "start" | "resume" => {
-                let Some(session) = value["session"].as_str().and_then(crate::session_destinations::canonical_session) else { return 1; };
-                ("POST", "/companion/automation", serde_json::json!({"action":action,"expected_session":session}).to_string())
-            },
-            "pause" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
-            "monitor-lost" => ("POST", "/companion/interrupt", "{\"available\":false}".into()),
-            _ => return 1,
+        let result = if matches!(action, "idle-pause" | "idle-resume") {
+            let Some(session) = value["session"].as_str().and_then(|id| uuid::Uuid::parse_str(id).ok()) else { return 1; };
+            let epoch = if action == "idle-pause" {
+                engine.state.native_idle_pause(session)
+            } else {
+                let Some(epoch) = value["epoch"].as_u64() else { return 1; };
+                engine.state.native_idle_resume(session, epoch)
+            };
+            Some(match epoch {
+                Some(epoch) => serde_json::json!({"status":200,"body":{"epoch":epoch}}),
+                None => serde_json::json!({"status":409,"body":null}),
+            })
+        } else {
+            let (method, path, body) = match action {
+                "poll" | "destinations" => ("GET", "/companion", String::new()),
+                "start" | "resume" => {
+                    let Some(session) = value["session"].as_str().and_then(crate::session_destinations::canonical_session) else { return 1; };
+                    ("POST", "/companion/automation", serde_json::json!({"action":action,"expected_session":session}).to_string())
+                },
+                "pause" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
+                "monitor-lost" => ("POST", "/companion/interrupt", "{\"available\":false}".into()),
+                _ => return 1,
+            };
+            let request = Request::builder().method(method).uri(path).header("content-type", "application/json").body(Body::from(body)).unwrap();
+            engine.runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    let response = api::companion_router(Arc::clone(&engine.state)).oneshot(request).await.ok()?;
+                    let status = response.status().as_u16();
+                    let bytes = to_bytes(response.into_body(), 256 * 1024).await.ok()?;
+                    Some(serde_json::json!({"status":status,"body":serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or(serde_json::Value::Null)}))
+                }).await.ok().flatten()
+            })
         };
-        let request = Request::builder().method(method).uri(path).header("content-type", "application/json").body(Body::from(body)).unwrap();
-        let result = engine.runtime.block_on(async {
-            tokio::time::timeout(Duration::from_secs(3), async {
-                let response = api::companion_router(Arc::clone(&engine.state)).oneshot(request).await.ok()?;
-                let status = response.status().as_u16();
-                let bytes = to_bytes(response.into_body(), 256 * 1024).await.ok()?;
-                Some(serde_json::json!({"status":status,"body":serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or(serde_json::Value::Null)}))
-            }).await.ok().flatten()
-        });
         let Some(mut result) = result else { return 1; };
         if action == "destinations" {
             let expected = value["session"].as_str().and_then(crate::session_destinations::canonical_session);

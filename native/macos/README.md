@@ -38,7 +38,14 @@ Allow/Resume is bound to the session displayed when clicked. If that session
 closes or selection changes before the daemon handles the request, approval is
 refused; a replacement session needs a fresh click. Desktop access starts off. Pause, Stop, physical input, lost permissions, a lost
 input monitor or an unavailable engine disable access. Closing the window quits
-the app and releases held input. Resume requires another visible user action. If permission or input monitoring
+the app and releases held input. A pause caused by physical input resumes after
+two minutes without further input, for the same locally approved session and
+unchanged pause only. Held keys/buttons prevent timed resume. Any newer Pause or
+Stop, session change/close, engine disconnect, lost permission/monitor, display
+change, sleep or inactive user-session notification cancels it. Physical input
+during a pending approval/resume also cancels that request. Explicit Pause and
+Stop never arm the timer. Select Resume to continue after those cancellations.
+If permission or input monitoring
 is lost, both window and menu disable Allow/Resume and show a restart instruction.
 Restore the permissions, quit and reopen the app, reopen a session, then select
 Allow. Ordinary user pauses and display-layout changes remain resumable.

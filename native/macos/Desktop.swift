@@ -298,6 +298,26 @@ func nativePointerOverlayVisible(connected: Bool, sessionOpen: Bool, allowed: Bo
     }
 }
 
+func nativeEpoch(_ value: Any?) -> UInt64? {
+    guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+    return UInt64(number.stringValue)
+}
+struct NativeIdleResume {
+    let session: String
+    var epoch: UInt64?
+    private(set) var lastInput: TimeInterval
+    init(session: String, now: TimeInterval) { self.session = session; lastInput = now }
+    mutating func noteInput(now: TimeInterval) {
+        if now.isFinite && now >= lastInput { lastInput = now }
+    }
+    func matches(session: String?, phase: String, epoch: UInt64?) -> Bool {
+        self.epoch != nil && self.epoch == epoch && self.session == session && phase == "paused"
+    }
+    func ready(now: TimeInterval, inputHeld: Bool) -> Bool {
+        epoch != nil && !inputHeld && now.isFinite && lastInput.isFinite && now - lastInput >= 120
+    }
+}
+
 struct DesktopAccessControl: Equatable {
     let enabled: Bool
     let title: String
@@ -319,7 +339,7 @@ func desktopAccessControl(started: Bool, sessionOpen: Bool, allowed: Bool, pause
         window.isReleasedWhenClosed = false
         window.delegate = self
         let content = window.contentView!
-        let intro = NSTextField(wrappingLabelWithString: "Desktop access starts off. While allowed, local clients can capture and control this desktop. Your mouse or keyboard input pauses it.")
+        let intro = NSTextField(wrappingLabelWithString: "Desktop access starts off. While allowed, local clients can capture and control this desktop. Your mouse or keyboard input pauses it. After two idle minutes it may resume; Pause or Stop keeps it paused.")
         intro.frame = NSRect(x: 24, y: 205, width: 552, height: 52)
         content.addSubview(intro)
         status = NSTextField(wrappingLabelWithString: "")
@@ -439,6 +459,25 @@ func selfTest() throws {
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": true, "output_tokens": 1]]) == nil)
     try verifyNativeUnit(nativeUsageSummary(["last_response_usage": ["input_tokens": 0, "output_tokens": 0]]) == "Latest response · Input 0 · Output 0 tokens")
     print("PASS native mascot state and reported usage contracts")
+    var idle = NativeIdleResume(session: "session-a", now: 10)
+    try verifyNativeUnit(!idle.ready(now: 1000, inputHeld: false))
+    idle.epoch = 7
+    try verifyNativeUnit(idle.matches(session: "session-a", phase: "paused", epoch: 7))
+    try verifyNativeUnit(!idle.matches(session: "session-b", phase: "paused", epoch: 7))
+    try verifyNativeUnit(!idle.matches(session: "session-a", phase: "paused", epoch: 8))
+    try verifyNativeUnit(!idle.matches(session: "session-a", phase: "off", epoch: 7))
+    try verifyNativeUnit(!idle.ready(now: 129.9, inputHeld: false))
+    try verifyNativeUnit(idle.ready(now: 130, inputHeld: false))
+    idle.noteInput(now: 129)
+    try verifyNativeUnit(!idle.ready(now: 130, inputHeld: false))
+    try verifyNativeUnit(!idle.ready(now: 249, inputHeld: true))
+    try verifyNativeUnit(idle.ready(now: 249, inputHeld: false))
+    try verifyNativeUnit(!idle.ready(now: 1, inputHeld: false))
+    try verifyNativeUnit(!idle.ready(now: .nan, inputHeld: false))
+    for value in [true, -1, 1.5, "7"] as [Any] { try verifyNativeUnit(nativeEpoch(value) == nil) }
+    try verifyNativeUnit(nativeEpoch(NSNumber(value: UInt64.max)) == UInt64.max)
+    print("PASS idle resume deadline, repeated input, held input and pause identity contracts")
+
     for connected in [false, true] {
         for open in [false, true] {
             for allowed in [false, true] {

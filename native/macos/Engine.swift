@@ -42,6 +42,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     static let shared = NativeRuntime()
     private let queue = DispatchQueue(label: "sh.hyperme.visor.internal-control")
     private var timer: Timer?
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var statusItem: NSStatusItem?
     private var mascotFrames: [String: [NSImage]] = [:]
     private var mascotTick = 0
@@ -51,6 +52,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var destinationItems: [NSMenuItem] = []
     private var currentSession: String?
     private var approvedSession: String?
+    private var idleResume: NativeIdleResume?
+    private var pendingApproval = false
     private var tap: CFMachPort?
     private var tapSource: CFRunLoopSource?
     private var approvedLayout: DesktopLayout?
@@ -101,18 +104,28 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
         statusItem?.menu = menu
         installMonitor()
+        for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
+                     NSWorkspace.sessionDidResignActiveNotification] {
+            workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.pause("Desktop session became inactive; select Resume to continue") }
+            })
+        }
         timer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { _ in Task { @MainActor in self.poll() } }
         update()
     }
     func applicationWillTerminate(_ notification: Notification) {
-        allowed = false; epoch &+= 1; releaseHeld()
+        allowed = false; idleResume = nil; pendingApproval = false; epoch &+= 1; releaseHeld()
         NativePointerOverlay.shared.hide()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         timer?.invalidate()
+        for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+        workspaceObservers.removeAll()
     }
-    private func control(_ action: String, session: String? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
+    private func control(_ action: String, session: String? = nil, pauseEpoch: UInt64? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
         queue.async {
-            let fields = session.map { ["action": action, "session": $0] } ?? ["action": action]
+            var fields: [String:Any] = ["action": action]
+            if let session { fields["session"] = session }
+            if let pauseEpoch { fields["epoch"] = pauseEpoch }
             let data = try! JSONSerialization.data(withJSONObject: fields)
             var output: UnsafeMutablePointer<UInt8>?
             var size = 0
@@ -135,9 +148,9 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         label?.stringValue = "\(readiness)\nSession: \(currentSession ?? "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
-        allowButton?.isEnabled = access.enabled
+        allowButton?.isEnabled = access.enabled && !pendingApproval
         allowButton?.title = access.title
-        menuAllow?.isEnabled = access.enabled
+        menuAllow?.isEnabled = access.enabled && !pendingApproval
         menuAllow?.title = access.title
         for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
@@ -177,6 +190,15 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
                 self.pause(interruption.message, lost: interruption.permanent)
             }
+            if let idle = self.idleResume, idle.epoch != nil {
+                if !idle.matches(session: self.currentSession, phase: self.currentPhase, epoch: nativeEpoch(automation["epoch"])) {
+                    self.pause("Automatic resume cancelled by a newer control or session change")
+                } else if let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
+                    self.pause(interruption.message, lost: interruption.permanent)
+                } else if idle.ready(now: ProcessInfo.processInfo.systemUptime, inputHeld: self.physicalInputHeld()) {
+                    self.resumeAfterIdle(idle)
+                }
+            }
             self.update()
         }
     }
@@ -211,7 +233,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
     }
     @objc func allow() {
-        guard started && sessionOpen && !restartRequired, let selected = currentSession else { return }
+        guard started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
+        idleResume = nil
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
                        ("Accessibility", CGPreflightPostEventAccess()),
@@ -221,8 +244,11 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         guard permissionsAndMonitor(), layoutMatchesApproval() else { message = "Desktop layout or input monitor unavailable. Check connected displays and restart Visor if needed."; update(); return }
         epoch &+= 1
         let generation = epoch
+        pendingApproval = true
+        update()
         control(currentPhase == "paused" ? "resume" : "start", session: selected) { result in
             guard generation == self.epoch else { return }
+            self.pendingApproval = false
             guard result?["status"] as? Int == 204 else { self.message = "Unable to start; check session and permissions"; self.update(); return }
             guard self.currentSession == selected, self.sessionOpen,
                   self.permissionsAndMonitor(), self.layoutMatchesApproval() else {
@@ -235,10 +261,52 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     @objc func pauseButton() { pause("Paused by user") }
     @objc func stopButton() { pause("Desktop access stopped"); control("stop") }
     func pause(_ reason: String, lost: Bool = false) {
-        allowed = false; approvedSession = nil; epoch &+= 1; releaseHeld(); message = reason
+        allowed = false; approvedSession = nil; idleResume = nil; pendingApproval = false; epoch &+= 1; releaseHeld(); message = reason
         restartRequired = restartRequired || lost
         if started { control(lost ? "monitor-lost" : "pause") }
         update()
+    }
+    private func physicalInputHeld() -> Bool {
+        NSEvent.pressedMouseButtons != 0 ||
+            (0..<128).contains { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) } ||
+            [CGMouseButton.left, .right, .center].contains { CGEventSource.buttonState(.hidSystemState, button: $0) }
+    }
+    private func physicalInput() {
+        if pendingApproval { pause("Real input cancelled the pending approval"); return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard allowed, let selected = approvedSession else { idleResume?.noteInput(now: now); return }
+        allowed = false; approvedSession = nil; epoch &+= 1; releaseHeld()
+        currentPhase = "paused"
+        message = "Paused by real input. Resumes after two idle minutes; Pause or Stop cancels."
+        idleResume = NativeIdleResume(session: selected, now: now)
+        let generation = epoch
+        control("idle-pause", session: selected) { result in
+            guard generation == self.epoch, self.idleResume?.session == selected else { return }
+            guard result?["status"] as? Int == 200,
+                  let pauseEpoch = nativeEpoch((result?["body"] as? [String:Any])?["epoch"]) else {
+                self.pause("Paused; select Resume to continue"); return
+            }
+            self.idleResume?.epoch = pauseEpoch
+            self.update()
+        }
+        update()
+    }
+    private func resumeAfterIdle(_ idle: NativeIdleResume) {
+        guard let pauseEpoch = idle.epoch, !pendingApproval else { return }
+        idleResume = nil; pendingApproval = true; epoch &+= 1
+        let generation = epoch
+        control("idle-resume", session: idle.session, pauseEpoch: pauseEpoch) { result in
+            guard generation == self.epoch else { return }
+            self.pendingApproval = false
+            guard result?["status"] as? Int == 200, self.currentSession == idle.session,
+                  self.sessionOpen, !self.restartRequired, self.permissionsAndMonitor(),
+                  self.layoutMatchesApproval(), !self.physicalInputHeld() else {
+                self.pause("Automatic resume cancelled; select Resume to continue"); return
+            }
+            self.approvedSession = idle.session; self.allowed = true; self.currentPhase = "running"
+            self.message = "Desktop access resumed after two idle minutes — real input pauses immediately"
+            self.update()
+        }
     }
     private func permissionsAndMonitor() -> Bool {
         guard let tap else { return false }
@@ -258,8 +326,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                 let runtime = NativeRuntime.shared
                 if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
                     runtime.pause("Input monitor stopped; restart to recover", lost: true)
-                } else if !(event.getIntegerValueField(.eventSourceUserData) == injectionTag && event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid())) && runtime.allowed {
-                    runtime.pause("Paused by real input")
+                } else if !(event.getIntegerValueField(.eventSourceUserData) == injectionTag && event.getIntegerValueField(.eventSourceUnixProcessID) == Int64(getpid())) {
+                    runtime.physicalInput()
                 }
             }
             return Unmanaged.passUnretained(event)

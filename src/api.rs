@@ -425,6 +425,29 @@ impl AppState {
         !lock(&self.automation).keyboard_interrupt()
     }
 
+    // Only the in-process native companion calls these. A resume must consume
+    // exactly the pause it created, never a later user or remote control.
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn native_idle_pause(&self, session: Uuid) -> Option<u64> {
+        let sessions = lock(&self.sessions);
+        let mut gate = lock(&self.automation);
+        if !sessions.contains_key(&session) || gate.session() != Some(session)
+            || gate.phase() != Phase::Running { return None; }
+        gate.pause();
+        Some(gate.epoch())
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    pub(crate) fn native_idle_resume(&self, session: Uuid, epoch: u64) -> Option<u64> {
+        let sessions = lock(&self.sessions);
+        let mut gate = lock(&self.automation);
+        if !sessions.contains_key(&session) || gate.session() != Some(session)
+            || gate.phase() != Phase::Paused || gate.epoch() != epoch
+            || gate.injecting() || !gate.keyboard_interrupt() { return None; }
+        gate.apply(Some(session), Control::Resume, true, Instant::now(), self.companion_poll_timeout).ok()?;
+        Some(gate.epoch())
+    }
+
     fn control_automation(&self, action: Control, companion: bool, expected_session: Option<Uuid>) -> Result<(), ApiError> {
         if expected_session.is_some() && !matches!(action, Control::Start | Control::Resume) {
             return Err(ApiError::bad("expected_session applies only to start or resume"));
@@ -513,6 +536,8 @@ struct CompanionBody {
 
 #[derive(Serialize)]
 struct AutomationBody {
+    /// Changes on interruption/control; native idle resume compares this value.
+    epoch: u64,
     /// `off`, `running`, or `paused`.
     phase: &'static str,
     /// Bumps on resume and start. A drive records the value from when it happened.
@@ -1579,7 +1604,7 @@ async fn companion(
         lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
     }
     let session = state.companion_session();
-    let (phase, resume_seq, injecting, inject_seq, last_settled_seq, drive, notice, interrupt) = {
+    let (epoch, phase, resume_seq, injecting, inject_seq, last_settled_seq, drive, notice, interrupt) = {
         let gate = lock(&state.automation);
         let resume_seq = gate.resume_seq();
         let injecting = gate.injecting();
@@ -1605,6 +1630,7 @@ async fn companion(
             inject_seq: drive.inject_seq,
         });
         (
+            gate.epoch(),
             gate.phase().as_str(),
             resume_seq,
             injecting,
@@ -1622,6 +1648,7 @@ async fn companion(
         notice,
         interrupt,
         automation: AutomationBody {
+            epoch,
             phase,
             resume_seq,
             injecting,
@@ -7415,6 +7442,51 @@ while True:
         session.finish_response_usage(current, Some(expected));
         session.finish_response_usage(old, None);
         assert_eq!(session.last_response_usage(), Some(expected));
+    }
+
+    #[test]
+    fn native_idle_resume_cannot_cross_newer_controls_or_session_close() {
+        let (mut state, _, session) = task_fixture();
+        Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
+        lock(&state.automation).note_poll(Instant::now(), state.companion_poll_timeout);
+        assert!(state.native_idle_pause(session).is_none());
+        assert!(state.control_automation(Control::Start, true, Some(session)).is_ok());
+        let paused = state.native_idle_pause(session).unwrap();
+        assert!(state.native_idle_resume(Uuid::new_v4(), paused).is_none());
+        assert!(state.native_idle_resume(session, paused).is_some());
+        assert!(state.native_idle_resume(session, paused).is_none());
+        let paused = state.native_idle_pause(session).unwrap();
+        assert!(state.control_automation(Control::Pause, true, None).is_ok());
+        assert!(state.native_idle_resume(session, paused).is_none());
+        assert!(state.control_automation(Control::Resume, true, Some(session)).is_ok());
+        let paused = state.native_idle_pause(session).unwrap();
+        assert!(state.control_automation(Control::Stop, true, None).is_ok());
+        assert!(state.native_idle_resume(session, paused).is_none());
+        assert!(state.control_automation(Control::Start, true, Some(session)).is_ok());
+        let paused = state.native_idle_pause(session).unwrap();
+        lock(&state.sessions).remove(&session);
+        assert!(state.native_idle_resume(session, paused).is_none());
+    }
+
+    #[test]
+    fn native_idle_resume_waits_for_input_unwind_and_refuses_monitor_loss() {
+        let (mut state, _, session) = task_fixture();
+        Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
+        lock(&state.automation).note_poll(Instant::now(), state.companion_poll_timeout);
+        assert!(state.control_automation(Control::Start, true, Some(session)).is_ok());
+        {
+            let mut gate = lock(&state.automation);
+            let epoch = gate.epoch();
+            gate.begin_inject(session, epoch).unwrap();
+        }
+        let paused = state.native_idle_pause(session).unwrap();
+        assert!(state.native_idle_resume(session, paused).is_none());
+        lock(&state.automation).end_inject();
+        assert!(state.native_idle_resume(session, paused).is_some());
+        let paused = state.native_idle_pause(session).unwrap();
+        lock(&state.automation).set_keyboard_interrupt(false);
+        assert!(state.native_idle_resume(session, paused).is_none());
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
     }
 
     #[test]
