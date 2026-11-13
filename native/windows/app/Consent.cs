@@ -48,3 +48,14 @@ internal sealed class Consent
         Allowed = true; Idle = null; return true;
     }
 }
+
+// A late asynchronous grant cannot authorize operations after newer input.
+internal sealed class InputAuthority
+{
+    private long generation;
+    private long approvedGeneration = -1;
+    internal long Generation => Interlocked.Read(ref generation);
+    internal bool Allowed => Interlocked.Read(ref approvedGeneration) == Generation;
+    internal void Revoke() => Interlocked.Increment(ref generation);
+    internal void Grant(long expectedGeneration) => Interlocked.Exchange(ref approvedGeneration, expectedGeneration);
+}

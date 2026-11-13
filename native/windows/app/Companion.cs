@@ -17,8 +17,9 @@ internal sealed class Companion : Form
     private readonly PointerOverlay overlay = new();
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
     private readonly nuint marker = (nuint)(BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1UL);
-    private int permitted, inputPending;
-    private long serial, lastInput, approvalBaseline = -1;
+    private readonly InputAuthority authority = new();
+    private int inputPending;
+    private long lastInput, approvalBaseline = -1;
     private bool polling, approving, resuming, closing, started;
     private string purpose = "";
     private string phase = "off", message = "Desktop access is off", usage = "No response usage yet";
@@ -28,8 +29,8 @@ internal sealed class Companion : Form
     {
         tray.Icon = companionIcon;
         Text = "Hypermesh Visor"; Width = 500; Height = 300; MinimumSize = new Size(420, 280);
-        desktop = new DesktopDriver(marker, () => Volatile.Read(ref permitted) != 0 && monitor?.Healthy == true,
-            () => Interlocked.Read(ref serial), Fault);
+        desktop = new DesktopDriver(marker, () => authority.Allowed && monitor?.Healthy == true,
+            () => authority.Generation, Fault);
         FlowLayoutPanel buttons = new() { Dock = DockStyle.Bottom, Height = 48, Padding = new Padding(8), AutoSize = true };
         buttons.Controls.Add(allow);
         Button pause = new() { Text = "Pause", AutoSize = true }, stop = new() { Text = "Stop", AutoSize = true };
@@ -68,13 +69,13 @@ internal sealed class Companion : Form
     }
     private void Revoke()
     {
-        Interlocked.Exchange(ref permitted, 0); Interlocked.Increment(ref serial);
+        authority.Revoke();
         overlay.Hide();
         _ = Task.Run(desktop.Release);
     }
     private void Fault()
     {
-        Interlocked.Exchange(ref permitted, 0); Interlocked.Increment(ref serial);
+        authority.Revoke();
         Post(() => Pause("Desktop unavailable: elevated windows and secure desktops cannot be controlled"));
     }
     private void Start()
@@ -92,13 +93,12 @@ internal sealed class Companion : Form
     private void PhysicalInput()
     {
         // Hook callbacks publish cancellation without waiting for UI, IPC or locks.
-        Interlocked.Exchange(ref permitted, 0);
+        authority.Revoke();
         Interlocked.Exchange(ref lastInput, Now);
-        Interlocked.Increment(ref serial);
         if (Interlocked.Exchange(ref inputPending, 1) == 0) Post(async () =>
         {
             Interlocked.Exchange(ref inputPending, 0);
-            if (Interlocked.Read(ref serial) <= approvalBaseline) return;
+            if (authority.Generation <= approvalBaseline) return;
             var ticket = consent.Input(Interlocked.Read(ref lastInput));
             overlay.Hide(); _ = Task.Run(desktop.Release);
             if (ticket is { } pending)
@@ -130,16 +130,16 @@ internal sealed class Companion : Form
         approving = true;
         Revoke();
         long generation = consent.BeginApproval();
-        long baseline = Interlocked.Read(ref serial); approvalBaseline = baseline;
+        long baseline = authority.Generation; approvalBaseline = baseline;
         try
         {
             await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1));
-            if (closing || baseline != Interlocked.Read(ref serial) || !consent.PendingApproval(session, generation)) return;
+            if (closing || baseline != authority.Generation || !consent.PendingApproval(session, generation)) return;
             if (!desktop.Released || !desktop.ApproveLayout()) { Pause("Input cleanup is unavailable; restart after returning to your desktop"); return; }
             JsonElement? response = await Engine.Control(phase == "paused" ? "resume" : "start", session);
-            if (!closing && Success(response) && desktop.LayoutMatches && baseline == Interlocked.Read(ref serial) && monitor.Healthy && Win32.Interactive() && !Win32.HeldInput() && consent.Approve(session, generation))
+            if (!closing && Success(response) && desktop.LayoutMatches && baseline == authority.Generation && monitor.Healthy && Win32.Interactive() && !Win32.HeldInput() && consent.Approve(session, generation))
             {
-                Interlocked.Exchange(ref permitted, 1); message = "Desktop access allowed for this session";
+                authority.Grant(baseline); message = "Desktop access allowed for this session";
             }
             else Pause("Approval changed or is unavailable. Select the current session and try again.");
         }
@@ -171,10 +171,10 @@ internal sealed class Companion : Form
             if (!resuming && consent.CanResume(Now, Win32.HeldInput()) && Win32.Interactive() && desktop.LayoutMatches && monitor?.Healthy == true && consent.Idle is { } ticket)
             {
                 resuming = true;
-                long baseline = Interlocked.Read(ref serial);
+                long baseline = authority.Generation;
                 JsonElement? resumed = await Engine.Control("idle-resume", ticket.Session, ticket.Epoch);
-                if (!closing && Success(resumed) && desktop.LayoutMatches && baseline == Interlocked.Read(ref serial) && monitor.Healthy && Win32.Interactive() && consent.Resume(ticket.Session, ticket.Generation, Now, Win32.HeldInput()))
-                { approvalBaseline = baseline; Interlocked.Exchange(ref permitted, 1); message = "Resumed after two idle minutes"; }
+                if (!closing && Success(resumed) && desktop.LayoutMatches && baseline == authority.Generation && monitor.Healthy && Win32.Interactive() && consent.Resume(ticket.Session, ticket.Generation, Now, Win32.HeldInput()))
+                { approvalBaseline = baseline; authority.Grant(baseline); message = "Resumed after two idle minutes"; }
                 else Pause("Automatic resume was interrupted. Allow desktop access to continue.");
                 resuming = false;
             }
@@ -191,8 +191,8 @@ internal sealed class Companion : Form
         allow.Enabled = started && !approving && !consent.MonitorLost && consent.Selected != null;
         tray.Text = $"Visor: {phase}\n{usage}"[..Math.Min(63, $"Visor: {phase}\n{usage}".Length)];
     }
-    private void SessionChanged(object? sender, SessionSwitchEventArgs args) { Interlocked.Exchange(ref permitted, 0); Interlocked.Increment(ref serial); Post(() => Pause("Desktop session changed; allow access again")); }
-    private void DisplayChanged(object? sender, EventArgs args) { Interlocked.Exchange(ref permitted, 0); Interlocked.Increment(ref serial); Post(() => Pause("Display layout changed; allow access again")); }
+    private void SessionChanged(object? sender, SessionSwitchEventArgs args) { authority.Revoke(); Post(() => Pause("Desktop session changed; allow access again")); }
+    private void DisplayChanged(object? sender, EventArgs args) { authority.Revoke(); Post(() => Pause("Display layout changed; allow access again")); }
     private async void CloseCompanion(object? sender, FormClosingEventArgs args)
     {
         if (closing) return;
