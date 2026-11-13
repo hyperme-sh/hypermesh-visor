@@ -27,3 +27,18 @@ matching the bundled Go CLI. The Rust keyring library's default
 Rust-only mapping requires a fresh sign-in; that old entry is not read or
 silently migrated. Disposable Windows CI checks both Go-to-Rust and Rust-to-Go
 reads plus deletion using a unique synthetic service name.
+
+## App-supplied session stores
+
+Embedders can build with `--no-default-features --features external-store` and
+supply the `SessionStore` trait implementation. This mode excludes the desktop
+keyring dependency and the private-file backend; the default `KeyringStore`
+refuses every operation. It cannot be combined with `os-keyring`. Existing
+headless private-file behavior is unchanged when `external-store` is absent.
+
+CI builds this session crate for `aarch64-apple-ios` and
+`aarch64-linux-android` (API 26) and runs its unit contracts on desktop runners.
+These are library builds, not phone-app or device validation. The mobile app
+must still provide SociACL-backed enrollment/storage, native browser callbacks,
+UniFFI bindings, VPN, Conductor/AIuditor routing and permission-controlled sensors.
+No mobile filesystem credential fallback or implicit machine identity is added.

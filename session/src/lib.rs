@@ -5,9 +5,12 @@
 //! is the only persisted credential, and it lives in the OS keychain under
 //! service `hypermesh`, account `session`.
 
-#[cfg(unix)]
+#[cfg(all(feature = "external-store", feature = "os-keyring"))]
+compile_error!("external-store requires --no-default-features; it cannot use os-keyring");
+
+#[cfg(all(unix, not(feature = "external-store")))]
 mod file_store;
-#[cfg(unix)]
+#[cfg(all(unix, not(feature = "external-store")))]
 pub use file_store::FileStore;
 
 mod browser;

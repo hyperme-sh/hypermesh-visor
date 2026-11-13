@@ -208,6 +208,20 @@ mod tests {
         assert!(windows_token(vec![0xff, 0xfe]).is_err());
     }
 
+    #[cfg(feature = "external-store")]
+    #[test]
+    fn external_store_never_selects_a_keyring_or_file_fallback() {
+        let store = KeyringStore;
+        assert!(matches!(store.put_refresh_token("synthetic-session"), Err(AuthError::NoKeychain)));
+        assert!(matches!(store.refresh_token(), Err(AuthError::NoKeychain)));
+        assert!(matches!(store.delete(), Err(AuthError::NoKeychain)));
+        let supplied = MemoryStore::new();
+        supplied.put_refresh_token("synthetic-session").unwrap();
+        assert_eq!(supplied.refresh_token().unwrap().as_deref(), Some("synthetic-session"));
+        supplied.delete().unwrap();
+        assert_eq!(supplied.refresh_token().unwrap(), None);
+    }
+
     #[test]
     fn memory_store_round_trips_and_deletes() {
         let store = MemoryStore::new();
@@ -231,7 +245,7 @@ mod tests {
 }
 
 
-#[cfg(all(not(feature = "os-keyring"), unix))]
+#[cfg(all(not(feature = "os-keyring"), unix, not(feature = "external-store")))]
 impl SessionStore for KeyringStore {
     fn put_refresh_token(&self, token: &str) -> Result<(), AuthError> {
         crate::file_store::configured()?.put_refresh_token(token)
@@ -244,7 +258,7 @@ impl SessionStore for KeyringStore {
     }
 }
 
-#[cfg(all(not(feature = "os-keyring"), not(unix)))]
+#[cfg(all(not(feature = "os-keyring"), any(not(unix), feature = "external-store")))]
 impl SessionStore for KeyringStore {
     fn put_refresh_token(&self, _: &str) -> Result<(), AuthError> { Err(AuthError::NoKeychain) }
     fn refresh_token(&self) -> Result<Option<String>, AuthError> { Err(AuthError::NoKeychain) }

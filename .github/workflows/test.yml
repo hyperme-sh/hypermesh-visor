@@ -47,6 +47,33 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Native session and PKCE unit contracts
         run: cargo test --locked -p hypermesh-session
+      - name: App-supplied session store unit contracts
+        run: cargo test --locked -p hypermesh-session --no-default-features --features external-store
+      - name: iOS session core build
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add aarch64-apple-ios
+          cargo build --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-apple-ios
+          cargo tree --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-session-deps.txt"
+          ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-session-deps.txt"
+      - name: Android session core build
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          rustup target add aarch64-linux-android
+          ndk_tools="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$ndk_tools/aarch64-linux-android26-clang"
+          export AR_aarch64_linux_android="$ndk_tools/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          test -x "$CC_aarch64_linux_android"
+          cargo build --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-linux-android
+          cargo tree --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-linux-android -e normal --prefix none > "$RUNNER_TEMP/android-session-deps.txt"
+          ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/android-session-deps.txt"
+          if cargo check --locked -p hypermesh-session --features external-store > "$RUNNER_TEMP/store-feature-conflict.txt" 2>&1; then
+            echo 'Conflicting store features unexpectedly compiled' >&2
+            exit 1
+          fi
+          grep -F 'external-store requires --no-default-features' "$RUNNER_TEMP/store-feature-conflict.txt"
+
       - uses: actions/setup-go@v6
         if: matrix.os == 'windows-latest'
         with:
