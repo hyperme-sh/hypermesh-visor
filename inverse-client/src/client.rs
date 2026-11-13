@@ -1232,6 +1232,9 @@ mod capability_contract_tests {
                     header.push(byte[0]);
                 }
                 let header = String::from_utf8(header).unwrap();
+                assert!(header.lines().any(|line| line.split_once(':').is_some_and(|(name, value)|
+                    name.eq_ignore_ascii_case("authorization") && value.trim() == "Bearer test-bearer")));
+
                 assert!(
                     header.starts_with(&format!("{method} /session/{session}/{suffix} HTTP/1.1"))
                 );
