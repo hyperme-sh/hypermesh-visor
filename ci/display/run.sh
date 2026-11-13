@@ -383,7 +383,7 @@ pid_matches_exe() {
   if [[ $raw == "$expected" || $raw == "$expected (deleted)" ]]; then
     return 0
   fi
-  cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  cmd=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" || true)
   [[ $cmd == "$expected" || $cmd == "$expected "* ]]
 }
 
@@ -410,7 +410,7 @@ signal_root_child() {
   [[ $pid =~ ^[0-9]+$ && -n $expected && -n $marker ]] || return 1
   pid_matches_exe "$pid" "$expected" || return 1
   started_by_this_run "$pid" || return 1
-  cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  cmd=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" || true)
   if [[ $cmd != *"$marker"* ]]; then
     echo "not signalling pid $pid; cmdline does not contain $marker" >&2
     return 1
@@ -1257,7 +1257,7 @@ harness_same_exe() {
 harness_tcp_allowed() {
   local pid=$1 cmd
   harness_same_exe "$pid" "$VISOR_BIN" || return 1
-  cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  cmd=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" || true)
   [[ $cmd == *"--tcp"* ]]
 }
 
@@ -1412,7 +1412,7 @@ xorg_is_ours() {
   exe_is_xorg "$pid" || return 1
   started_by_this_run "$pid" || return 1
   log=$(read_state xorg.log)
-  cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+  cmd=$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline" || true)
   if [[ -n $log && $cmd == *"$log"* ]]; then
     return 0
   fi
@@ -1468,8 +1468,19 @@ kill_recorded_xorg() {
   XORG_PID=
 }
 
+# Fixed stage names only: no raw launcher output or command arguments.
+xorg_failure() {
+  case "${1:-}" in
+    launcher-exited|display-number-unavailable|process-identity-unavailable|executable-mismatch|display-probe-missing|display-unreachable) ;;
+    *) return 2 ;;
+  esac
+  printf 'Xorg startup stage: %s\n' "$1" >&2
+  return 1
+}
+
 wait_for_display() {
   local i
+  command -v xdpyinfo >/dev/null 2>&1 || { xorg_failure display-probe-missing; return 1; }
   [[ ${DISPLAY:-} == :* ]] || return 1
   for i in $(seq 1 40); do
     if xdpyinfo >/dev/null 2>&1; then
@@ -1477,7 +1488,7 @@ wait_for_display() {
     fi
     sleep 0.15
   done
-  return 1
+  xorg_failure display-unreachable
 }
 
 # -displayfd picks a free display. The lock file under /tmp is never read.
@@ -1513,10 +1524,10 @@ launch_xorg() {
     if [[ $number =~ ^[0-9]+$ ]]; then
       break
     fi
-    kill -0 "$launcher" 2>/dev/null || return 1
+    kill -0 "$launcher" 2>/dev/null || { xorg_failure launcher-exited; return 1; }
     sleep 0.15
   done
-  [[ $number =~ ^[0-9]+$ ]] || return 1
+  [[ $number =~ ^[0-9]+$ ]] || { xorg_failure display-number-unavailable; return 1; }
   write_state xorg.display "$number"
   export DISPLAY=:$number
   xpid=
@@ -1525,8 +1536,8 @@ launch_xorg() {
     [[ -n $xpid ]] && break
     sleep 0.1
   done
-  [[ -n $xpid ]] || return 1
-  exe_is_xorg "$xpid" || return 1
+  [[ -n $xpid ]] || { xorg_failure process-identity-unavailable; return 1; }
+  exe_is_xorg "$xpid" || { xorg_failure executable-mismatch; return 1; }
   xexe=$(proc_executable "$xpid")
   note_started "$xpid" "$xexe" "$log"
   write_state xorg.pid "$xpid"
