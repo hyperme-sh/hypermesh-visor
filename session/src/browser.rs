@@ -34,14 +34,16 @@ fn launch(target: String) -> Result<(), AuthError> {
     {
         // Some xdg-open handlers stay alive with the browser. Preserve the
         // asynchronous handoff so callback processing can start immediately.
-        let mut child = std::process::Command::new(program).arg(target).spawn().map_err(|_| unavailable())?;
+        let mut child = std::process::Command::new(program).arg(target)
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().map_err(|_| unavailable())?;
         let _ = std::thread::Builder::new().name("hypermesh-browser-reap".into()).spawn(move || { let _ = child.wait(); });
         Ok(())
     }
     #[cfg(target_os = "macos")]
     {
         // Wait only for open, never use its --wait-apps option.
-        let status = std::process::Command::new(program).arg(target).status().map_err(|_| unavailable())?;
+        let status = std::process::Command::new(program).arg(target)
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().map_err(|_| unavailable())?;
         if status.success() { Ok(()) } else { Err(unavailable()) }
     }
 }

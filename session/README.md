@@ -17,5 +17,6 @@ device login; a successful OS launch does not guarantee a visible browser or a
 completed sign-in. The callback timeout and OAuth state checks still apply.
 
 CI runs session unit contracts natively on Linux, macOS and Windows. Tests use
-mock token endpoints and in-memory credentials; they do not open a browser,
-sign into a provider or qualify a native daemon, installer or credential store.
+mock token endpoints and synthetic tokens in memory or private temporary files.
+They do not open a browser, access an operator keychain, sign into a provider or
+qualify a native daemon, installer or credential store.
