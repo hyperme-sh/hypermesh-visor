@@ -58,6 +58,14 @@ fun androidStoreContract() {
             refused { session.hasStoredSession() }
             refused { session.storeRefreshToken("must-not-reset") }
             check(keys.creates == 1 && original.contentEquals(Files.readAllBytes(file)))
+            keys.key = object : SecretKey {
+                override fun getAlgorithm() = "AES"
+                override fun getFormat() = "RAW"
+                override fun getEncoded(): ByteArray = error("fixture-invalidated-key-detail")
+            }
+            refused { session.hasStoredSession() }
+            refused { session.storeRefreshToken("invalidated-key") }
+            check(keys.creates == 1 && original.contentEquals(Files.readAllBytes(file)))
             keys.key = oldKey
             for (blob in listOf(ByteArray(0), original.copyOf(10), original + ByteArray(70000), original.clone().apply { this[lastIndex] = (this[lastIndex].toInt() xor 1).toByte() })) {
                 Files.write(file, blob)
