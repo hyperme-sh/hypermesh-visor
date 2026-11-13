@@ -74,12 +74,14 @@ follow-up work. No native desktop run is implied by the unit and contract result
 
 ## Conductor prompt route
 
-The native app reads `HYPERMESH_CONDUCTOR_ADDR`, `HYPERMESH_CONDUCTOR_LEASE_ID`
-and `HYPERMESH_DEFAULT_MODEL` at startup. The address must be a numeric loopback
-address with a nonzero port. A lease requires that route. Prompts use the selected
-model and caller's renter credential through the existing Conductor contract;
-invalid settings stop startup with a configuration error. Without an address,
-prompts report that their route is unconfigured.
+The native app selects the same-user Conductor Unix socket by default, under
+`$HOME/Library/Caches/hypermesh/conductor/run/conductor.sock`.
+`HYPERMESH_CONDUCTOR_SOCKET` overrides that absolute path. The socket and its
+parent must be private to the user; kernel peer identity is checked before any
+credential is sent. `HYPERMESH_CONDUCTOR_LEASE_ID` and `HYPERMESH_DEFAULT_MODEL`
+preserve task scope and model selection. An unavailable socket reports an error.
+The legacy `HYPERMESH_CONDUCTOR_ADDR` remains an explicit numeric loopback route;
+combining it with an explicit socket is refused.
 
 Start Conductor independently before launching the native app with these settings.
 Managed `HYPERMESH_CONDUCTOR_CONFIG` and supervisor URL settings are refused by

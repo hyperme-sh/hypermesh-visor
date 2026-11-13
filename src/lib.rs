@@ -12,6 +12,7 @@ mod automation;
 mod bind;
 mod capabilities;
 mod companion_sock;
+mod conductor_socket;
 mod desktop;
 mod harness;
 mod host_bridge;
@@ -39,6 +40,7 @@ pub use usage::ResponseUsage;
 pub use api::{serve, serve_until, AppState};
 pub use automation::SHUTDOWN_DEADLINE;
 pub use bind::parse_listen;
+pub use conductor_socket::default_path as default_conductor_socket;
 pub use companion_sock::{control_socket_file, read_api_token, runtime_dir};
 #[cfg(feature = "desktop")]
 pub use desktop::LinuxDesktop;
@@ -47,7 +49,7 @@ pub use desktop::MacDesktop;
 pub use desktop::{current_euid, Desktop, FixtureDesktop, HeadlessDesktop};
 pub use hypermesh_session::{refresh_token, MemoryStore, SessionStore};
 pub use input::{key_chord_request, SCROLL_MAX_TICKS};
-pub use prompt::{open_supervisor_door, DoorConfig, PromptCompletion, PromptDoor, DEFAULT_CATALOG_ID};
+pub use prompt::{open_supervisor_door, DoorConfig, PromptCancellation, PromptCompletion, PromptDoor, DEFAULT_CATALOG_ID};
 
 #[cfg(test)]
 mod session_key {

@@ -22,6 +22,6 @@ for format in apk deb rpm; do
 done
 cp target/release/hypermesh-visor "/output/hypermesh-visor-headless-${EXPECTED_ARCH}"
 tar czf "/output/hypermesh-visor-headless-${EXPECTED_ARCH}.tar.gz" -C /bundle/root .
-printf 'visor=%s\nconductor=%s\narchitecture=%s\n' "$SOURCE_REVISION" 75ee07d4401232c0a8a5e1946dd5de1043b5d723 "$EXPECTED_ARCH" > /output/build.txt
+printf 'visor=%s\nconductor=%s\narchitecture=%s\n' "$SOURCE_REVISION" 99917424cd0da99054ff28ef2806a134bf34db80 "$EXPECTED_ARCH" > /output/build.txt
 cd /output
 sha256sum "hypermesh-visor-headless-${EXPECTED_ARCH}" ./*.apk ./*.deb ./*.rpm ./*.tar.gz build.txt > checksums.txt

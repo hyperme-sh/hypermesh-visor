@@ -54,11 +54,31 @@ impl PromptCompletion {
     }
 }
 
+/// Cancellation is supplied by the API request and may also watch its session.
+#[derive(Clone, Default)]
+pub struct PromptCancellation {
+    signal: Arc<std::sync::atomic::AtomicBool>,
+    predicate: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+}
+impl PromptCancellation {
+    pub(crate) fn watching(predicate: impl Fn()->bool + Send + Sync + 'static)->Self {Self{signal:Arc::default(),predicate:Some(Arc::new(predicate))}}
+    pub fn cancel(&self) {self.signal.store(true,std::sync::atomic::Ordering::SeqCst);}
+    pub fn cancelled(&self)->bool {self.signal.load(std::sync::atomic::Ordering::SeqCst) || self.predicate.as_ref().is_some_and(|check|check())}
+}
+pub(crate) struct CancelOnDrop(pub PromptCancellation);
+impl Drop for CancelOnDrop {fn drop(&mut self){self.0.cancel();}}
+
 /// One door the orchestrator can call. Implementations must not log `api_key`.
 pub trait PromptDoor: Send + Sync {
     fn forward(&self, call: &ForwardedPrompt) -> Result<String, String>;
     fn forward_reported(&self, call: &ForwardedPrompt) -> Result<PromptCompletion, String> {
         self.forward(call).map(PromptCompletion::unmeasured)
+    }
+    fn forward_reported_cancelled(&self,call:&ForwardedPrompt,cancel:&PromptCancellation)->Result<PromptCompletion,String>{
+        if cancel.cancelled(){return Err("prompt cancelled".into());}
+        let result=self.forward_reported(call);
+        if cancel.cancelled(){return Err("prompt cancelled".into());}
+        result
     }
 }
 
@@ -315,7 +335,7 @@ fn read_limited(response: ureq::Response) -> Result<String, String> {
     String::from_utf8(buf).map_err(|_| "supervisor chat response was not utf-8".into())
 }
 
-fn completion_text(body: &str) -> Result<String, String> {
+pub(crate) fn completion_text(body: &str) -> Result<String, String> {
     let value: serde_json::Value =
         serde_json::from_str(body).map_err(|_| "supervisor chat response was not json")?;
     value
@@ -449,12 +469,22 @@ impl PromptPass {
         api_key: &str,
         model: Option<&str>,
     ) -> Result<String, PromptError> {
-        let _guard = self
-            .gate
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        self.submit_inner(prompt, api_key, model)
-            .map(|reply| reply.text)
+        self.submit_cancellable(prompt,api_key,model,&PromptCancellation::default())
+    }
+    pub fn submit_cancellable(&self,prompt:&str,api_key:&str,model:Option<&str>,cancel:&PromptCancellation)->Result<String,PromptError>{
+        let _guard=self.gate_for(cancel)?;
+        self.submit_inner(prompt,api_key,model,cancel).map(|reply|reply.text)
+    }
+
+    fn gate_for(&self,cancel:&PromptCancellation)->Result<std::sync::MutexGuard<'_,()>,PromptError>{
+        loop {
+            if cancel.cancelled(){return Err(PromptError::Door("prompt cancelled".into()));}
+            match self.gate.try_lock(){
+                Ok(guard)=>return Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(error))=>return Ok(error.into_inner()),
+                Err(std::sync::TryLockError::WouldBlock)=>std::thread::sleep(Duration::from_millis(10)),
+            }
+        }
     }
 
     #[cfg(test)]
@@ -464,23 +494,25 @@ impl PromptPass {
 
     /// Parked stream prompts enter here. Secret values are needles for the
     /// audit row only; they are not copied onto that row.
-    pub(crate) fn drive_parked(
+    pub(crate) fn drive_parked(&self,prompts:&[(String,Option<String>)],file_texts:&[String],api_key:&str,secret_values:&[String])->Option<crate::ResponseUsage>{
+        self.drive_parked_cancellable(prompts,file_texts,api_key,secret_values,&PromptCancellation::default())
+    }
+    pub(crate) fn drive_parked_cancellable(
         &self,
         prompts: &[(String, Option<String>)],
         file_texts: &[String],
         api_key: &str,
         secret_values: &[String],
+        cancel: &PromptCancellation,
     ) -> Option<crate::ResponseUsage> {
-        let _guard = self
-            .gate
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let Ok(_guard)=self.gate_for(cancel) else {return None;};
         self.arm_needles(secret_values);
         let mut usage = None;
         for (prompt, model) in prompts {
+            if cancel.cancelled(){break;}
             self.flag_inbox(prompt);
             usage = self
-                .submit_inner(prompt, api_key, model.as_deref())
+                .submit_inner(prompt, api_key, model.as_deref(),cancel)
                 .ok()
                 .and_then(|reply| reply.usage);
         }
@@ -497,6 +529,7 @@ impl PromptPass {
         prompt: &str,
         api_key: &str,
         model: Option<&str>,
+        cancel: &PromptCancellation,
     ) -> Result<PromptCompletion, PromptError> {
         let sent = prompt.trim().to_string();
         let requested = normalize_model(model);
@@ -530,7 +563,7 @@ impl PromptPass {
         };
         // Model selection has already chosen `selected`. Routing and an expert
         // wrapper, when one is marked, happen inside this single forward.
-        match self.orchestrator.dispatch(&selected, &call) {
+        match self.orchestrator.dispatch_cancelled(&selected, &call,cancel) {
             crate::orchestrator::Dispatch::Unmapped => {
                 let message = "model is not routed".to_string();
                 self.record(self.failed_row(&sent, &key, Some(selected), None, &message));
@@ -1024,6 +1057,25 @@ mod tests {
     const FIXTURE_PROMPT: &str = "count the sheep";
 
     #[test]
+    fn cancellation_releases_a_queued_prompt_without_dispatch() {
+        let door = RecordingDoor::ok("unused");
+        let pass = Arc::new(PromptPass::new(door.clone()));
+        let gate = pass.gate.lock().unwrap();
+        let cancel = PromptCancellation::default();
+        let worker_cancel = cancel.clone();
+        let worker = pass.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            tx.send(worker.submit_cancellable(FIXTURE_PROMPT, FIXTURE_KEY, None, &worker_cancel)).unwrap();
+        });
+        cancel.cancel();
+        assert!(rx.recv_timeout(Duration::from_secs(1)).unwrap().is_err());
+        assert!(door.calls().is_empty());
+        drop(gate);
+        thread.join().unwrap();
+    }
+
+    #[test]
     fn fixture_key_is_forwarded_and_the_auditor_records_the_pass() {
         let door = RecordingDoor::ok("baa");
         let pass = PromptPass::new(door.clone());
@@ -1443,6 +1495,7 @@ mod tests {
         let pass = PromptPass::open(&DoorConfig {
             default_model: DEFAULT_CATALOG_ID.into(),
             conductor_addr: None,
+            conductor_socket: None,
             conductor_lease: None,
             primary_url: None,
             second_url: Some("http://127.0.0.1:9".into()),

@@ -28,6 +28,7 @@ pub struct DoorConfig {
     pub default_model: String,
     pub conductor_lease: Option<uuid::Uuid>,
     pub conductor_addr: Option<String>,
+    pub conductor_socket: Option<std::path::PathBuf>,
     pub primary_url: Option<String>,
     pub second_url: Option<String>,
     pub routes: Vec<(String, String)>,
@@ -40,6 +41,7 @@ impl Default for DoorConfig {
         Self {
             default_model: DEFAULT_CATALOG_ID.to_string(),
             conductor_addr: None,
+            conductor_socket: None,
             conductor_lease: None,
             primary_url: None,
             second_url: None,
@@ -259,6 +261,14 @@ impl Orchestrator {
         }
     }
 
+    pub(crate) fn dispatch_cancelled(&self,model:&str,call:&ForwardedPrompt,cancel:&crate::prompt::PromptCancellation)->Dispatch {
+        if let Plan::One{name,door}=self.plan(model){
+            self.report.clear();
+            if let Some(name)=&name{self.report.set_door(name);}
+            return Dispatch::Finished{result:door.forward_reported_cancelled(call,cancel),door:self.report.door(),other_expert:None};
+        }
+        self.dispatch(model,call)
+    }
     pub(crate) fn dispatch(&self, model: &str, call: &ForwardedPrompt) -> Dispatch {
         self.report.clear();
         match self.plan(model) {
@@ -400,6 +410,13 @@ pub(crate) fn connect(config: &DoorConfig) -> Result<Orchestrator, String> {
     };
     let primary = blank_to_none(config.primary_url.as_deref());
     let second = blank_to_none(config.second_url.as_deref());
+    if let Some(path)=&config.conductor_socket {
+        if config.conductor_addr.is_some() || primary.is_some() || second.is_some() || !config.routes.is_empty() || !config.experts.is_empty() || !config.answers.is_empty() {
+            return Err("Conductor requires an exclusive prompt route".into());
+        }
+        let door=crate::conductor_socket::SocketDoor::connect(path.clone(),config.conductor_lease)?;
+        return Ok(Orchestrator::from_named(&default_model,vec![("conductor".into(),Arc::new(door))],Vec::new(),Vec::new(),Vec::new()));
+    }
     if let Some(addr) = &config.conductor_addr {
         if primary.is_some()
             || second.is_some()
