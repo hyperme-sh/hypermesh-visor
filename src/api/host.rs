@@ -79,7 +79,10 @@ pub(super) async fn mcp(
     Json(request): Json<Value>,
 ) -> Response {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
-    if request["jsonrpc"] != "2.0"
+    if request.get("result").is_some()
+        || request.get("error").is_some()
+        || request.get("params").is_some_and(|p| !p.is_object())
+        || request["jsonrpc"] != "2.0"
         || !(id.is_null()
             || id.is_i64()
             || id.is_u64()
@@ -177,5 +180,22 @@ mod tests {
         );
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
         assert_eq!(tool["name"].as_str().unwrap().len(), 69);
+    }
+    #[tokio::test]
+    async fn rejects_hybrid_rpc_and_non_object_parameters() {
+        use http_body_util::BodyExt;
+        let state = Arc::new(AppState::new(
+            Arc::new(crate::HeadlessDesktop),
+            Duration::from_millis(20),
+        ));
+        for request in [
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","result":{}}),
+            json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":[]}),
+        ] {
+            let response = mcp(State(state.clone()), Json(request)).await;
+            let raw = response.into_body().collect().await.unwrap().to_bytes();
+            let value: Value = serde_json::from_slice(&raw).unwrap();
+            assert_eq!(value["error"]["code"], -32600);
+        }
     }
 }

@@ -121,7 +121,7 @@ impl Bridge {
             "revision":entry.definition["revision"], "source_sha256":entry.source_hash,
             "graph_sha256":entry.graph_hash, "call_id":call.call_id, "arguments_json":arguments
         })).map_err(|_| ())?;
-        if raw.len() > 140000 {
+        if raw.len() > 6 * 65536 + 4096 {
             return Err(());
         }
         let result = self.request("POST", "/dispatch", raw).await?;
