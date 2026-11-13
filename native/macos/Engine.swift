@@ -50,6 +50,9 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var engineConnected = false
     private var menuAllow: NSMenuItem?
     private var destinationItems: [NSMenuItem] = []
+    private var compactUsage: String?
+    private var floatingItem: NSMenuItem?
+    weak var controlWindow: NSWindow?
     private var currentSession: String?
     private var approvedSession: String?
     private var idleResume: NativeIdleResume?
@@ -102,6 +105,12 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        let controls = NSMenuItem(title: "Open control window", action: #selector(openControls), keyEquivalent: "")
+        controls.target = self; menu.insertItem(controls, at: 0)
+        let floating = NSMenuItem(title: "Show floating companion", action: #selector(toggleFloating), keyEquivalent: "")
+        floating.target = self; menu.insertItem(floating, at: 1); floatingItem = floating
+        NativeCompanionPanel.shared.enabled = UserDefaults.standard.object(forKey: "visor-floating-companion-visible") as? Bool ?? true
+        NativeCompanionPanel.shared.configure(target: self, action: #selector(openCompanionMenu))
         statusItem?.menu = menu
         installMonitor()
         for name in [NSWorkspace.willSleepNotification, NSWorkspace.screensDidSleepNotification,
@@ -116,6 +125,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     func applicationWillTerminate(_ notification: Notification) {
         allowed = false; idleResume = nil; pendingApproval = false; epoch &+= 1; releaseHeld()
         NativePointerOverlay.shared.hide()
+        NativeCompanionPanel.shared.hide()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         timer?.invalidate()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
@@ -163,8 +173,14 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             statusItem?.button?.title = allowed ? "Visor: ON" : "Visor: off"
         }
         statusItem?.button?.setAccessibilityLabel("Hypermesh Visor: " + currentPhase)
-        statusItem?.button?.toolTip = [message, "Session: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)", usageSummary]
+        let detail = [message, "Session: \(sessionOpen ? "open" : "none") · Engine: \(currentPhase)", usageSummary]
             .compactMap { $0 }.joined(separator: "\n")
+        statusItem?.button?.toolTip = detail
+        floatingItem?.state = NativeCompanionPanel.shared.enabled ? .on : .off
+        NativeCompanionPanel.shared.update(image: statusItem?.button?.image,
+            state: !engineConnected ? "Disconnected" : (allowed ? "Running" : (currentPhase == "paused" ? "Paused" : "Off")),
+            usage: compactUsage, detail: detail)
+
     }
     private func poll() {
         guard started && !polling else { return }
@@ -178,6 +194,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                 self.engineConnected = false
                 self.currentSession = nil
                 self.usageSummary = nil
+                self.compactUsage = nil
                 self.pause("Native engine unavailable"); return
             }
             self.engineConnected = true
@@ -185,6 +202,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             let sessionID = (body["session"] as? [String:Any])?["id"] as? String
             self.currentSession = self.sessionOpen ? sessionID.flatMap { UUID(uuidString: $0)?.uuidString.lowercased() } : nil
             self.usageSummary = self.sessionOpen ? nativeUsageSummary(body["session"] as? [String:Any]) : nil
+            self.compactUsage = self.sessionOpen ? nativeCompactUsage(body["session"] as? [String:Any]) : nil
             self.currentPhase = automation["phase"] as? String ?? "off"
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running" || self.currentSession != self.approvedSession) { self.pause("Session changed, stopped or paused") }
             if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
@@ -201,6 +219,19 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             }
             self.update()
         }
+    }
+    @objc func openControls() {
+        controlWindow?.deminiaturize(nil)
+        controlWindow?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+    @objc func toggleFloating() {
+        NativeCompanionPanel.shared.enabled.toggle()
+        UserDefaults.standard.set(NativeCompanionPanel.shared.enabled, forKey: "visor-floating-companion-visible")
+        update()
+    }
+    @objc func openCompanionMenu() {
+        if let menu = statusItem?.menu { NativeCompanionPanel.shared.showMenu(menu) }
     }
     @objc func openForum() { openDestination(editor: false) }
     @objc func openWorkspace() { openDestination(editor: true) }
