@@ -53,6 +53,28 @@ jobs:
           HYPERMESH_CREDENTIAL_CONTRACT: '1'
         run: cargo test --locked -p hypermesh-session store::tests::windows_credential_store_contract -- --ignored --exact
 
+  native-cli:
+    name: Bundled CLI units (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: third_party/hypermesh-cli/go.mod
+          cache: false
+      - name: Native browser and OAuth unit contracts
+        working-directory: third_party/hypermesh-cli
+        env:
+          CGO_ENABLED: '0'
+          GOWORK: 'off'
+        run: |
+          go test -mod=readonly ./internal/browser ./internal/oauth
+          go build -mod=readonly -buildvcs=false ./cmd/hypermesh
+
   native-mcp-discovery:
     name: MCP discovery (${{ matrix.os }})
     strategy:

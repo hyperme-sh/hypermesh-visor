@@ -96,8 +96,7 @@ uses AppKit screen coordinates across displays and is excluded from Visor screen
 captures. Reduce Motion freezes its animation. Pause, Stop, session loss,
 permission/monitor loss and Quit hide it; a crash removes the process's windows.
 The system cursor stays visible and is never replaced or hidden. A missing sprite
-bundle leaves the overlay absent without changing desktop permissions. Windows,
-floating companion controls and isolated worker processes remain tracked in #18.
+bundle leaves the overlay absent without changing desktop permissions. Windows and isolated worker processes remain tracked in #18.
 
 ### Floating companion
 
@@ -116,3 +115,8 @@ and the automation pointer overlay are excluded from captured frames. While
 automation is allowed the panel passes clicks through to the underlying app;
 physical input pauses automation and restores companion interaction. A removed
 or rearranged display moves the panel back into a visible display area.
+
+The bundled CLI opens HTTP(S) sign-in and checkout destinations through the
+registered macOS browser. Browser launch failure falls back to device sign-in;
+unattended sessions should choose device sign-in explicitly. Invalid or
+non-web destinations are refused, and browser errors omit private URL values.

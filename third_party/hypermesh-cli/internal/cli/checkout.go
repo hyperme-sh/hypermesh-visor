@@ -2,9 +2,8 @@ package cli
 
 import (
 	"fmt"
+	"github.com/FyberLabs/hypermesh-cli/internal/browser"
 	"os"
-	"os/exec"
-	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -108,15 +107,4 @@ func pollLease(r *run, id string, every, timeout time.Duration) (api.Lease, []by
 	}
 }
 
-func openURL(u string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", u)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
-	default:
-		cmd = exec.Command("xdg-open", u)
-	}
-	return cmd.Start()
-}
+func openURL(u string) error { return browser.Open(u) }
