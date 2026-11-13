@@ -13,11 +13,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
 	"strings"
 	"time"
 
+	"github.com/FyberLabs/hypermesh-cli/internal/browser"
 	"github.com/FyberLabs/hypermesh-cli/internal/session"
 )
 
@@ -138,17 +137,8 @@ func CallbackCode(rawQuery, expectedState string) (string, error) {
 	return code, nil
 }
 
-func DisplayAvailable() bool {
-	return strings.TrimSpace(os.Getenv("DISPLAY")) != "" || strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != ""
-}
-
-func OpenSystemBrowser(rawURL string) error {
-	cmd := exec.Command("xdg-open", rawURL)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("could not open a browser (%w)", err)
-	}
-	return nil
-}
+func DisplayAvailable() bool                { return browser.DisplayAvailable() }
+func OpenSystemBrowser(rawURL string) error { return browser.Open(rawURL) }
 
 type DeviceCodes struct {
 	DeviceCode              string

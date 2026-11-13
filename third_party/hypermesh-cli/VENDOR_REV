@@ -1,2 +1,3 @@
 815e140fee7689e68dec876ffafa51b3772ff383
 mcp: ported from FyberLabs/hypermesh-cli@7430b4b (oauth/login vendor kept)
+browser: Visor native HTTP(S) handlers and portable display selection
