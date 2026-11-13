@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 APP = 'Hypermesh Visor Development.app/Contents'
-PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp']
+PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp', 'libexec/conductor']
 
 
 def manifest(root):
@@ -31,6 +31,7 @@ def verify(root):
         raise ValueError('Bundle checksum mismatch')
     if not re.fullmatch(r'[a-f0-9]{40}\n', (root/'source-revision').read_text()):
         raise ValueError('Invalid source revision')
+    verify_conductor_source(root)
     info = plistlib.loads((root/APP/'Info.plist').read_bytes())
     assert info['CFBundleIdentifier'] == 'sh.hyperme.visor.development'
     assert info['CFBundleVersion'] == '1'
@@ -42,8 +43,12 @@ def verify(root):
             magic, cpu = struct.unpack('<II', stream.read(8))
         if (magic, cpu) != (0xfeedfacf, 0x0100000c) or not os.access(path, os.X_OK):
             raise ValueError('Expected an executable native ARM64 Mach-O program')
-    for name in ['hypermesh', 'hypermesh-desktop-mcp']:
+    for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor']:
         assert os.access(root/'bin'/name, os.X_OK)
+    help_result = subprocess.run([str(root/'bin/conductor'), '--help'], check=True,
+                                 capture_output=True, text=True, timeout=10)
+    if not help_result.stdout.startswith('usage: conductor '):
+        raise ValueError('Bundled Conductor launcher did not reach its CLI')
     assert (root/'README.md').is_file()
     for state in ('idle', 'automation', 'disconnected'):
         for frame in range(6 if state == 'disconnected' else 8):
@@ -52,7 +57,29 @@ def verify(root):
                 raise ValueError('Missing native companion frame')
 
 
+def verify_conductor_source(root):
+    if not re.fullmatch(r'[a-f0-9]{40}\n', (root/'conductor-source-revision').read_text()):
+        raise ValueError('Invalid Conductor source revision')
+    if not re.fullmatch(r'[a-f0-9]{64}\n', (root/'conductor-source-archive.sha256').read_text()):
+        raise ValueError('Invalid Conductor source archive checksum')
+
+
 class LauncherContracts(unittest.TestCase):
+    def test_conductor_source_metadata_is_required_and_bounded(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(FileNotFoundError):
+                verify_conductor_source(root)
+            (root/'conductor-source-revision').write_text('a'*40+'\n')
+            (root/'conductor-source-archive.sha256').write_text('b'*64+'\n')
+            verify_conductor_source(root)
+            for name in ['conductor-source-revision', 'conductor-source-archive.sha256']:
+                original = (root/name).read_text()
+                (root/name).write_text('unverified\n')
+                with self.assertRaises(ValueError):
+                    verify_conductor_source(root)
+                (root/name).write_text(original)
+
     def test_native_mascot_source_frames_exist(self):
         assets = Path(__file__).resolve().parents[2]/'companion/assets/states'
         for state, count in [('idle', 8), ('automation', 8), ('disconnected', 6)]:
@@ -64,7 +91,7 @@ class LauncherContracts(unittest.TestCase):
             root = Path(directory)
             (root/'bin').mkdir()
             (root/'libexec').mkdir()
-            for name in ['hypermesh', 'hypermesh-desktop-mcp']:
+            for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor']:
                 launch = root/'bin'/name
                 shutil.copyfile(Path(__file__).with_name('launch-tool.sh'), launch)
                 launch.chmod(0o755)
@@ -92,7 +119,7 @@ class LauncherContracts(unittest.TestCase):
             for bundle in bundles:
                 (bundle/'bin').mkdir(parents=True)
                 (bundle/'libexec').mkdir()
-                for name in ['hypermesh', 'hypermesh-desktop-mcp']:
+                for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor']:
                     launcher = bundle/'bin'/name
                     shutil.copyfile(Path(__file__).with_name('launch-tool.sh'), launcher)
                     launcher.chmod(0o755)
@@ -102,7 +129,7 @@ class LauncherContracts(unittest.TestCase):
             env = dict(os.environ, HOME=str(home))
             env.pop('HYPERMESH_RUNTIME_DIR', None)
             for bundle in bundles:
-                for name in ['hypermesh', 'hypermesh-desktop-mcp']:
+                for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor']:
                     result = subprocess.run([str(bundle/'bin'/name)], check=True, capture_output=True, text=True, env=env)
                     self.assertEqual(json.loads(result.stdout), [str(bundle/'libexec'/name), str(home/'.local/state/hypermesh/native-run')])
                 self.assertEqual(config.read_bytes(), before)
