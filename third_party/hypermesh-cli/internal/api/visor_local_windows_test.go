@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
@@ -136,5 +137,35 @@ func TestPipeRejectsDefaultACLBeforeRequest(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestServerTokenRejectsLowIntegrity(t *testing.T) {
+	var original windows.Token
+	if err := windows.OpenProcessToken(windows.CurrentProcess(), windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY, &original); err != nil {
+		t.Fatal(err)
+	}
+	defer original.Close()
+	var low windows.Token
+	if err := windows.DuplicateTokenEx(original, windows.TOKEN_QUERY|windows.TOKEN_ADJUST_DEFAULT, nil, windows.SecurityImpersonation, windows.TokenPrimary, &low); err != nil {
+		t.Fatal(err)
+	}
+	defer low.Close()
+	sid, err := windows.StringToSid("S-1-16-4096")
+	if err != nil {
+		t.Fatal(err)
+	}
+	label := windows.Tokenmandatorylabel{Label: windows.SIDAndAttributes{Sid: sid, Attributes: windows.SE_GROUP_INTEGRITY}}
+	if err := windows.SetTokenInformation(low, windows.TokenIntegrityLevel, (*byte)(unsafe.Pointer(&label)), label.Size()); err != nil {
+		t.Fatal(err)
+	}
+	if level, err := integrityLevel(low); err != nil || level != 4096 {
+		t.Fatal(level, err)
+	}
+	if err := trustedServerToken(low); err == nil {
+		t.Fatal("accepted same-user low-integrity server")
+	}
+	if err := trustedServerToken(original); err != nil {
+		t.Fatal("refused current normal server", err)
 	}
 }

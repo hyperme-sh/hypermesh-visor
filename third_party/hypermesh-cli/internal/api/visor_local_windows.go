@@ -107,7 +107,10 @@ func privatePipe(conn net.Conn) error {
 	if err != nil {
 		return err
 	}
-	return privateDescriptor(sd)
+	if err := privateDescriptor(sd); err != nil {
+		return err
+	}
+	return privateServer(windows.Handle(raw.Fd()))
 }
 
 func privateDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
@@ -142,4 +145,87 @@ func privateDescriptor(sd *windows.SECURITY_DESCRIPTOR) error {
 	}
 	runtime.KeepAlive(sd)
 	return nil
+}
+
+// Same SID is not enough: sandboxed low-integrity processes can create pipes.
+func privateServer(pipe windows.Handle) error {
+	var pid uint32
+	if err := windows.GetNamedPipeServerProcessId(pipe, &pid); err != nil {
+		return err
+	}
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, pid)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(process)
+	var token windows.Token
+	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
+		return err
+	}
+	defer token.Close()
+	if err := trustedServerToken(token); err != nil {
+		return err
+	}
+	var checkedPID uint32
+	if err := windows.GetNamedPipeServerProcessId(pipe, &checkedPID); err != nil {
+		return err
+	}
+	status, err := windows.WaitForSingleObject(process, 0)
+	if err != nil || status != uint32(windows.WAIT_TIMEOUT) || checkedPID != pid {
+		return fmt.Errorf("Visor pipe server changed or exited")
+	}
+	return nil
+}
+
+func trustedServerToken(token windows.Token) error {
+	current, err := userSID()
+	if err != nil {
+		return err
+	}
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	if !user.User.Sid.Equals(current) {
+		return fmt.Errorf("Visor server belongs to another user")
+	}
+	restricted, err := token.IsRestricted()
+	if err != nil {
+		return err
+	}
+	if restricted {
+		return fmt.Errorf("Visor server has a restricted token")
+	}
+	serverLevel, err := integrityLevel(token)
+	if err != nil {
+		return err
+	}
+	clientLevel, err := integrityLevel(windows.GetCurrentProcessToken())
+	if err != nil {
+		return err
+	}
+	if serverLevel < clientLevel || serverLevel < 0x2000 {
+		return fmt.Errorf("Visor server has lower integrity")
+	}
+	return nil
+}
+
+func integrityLevel(token windows.Token) (uint32, error) {
+	var size uint32
+	err := windows.GetTokenInformation(token, windows.TokenIntegrityLevel, nil, 0, &size)
+	if err != windows.ERROR_INSUFFICIENT_BUFFER || size < uint32(unsafe.Sizeof(windows.Tokenmandatorylabel{})) || size > 65536 {
+		return 0, fmt.Errorf("cannot inspect process integrity")
+	}
+	buffer := make([]byte, size)
+	if err := windows.GetTokenInformation(token, windows.TokenIntegrityLevel, &buffer[0], size, &size); err != nil {
+		return 0, err
+	}
+	label := (*windows.Tokenmandatorylabel)(unsafe.Pointer(&buffer[0]))
+	sid := label.Label.Sid
+	if sid == nil || !sid.IsValid() || sid.SubAuthorityCount() != 1 || !strings.HasPrefix(sid.String(), "S-1-16-") {
+		return 0, fmt.Errorf("invalid process integrity label")
+	}
+	level := sid.SubAuthority(0)
+	runtime.KeepAlive(buffer)
+	return level, nil
 }
