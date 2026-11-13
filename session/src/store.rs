@@ -78,28 +78,40 @@ impl SessionStore for MemoryStore {
 pub struct KeyringStore;
 
 #[cfg(feature = "os-keyring")]
+struct KeyringEntryStore { entry: keyring::Entry }
+
+#[cfg(feature = "os-keyring")]
+fn os_store() -> Result<KeyringEntryStore, AuthError> {
+    Ok(KeyringEntryStore { entry: keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring)? })
+}
+
+#[cfg(feature = "os-keyring")]
 impl SessionStore for KeyringStore {
     fn put_refresh_token(&self, token: &str) -> Result<(), AuthError> {
-        if token.is_empty() {
-            return Err(AuthError::NoRefreshToken);
-        }
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring)?;
-        entry.set_password(token).map_err(map_keyring)
+        // Reject before even opening an OS entry.
+        if token.is_empty() { return Err(AuthError::NoRefreshToken); }
+        os_store()?.put_refresh_token(token)
     }
+    fn refresh_token(&self) -> Result<Option<String>, AuthError> { os_store()?.refresh_token() }
+    fn delete(&self) -> Result<(), AuthError> { os_store()?.delete() }
+}
 
+#[cfg(feature = "os-keyring")]
+impl SessionStore for KeyringEntryStore {
+    fn put_refresh_token(&self, token: &str) -> Result<(), AuthError> {
+        if token.is_empty() { return Err(AuthError::NoRefreshToken); }
+        self.entry.set_password(token).map_err(map_keyring)
+    }
     fn refresh_token(&self) -> Result<Option<String>, AuthError> {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring)?;
-        match entry.get_password() {
+        match self.entry.get_password() {
             Ok(token) if !token.is_empty() => Ok(Some(token)),
             Ok(_) => Ok(None),
             Err(keyring::Error::NoEntry) => Ok(None),
             Err(err) => Err(map_keyring(err)),
         }
     }
-
     fn delete(&self) -> Result<(), AuthError> {
-        let entry = keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring)?;
-        match entry.delete_credential() {
+        match self.entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(err) => Err(map_keyring(err)),
         }
@@ -120,6 +132,35 @@ fn map_keyring(err: keyring::Error) -> AuthError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "windows", feature = "os-keyring"))]
+    #[test]
+    #[ignore = "requires disposable hosted Windows CI"]
+    fn windows_credential_store_contract() {
+        for (name, expected) in [("GITHUB_ACTIONS", "true"), ("RUNNER_ENVIRONMENT", "github-hosted"),
+            ("RUNNER_OS", "Windows"), ("HYPERMESH_CREDENTIAL_CONTRACT", "1")] {
+            assert_eq!(std::env::var(name).as_deref(), Ok(expected), "credential contract requires hosted Windows CI");
+        }
+        let service = format!("hypermesh-ci-{}", crate::new_state().unwrap());
+        let store = KeyringEntryStore { entry: keyring::Entry::new(&service, "fixture-session").unwrap() };
+        struct Cleanup<'a>(&'a KeyringEntryStore);
+        impl Drop for Cleanup<'_> { fn drop(&mut self) { let _ = self.0.delete(); } }
+        let _cleanup = Cleanup(&store);
+        assert_eq!(store.refresh_token().unwrap(), None);
+        store.delete().unwrap();
+        assert!(matches!(store.put_refresh_token(""), Err(AuthError::NoRefreshToken)));
+        assert_eq!(store.refresh_token().unwrap(), None);
+        store.put_refresh_token("synthetic-refresh-one").unwrap();
+        // Reopening proves this is the Windows store, not the Rust object's memory.
+        let reopened = KeyringEntryStore { entry: keyring::Entry::new(&service, "fixture-session").unwrap() };
+        assert_eq!(reopened.refresh_token().unwrap().as_deref(), Some("synthetic-refresh-one"));
+        reopened.put_refresh_token("synthetic-refresh-two").unwrap();
+        assert!(matches!(reopened.put_refresh_token(""), Err(AuthError::NoRefreshToken)));
+        assert_eq!(store.refresh_token().unwrap().as_deref(), Some("synthetic-refresh-two"));
+        reopened.delete().unwrap();
+        assert_eq!(store.refresh_token().unwrap(), None);
+        store.delete().unwrap();
+    }
 
     #[test]
     fn memory_store_round_trips_and_deletes() {
