@@ -217,7 +217,7 @@ async fn poll(
         }
         previous_session = session;
         let consent =
-            state.has_session(session) && lock(&state.automation).phase() == Phase::Running;
+            state.has_session(session) && { let gate = lock(&state.automation); gate.phase() == Phase::Running && gate.session() == Some(session) };
         let status = client
             .post(
                 "heartbeat",
@@ -284,10 +284,10 @@ async fn poll(
                 )?;
                 let consent_word = {
                     let gate = lock(&state.automation);
-                    if gate.phase() != Phase::Running {
+                    if gate.phase() != Phase::Running || gate.session() != Some(session) {
                         return Err("local bot consent changed".into());
                     }
-                    automation::pack_snap(gate.epoch(), gate.phase())
+                    tasks::Consent::capture(&gate, session)
                 };
                 let body = serde_json::from_value(task["payload"].clone())
                     .map_err(|_| "invalid bot task payload")?;
