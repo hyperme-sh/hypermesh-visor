@@ -88,9 +88,21 @@ jobs:
             -Dartifact=net.java.dev.jna:jna:5.17.0 -DoutputDirectory="$RUNNER_TEMP/mobile-kotlin"
           jna="$RUNNER_TEMP/mobile-kotlin/jna-5.17.0.jar"
           kotlinc "$RUNNER_TEMP/mobile-bindings/uniffi/hypermesh_visor_mobile/hypermesh_visor_mobile.kt" \
-            mobile/tests/Main.kt -classpath "$jna" -include-runtime -d "$RUNNER_TEMP/mobile-kotlin/contract.jar"
+            mobile/tests/Main.kt mobile/tests/AndroidStoreContract.kt mobile/android/EncryptedSessionStore.kt -classpath "$jna" -include-runtime -d "$RUNNER_TEMP/mobile-kotlin/contract.jar"
           java -Djna.library.path="$PWD/mobile/core/target/debug" \
             -cp "$RUNNER_TEMP/mobile-kotlin/contract.jar:$jna" MainKt
+      - name: Compile Android KeyStore adapter
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          android_jar="$ANDROID_HOME/platforms/android-35/android.jar"
+          if [ ! -f "$android_jar" ]; then
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" >/dev/null
+          fi
+          test -f "$android_jar"
+          kotlinc "$RUNNER_TEMP/mobile-bindings/uniffi/hypermesh_visor_mobile/hypermesh_visor_mobile.kt" \
+            mobile/android/EncryptedSessionStore.kt mobile/android/AndroidSessionStore.kt \
+            -classpath "$android_jar:$RUNNER_TEMP/mobile-kotlin/jna-5.17.0.jar" \
+            -d "$RUNNER_TEMP/mobile-kotlin/android-store.jar"
       - name: Swift native store callback contract
         if: matrix.os == 'macos-latest'
         run: |

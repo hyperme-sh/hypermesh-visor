@@ -22,6 +22,7 @@ private class FixtureStore(private val unavailable: Boolean = false, private val
 }
 
 fun main() {
+    sh.hyperme.visor.mobile.androidStoreContract()
     val store = FixtureStore()
     MobileSession(store).use { session ->
         check(!session.hasStoredSession())
