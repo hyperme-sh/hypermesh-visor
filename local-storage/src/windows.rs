@@ -202,7 +202,10 @@ pub fn open(path: &Path, mode: Open) -> io::Result<File> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             &attributes,
             creation,
-            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_ATTRIBUTE_NORMAL
+                | FILE_FLAG_OPEN_REPARSE_POINT
+                | SECURITY_SQOS_PRESENT
+                | SECURITY_IDENTIFICATION,
             null_mut(),
         )
     };
@@ -222,7 +225,10 @@ pub fn check_dir(path: &Path) -> io::Result<()> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             null(),
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            FILE_FLAG_BACKUP_SEMANTICS
+                | FILE_FLAG_OPEN_REPARSE_POINT
+                | SECURITY_SQOS_PRESENT
+                | SECURITY_IDENTIFICATION,
             null_mut(),
         )
     };
@@ -333,7 +339,10 @@ mod tests {
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 &attributes,
                 CREATE_NEW,
-                FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+                FILE_ATTRIBUTE_NORMAL
+                    | FILE_FLAG_OPEN_REPARSE_POINT
+                    | SECURITY_SQOS_PRESENT
+                    | SECURITY_IDENTIFICATION,
                 null_mut(),
             );
             assert_ne!(handle, INVALID_HANDLE_VALUE);
