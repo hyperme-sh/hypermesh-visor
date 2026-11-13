@@ -124,3 +124,9 @@ sibling `lib/hypermesh-visor-headless` layout together. A direct non-root launch
 requires an explicitly configured private session-file backend as described
 above. Neither installation mode silently grants host abilities or provisions a
 Conductor lease.
+
+The bundled Conductor now includes capability-note indexing and the signed
+AIuditor capability-review client (Conductor PR55 and PR56). Its public source
+archive is verified by SHA256 in both package builders, and `build.txt` records
+the source revision. This makes the command available; it does not enable host
+capabilities or configure an authority, listener, machine signer or controller.
