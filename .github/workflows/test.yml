@@ -47,6 +47,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Native session and PKCE unit contracts
         run: cargo test --locked -p hypermesh-session
+      - name: Native inverse MCP client unit contracts and build
+        run: |
+          cargo test --locked -p hypermesh-visor-client
+          cargo build --locked -p hypermesh-visor-client --bin hypermesh-desktop-mcp-client
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: windows-inverse-mcp-client
+          retention-days: 1
+          if-no-files-found: error
+          path: target/debug/hypermesh-desktop-mcp-client.exe
       - name: App-supplied session store unit contracts
         run: cargo test --locked -p hypermesh-session --no-default-features --features external-store
       - name: iOS session core build

@@ -16,6 +16,8 @@ mod desktop;
 mod harness;
 mod input;
 mod local_peer;
+#[path = "../shared/local_runtime.rs"]
+mod local_runtime;
 #[cfg(all(target_os = "macos", feature = "desktop"))]
 mod native_engine;
 #[cfg(all(target_os = "macos", feature = "desktop"))]

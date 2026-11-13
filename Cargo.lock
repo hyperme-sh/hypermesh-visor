@@ -968,6 +968,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "hypermesh-session",
+ "hypermesh-visor-client",
  "jsonschema",
  "libc",
  "libloading",
@@ -987,6 +988,26 @@ dependencies = [
  "x11rb",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "hypermesh-visor-client"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "ureq",
+ "url",
+ "uuid",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

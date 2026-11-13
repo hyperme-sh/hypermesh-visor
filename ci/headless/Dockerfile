@@ -16,6 +16,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock LICENSE ./
 COPY src src
 COPY session session
+COPY inverse-client inverse-client
 COPY companion companion
 COPY shared shared
 COPY third_party third_party
