@@ -20,3 +20,10 @@ CI runs session unit contracts natively on Linux, macOS and Windows. Tests use
 mock token endpoints and synthetic tokens in memory or private temporary files.
 They do not open a browser, access an operator keychain, sign into a provider or
 qualify a native daemon, installer or credential store.
+
+On Windows, the shared entry is `hypermesh:session` with a UTF-8 credential blob,
+matching the bundled Go CLI. The Rust keyring library's default
+`session.hypermesh`/UTF-16 mapping is not used. A session stored by the former
+Rust-only mapping requires a fresh sign-in; that old entry is not read or
+silently migrated. Disposable Windows CI checks both Go-to-Rust and Rust-to-Go
+reads plus deletion using a unique synthetic service name.

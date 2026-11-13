@@ -82,7 +82,24 @@ struct KeyringEntryStore { entry: keyring::Entry }
 
 #[cfg(feature = "os-keyring")]
 fn os_store() -> Result<KeyringEntryStore, AuthError> {
-    Ok(KeyringEntryStore { entry: keyring::Entry::new(SERVICE, ACCOUNT).map_err(map_keyring)? })
+    named_os_store(SERVICE, ACCOUNT)
+}
+
+#[cfg(feature = "os-keyring")]
+fn named_os_store(service: &str, account: &str) -> Result<KeyringEntryStore, AuthError> {
+    #[cfg(target_os = "windows")]
+    let entry = keyring::Entry::new_with_target(&windows_credential_target(service, account), service, account);
+    #[cfg(not(target_os = "windows"))]
+    let entry = keyring::Entry::new(service, account);
+    Ok(KeyringEntryStore { entry: entry.map_err(map_keyring)? })
+}
+
+// Match the bundled Go CLI's go-keyring Windows target and UTF-8 blob format.
+#[cfg(any(target_os = "windows", test))]
+fn windows_credential_target(service: &str, account: &str) -> String { format!("{service}:{account}") }
+#[cfg(any(target_os = "windows", test))]
+fn windows_token(bytes: Vec<u8>) -> Result<String, AuthError> {
+    String::from_utf8(bytes).map_err(|_| AuthError::message("invalid Windows session encoding"))
 }
 
 #[cfg(feature = "os-keyring")]
@@ -100,10 +117,20 @@ impl SessionStore for KeyringStore {
 impl SessionStore for KeyringEntryStore {
     fn put_refresh_token(&self, token: &str) -> Result<(), AuthError> {
         if token.is_empty() { return Err(AuthError::NoRefreshToken); }
-        self.entry.set_password(token).map_err(map_keyring)
+        #[cfg(target_os = "windows")]
+        { self.entry.set_secret(token.as_bytes()).map_err(map_keyring) }
+        #[cfg(not(target_os = "windows"))]
+        { self.entry.set_password(token).map_err(map_keyring) }
     }
     fn refresh_token(&self) -> Result<Option<String>, AuthError> {
-        match self.entry.get_password() {
+        #[cfg(target_os = "windows")]
+        let token = match self.entry.get_secret() {
+            Ok(bytes) => Ok(windows_token(bytes)?),
+            Err(err) => Err(err),
+        };
+        #[cfg(not(target_os = "windows"))]
+        let token = self.entry.get_password();
+        match token {
             Ok(token) if !token.is_empty() => Ok(Some(token)),
             Ok(_) => Ok(None),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -142,17 +169,27 @@ mod tests {
             assert_eq!(std::env::var(name).as_deref(), Ok(expected), "credential contract requires hosted Windows CI");
         }
         let service = format!("hypermesh-ci-{}", crate::new_state().unwrap());
-        let store = KeyringEntryStore { entry: keyring::Entry::new(&service, "fixture-session").unwrap() };
+        let store = named_os_store(&service, "fixture-session").unwrap();
         struct Cleanup<'a>(&'a KeyringEntryStore);
         impl Drop for Cleanup<'_> { fn drop(&mut self) { let _ = self.0.delete(); } }
         let _cleanup = Cleanup(&store);
+        let helper = std::env::var_os("HYPERMESH_CREDENTIAL_HELPER").expect("native CLI contract helper required");
+        let cli = |operation: &str| {
+            assert!(std::process::Command::new(&helper).args([operation, &service]).status().unwrap().success());
+        };
+        cli("write");
+        assert_eq!(store.refresh_token().unwrap().as_deref(), Some("go synthetic λ"));
+        store.put_refresh_token("rust synthetic λ").unwrap();
+        cli("read-rust");
+        cli("delete");
+
         assert_eq!(store.refresh_token().unwrap(), None);
         store.delete().unwrap();
         assert!(matches!(store.put_refresh_token(""), Err(AuthError::NoRefreshToken)));
         assert_eq!(store.refresh_token().unwrap(), None);
         store.put_refresh_token("synthetic-refresh-one").unwrap();
         // Reopening proves this is the Windows store, not the Rust object's memory.
-        let reopened = KeyringEntryStore { entry: keyring::Entry::new(&service, "fixture-session").unwrap() };
+        let reopened = named_os_store(&service, "fixture-session").unwrap();
         assert_eq!(reopened.refresh_token().unwrap().as_deref(), Some("synthetic-refresh-one"));
         reopened.put_refresh_token("synthetic-refresh-two").unwrap();
         assert!(matches!(reopened.put_refresh_token(""), Err(AuthError::NoRefreshToken)));
@@ -160,6 +197,15 @@ mod tests {
         reopened.delete().unwrap();
         assert_eq!(store.refresh_token().unwrap(), None);
         store.delete().unwrap();
+    }
+
+    #[test]
+    fn windows_entry_matches_cli_name_and_utf8_format() {
+        assert_eq!(windows_credential_target("hypermesh", "session"), "hypermesh:session");
+        let fixture = "synthetic λ session";
+        assert_eq!(windows_token(fixture.as_bytes().to_vec()).unwrap(), fixture);
+        assert_eq!(windows_token(vec![]).unwrap(), "");
+        assert!(windows_token(vec![0xff, 0xfe]).is_err());
     }
 
     #[test]
