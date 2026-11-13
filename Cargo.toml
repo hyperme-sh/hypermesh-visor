@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "companion", "session", "inverse-client"]
+members = [".", "companion", "session", "inverse-client", "local-storage"]
 resolver = "2"
 
 [package]
@@ -26,6 +26,7 @@ desktop = ["dep:hypermesh-visor-client", "dep:x11rb", "dep:zbus", "dep:tokio-rus
 headless = []
 
 [dependencies]
+hypermesh-local-storage = { path = "local-storage" }
 hypermesh-visor-client = { path = "inverse-client", optional = true }
 axum = "0.7"
 base64 = "0.22"

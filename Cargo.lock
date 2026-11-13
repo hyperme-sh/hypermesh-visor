@@ -942,6 +942,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypermesh-local-storage"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hypermesh-session"
 version = "0.1.0"
 dependencies = [
@@ -967,6 +975,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hypermesh-local-storage",
  "hypermesh-session",
  "hypermesh-visor-client",
  "jsonschema",
