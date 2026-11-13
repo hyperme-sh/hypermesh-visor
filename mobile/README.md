@@ -36,8 +36,8 @@ Use the `.dylib` on macOS. The generator's `bindgen` feature is host-only and is
 not enabled for iOS/Android builds. See [UniFFI's foreign trait
 documentation](https://mozilla.github.io/uniffi-rs/next/proc_macro/traits.html).
 
-CI runs Rust units and generated Swift/Kotlin callback contracts using memory-only
-fixtures, builds the core for iOS ARM64 and Android ARM64/API 26, and generates
+CI runs Rust units and generated Swift/Kotlin callback contracts using fixture
+keys and stores (including encrypted temporary files), builds the core for iOS ARM64 and Android ARM64/API 26, and generates
 both language interfaces. The Kotlin contract runs on the hosted Linux JVM;
 it is not an Android app test.
 The iOS/Android libraries are build checks, not store packages or installed apps.
