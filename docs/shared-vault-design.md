@@ -5,6 +5,16 @@ The wallet signer choice is pending owner input. This document defines the
 credential/file boundary independently of that choice; it does not authorize
 wallet transactions, custody, export, a release, or a service deployment.
 
+The owning roadmap is [SociACL #155](https://github.com/FyberLabs/SociACL/issues/155)
+and its proposed [multi-slot design](https://github.com/FyberLabs/SociACL/blob/811f887a705112b4b7d9a7c856e3fed22f171e72/docs/design/secret-store-vault-design.md).
+That design is still under review in SociACL #181, not implemented by this PR.
+SociACL owns file/slot formats, sync, sharing, recovery, and lease contracts;
+Visor supplies the consuming use/execute/sign broker. v1 agents receive brokered
+use only. Plaintext release to agents is deferred to its slice H. The full #37
+secret-file/export scope therefore spans later work and is not a v1 completion
+claim. Current item-epoch and confidential wrap delivery additionally depend on
+[ACL #81](https://github.com/hyperme-sh/acl-service/issues/81).
+
 ## Existing components
 
 Visor's [`Vault`](../src/vault.rs) materializes local values and short-lived MCP
@@ -64,9 +74,10 @@ are absent from the first implementation.
 | Export | Reveal an explicitly exportable non-wallet value | Export wallet custody/recovery material |
 | Revoke | Cancel a grant and advance required key state | Erase plaintext already received |
 
-SociACL read/post decisions alone do not implement this operation table. Add an
-owner-signed operation policy with a domain-separated canonical encoding and
-shared Rust/TypeScript vectors before enabling it. Unknown operations and
+SociACL read/post decisions alone do not implement this operation table. Extend
+the owning SociACL agent-delegation/lease contract and its use-to-execute mapping
+with shared Rust/TypeScript vectors before enabling it; do not introduce a second
+Visor grant or encryption format. Unknown operations and
 versions deny. Each policy revision is monotonic; cancellation wins an equal
 revision. Persist the verifier's revision floor independently of presented data.
 The implementation must use the library's verified identity and grant result,
@@ -81,6 +92,13 @@ on a relay's visible rows. The independent authority service supplies a bounded
 complete snapshot and fence. Append operations compare that fence atomically
 with identity, ACL, policy, and retained-capacity state.
 
+Use the owner-selected container v2 profile and mandatory recovery-key slot,
+per-device daily slots, and shared Spanopticon storage namespace from #155.
+An account SEA key copied to enrolled devices is not a revocable owner-device
+slot. Login gates ciphertext access; it is never a decryption key or a mechanism
+for server-side account-key escrow. The proposed v2 formats need their owner
+implementation and vectors before Visor consumes them.
+
 Concurrent edits use an expected revision and return a conflict. Clients must
 read, display, and explicitly reconcile; they cannot silently overwrite or
 restamp a stale policy. Retry only identical signed payloads. Per-owner and
@@ -91,6 +109,16 @@ Default offline behavior is deny for use, execute, export, and signing. Any late
 offline mode needs an explicit owner-issued bounded lease, a monotonic deadline,
 and a persisted revision floor. A clock rollback or unavailable current history
 cannot renew a lease. Cached ciphertext is not cached permission.
+
+Unattended online use follows #155's signed lease: default/maximum 24 hours,
+renewal every two minutes, token life at most five minutes, and five minutes of
+grace after token expiry. Renewal never moves the signed hard deadline; extension
+requires a new human-signed lease. Check current grants at every use and renewal.
+The broker drops the vault key when the human session ends and retains only the
+granted item keys under an in-memory lease key. Default placement is the user
+device or user-controlled host. Managed-host custody stays off by default and
+requires the owner's per-lease opt-in; storage services never gain a general
+decryption path. This lease is separate from Visor's short desktop task lease.
 
 ## Local broker
 
@@ -108,12 +136,15 @@ and permitted account/operation. Login injection fixes the approved application
 identity and origin. An arbitrary URL, shell fragment, or MCP server name from a
 forum post is never a destination selector.
 
-Secret files use one private runtime directory per authenticated workload, with
+Future slice-H secret files would use one private runtime directory per authenticated workload, with
 no-follow directory-relative opens, exclusive creation, one-link regular files,
 0600 modes, bounded bytes, and explicit cleanup. Materialization is an explicit
 read/export-like disclosure to that workload; it cannot promise non-extractable
 use. Never put plaintext in shared `/resources`, repository workspaces, image
 layers, process arguments, environment dumps, or persistent container volumes.
+These file/mount/environment release adapters are not enabled in v1. First
+implement the owner contract's brokered HTTP/git use path and explicit operation
+limits; a browser-readable grant does not authorize handing plaintext to an agent.
 
 Recheck permission before each operation and at bounded checkpoints during use.
 Revocation stops new operations, cancels active broker work, removes temporary
@@ -160,8 +191,9 @@ storage boundary.
    vectors in SociACL. No sharing is enabled by this design document.
 2. Implement durable encrypted objects/history, atomic revisions, quotas, and
    grant/revoke UI in s3r.ch/ACL. Preserve complete independent authority.
-3. Add the authenticated Visor broker, isolated use adapters, per-container
-   temporary materialization, cancellation, and restart recovery.
+3. Add the authenticated Visor broker, isolated use adapters, owner-defined
+   unattended leases, cancellation, and restart recovery. Agent plaintext
+   materialization remains in deferred slice H.
 4. Add signer-specific handling after the owner-selected boundary is known.
 5. Run unit/contract tests in PR CI and the authorized central nightly batch.
 
