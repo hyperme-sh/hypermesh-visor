@@ -69,3 +69,5 @@ for fixture in [FixtureStore(unavailable: true), FixtureStore(unexpected: true)]
     } catch StoreError.Unavailable {}
 }
 print("PASS mobile Swift callback contract")
+
+try keychainContract()

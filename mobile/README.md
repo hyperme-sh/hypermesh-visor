@@ -42,8 +42,40 @@ both language interfaces. The Kotlin contract runs on the hosted Linux JVM;
 it is not an Android app test.
 The iOS/Android libraries are build checks, not store packages or installed apps.
 
-SociACL device enrollment and secure-store implementations, native UI, VPN,
+SociACL device enrollment, Android secure storage, native UI, VPN,
 Conductor/AIuditor routing, intents/sharing, sensors and model execution remain
 unimplemented. This spike opens no listener, launches no browser, contacts no
 service and requests no device permissions. It does not implement the shared
 vault in #37. Signing and store distribution remain deferred.
+
+## Apple Keychain adapter
+
+Compile `apple/KeychainSessionStore.swift` into the same native app module as the
+generated Swift binding, then pass `try KeychainSessionStore(service: appService,
+account: activeAccount)` to `MobileSession`. The app supplies a stable private
+namespace for its active account; changing accounts must not reuse another
+account's key. The adapter implements only token storage, not sign-in or account
+selection. Do not expose its internal test backend as a runtime setting.
+
+Items use the data-protection Keychain, disable synchronization, and set
+`kSecAttrAccessibleWhenUnlockedThisDeviceOnly`. Apple documents this class as
+accessible while unlocked and not migrated to another device; it does not require
+a passcode. See [Apple's accessibility documentation](https://developer.apple.com/documentation/security/ksecattraccessiblewhenunlockedthisdeviceonly).
+No shared access group is selected. An `LAContext` with interaction disabled
+prevents callback-driven authentication prompts; the native auth UI owns any
+interactive authentication. Locked, denied, unavailable, malformed or missing
+entitlement responses fail closed with fixed errors. Only item-not-found means
+an absent session.
+
+Writes update in place, preserve the previous item on an OS refusal, and never
+delete first. A duplicate-add race gets one bounded update retry. Calls are
+serialized, reads are uncached, and deleting an absent item is idempotent.
+No credential is stored in preferences, files, logs or a fallback keychain.
+This adapter makes no Secure Enclave, biometric-presence or memory-zeroization
+claim. Local deletion still does not revoke the service-side grant.
+
+CI exercises the adapter through generated Swift/Rust bindings with a recording
+Keychain backend and compiles it against the iOS SDK. Those are unit/contract and
+build checks; they do not access a user's Keychain, sign an app, or establish
+installed-device behavior. Device storage and entitlement validation remain part
+of native app delivery. Signing stays deferred.

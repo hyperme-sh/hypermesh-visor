@@ -96,7 +96,8 @@ jobs:
         run: |
           swiftc -I "$RUNNER_TEMP/mobile-bindings" \
             -Xcc "-fmodule-map-file=$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobileFFI.modulemap" \
-            "$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobile.swift" mobile/tests/main.swift \
+            "$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobile.swift" mobile/apple/KeychainSessionStore.swift \
+            mobile/tests/KeychainContract.swift mobile/tests/main.swift \
             -L mobile/core/target/debug -lhypermesh_visor_mobile \
             -Xlinker -rpath -Xlinker "$PWD/mobile/core/target/debug" \
             -o "$RUNNER_TEMP/mobile-store-contract"
@@ -107,6 +108,12 @@ jobs:
           rustup target add aarch64-apple-ios
           cargo build --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-apple-ios
           cargo build --locked --manifest-path mobile/core/Cargo.toml --lib --target aarch64-apple-ios
+          swiftc -target arm64-apple-ios15.0 -sdk "$(xcrun --sdk iphoneos --show-sdk-path)" \
+            -parse-as-library -emit-module -module-name VisorMobileStore \
+            -I "$RUNNER_TEMP/mobile-bindings" \
+            -Xcc "-fmodule-map-file=$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobileFFI.modulemap" \
+            "$RUNNER_TEMP/mobile-bindings/hypermesh_visor_mobile.swift" mobile/apple/KeychainSessionStore.swift \
+            -emit-module-path "$RUNNER_TEMP/VisorMobileStore.swiftmodule"
           cargo tree --locked -p hypermesh-session --no-default-features --features external-store --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-session-deps.txt"
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-session-deps.txt"
           cargo tree --locked --manifest-path mobile/core/Cargo.toml --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-mobile-deps.txt"
