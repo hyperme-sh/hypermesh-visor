@@ -1,7 +1,7 @@
 # Apple Silicon development distribution
 
 This archive contains the native development app, the Hypermesh CLI and the
-inverse MCP adapter. It is a CI development artifact, not a versioned release.
+inverse MCP adapter, and Conductor runtime. It is a CI development artifact, not a versioned release.
 The app has a local ad-hoc signature only: no Developer ID identity or Apple
 notarization. macOS may refuse to open it under its security policy. Inspect the
 source and artifact before explicitly allowing a development app; do not disable
@@ -32,7 +32,10 @@ open 'Hypermesh Visor Development.app'
 ```
 
 The checksums identify the downloaded bytes; they do not authenticate the publisher.
-`source-revision` identifies the source built by CI. Keep the directory together.
+`source-revision` identifies the Visor source built by CI. Conductor's source
+revision and verified archive checksum are recorded in
+`conductor-source-revision` and `conductor-source-archive.sha256`; its executable
+is covered by the same file manifest. Keep the directory together.
 Run `bin/hypermesh` for the CLI, or configure an external MCP client to execute the
 absolute path to `bin/hypermesh-desktop-mcp`. These launchers default to the native
 app's local control socket directory. An explicit `HYPERMESH_RUNTIME_DIR` remains
@@ -44,6 +47,20 @@ MCP programs cannot lift a native user pause. Permission or input-monitor loss
 disables Allow/Resume until Visor is restarted; restore permissions first, reopen
 the app and a session, then select Allow. Renter credentials remain in the
 existing user credential store; the archive contains no credentials.
+
+## Conductor runtime
+
+`bin/conductor` resolves the verified runtime in this extracted distribution.
+The native app connects to its same-user private Unix socket by default. An
+independently started `conductor serve --socket` uses that path with the user's
+explicit endpoint configuration and journal. The launcher preserves argument
+boundaries and does not read, print, or persist credentials. Service-review
+credentials follow Conductor's dedicated credential configuration.
+
+The permission-bearing app does not spawn this runtime or pass its desktop
+permissions to it. This archive does not register a background service. Automatic
+isolated startup remains tracked in #90; bundling alone does not complete it.
+Stop the independent Conductor process before replacing or removing its bundle.
 
 ## Upgrade and remove
 
