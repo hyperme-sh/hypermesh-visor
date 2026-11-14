@@ -887,7 +887,8 @@ not template names, arguments, cursors or content. Errors omit remote payloads.
 
 Publishing a review snapshot pauses desktop automation. Start and resume,
 including native idle resume, are refused while any unexpired review remains
-pending. Approve or cancel every pending review before resuming access;
+pending. Mouse and keyboard admission also checks this rule, including after
+Stop. Approve or cancel every pending review before resuming access;
 completing a review does not itself resume automation. Reviews expire
 after five minutes and expired snapshots cannot be approved. This rule also
 protects terminal and Linux dialog reviews, independently of native window

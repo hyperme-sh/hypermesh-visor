@@ -2268,7 +2268,12 @@ struct InjectGuard<'a> {
 }
 
 impl<'a> InjectGuard<'a> {
-    fn arm(gate: &'a Mutex<automation::Gate>, session: Uuid, epoch: u64, consent: Option<tasks::Consent>) -> Result<Self, ApiError> {
+    fn arm(state: &'a AppState, session: Uuid, epoch: u64, consent: Option<tasks::Consent>) -> Result<Self, ApiError> {
+        let trust = lock(&state.mcp_trust);
+        if trust.has_active_review() {
+            return Err(ApiError::conflict("MCP source review is pending; desktop input is paused"));
+        }
+        let gate = &state.automation;
         let mut held = lock(gate);
         if consent.is_some_and(|value| !value.matches(&held)) { return Err(ApiError::conflict("local consent changed")); }
         held.begin_inject(session, epoch)
@@ -2352,7 +2357,7 @@ async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
         if cancelled() || stretch_ended(&state2) {
             return Err(ApiError::conflict("automation paused"));
         }
-        let _injecting = InjectGuard::arm(&state2.automation, id, epoch, task_epoch)?;
+        let _injecting = InjectGuard::arm(&state2, id, epoch, task_epoch)?;
         let mut release = ReleaseGuard::arm(&*desktop);
         let generation = lock(&state2.automation).generation();
         let from = desktop.pointer_position().ok().flatten();
@@ -2447,7 +2452,7 @@ async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
         if cancelled() || stretch_ended(&state2) {
             return Err(ApiError::conflict("automation paused"));
         }
-        let _injecting = InjectGuard::arm(&state2.automation, id, epoch, task_epoch)?;
+        let _injecting = InjectGuard::arm(&state2, id, epoch, task_epoch)?;
         let mut release = ReleaseGuard::arm(&*desktop);
         let generation = lock(&state2.automation).generation();
         let mut rest = strokes.as_slice();
@@ -7560,7 +7565,7 @@ while True:
 
     #[tokio::test]
     async fn pending_mcp_review_pauses_and_blocks_every_resume_until_all_reviews_close() {
-        let (mut state, _, session) = task_fixture();
+        let (mut state, desktop, session) = task_fixture();
         let dir = std::env::temp_dir().join(format!("hm-review-pause-{}", Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         let project = dir.join("project.json");
@@ -7581,6 +7586,18 @@ while True:
                 assert!(state.control_automation(action, companion, Some(session)).is_err());
             }
         }
+        assert!(state.control_automation(Control::Stop, true, None).is_ok());
+        assert_eq!(lock(&state.automation).phase(), Phase::Off);
+        lock(&state.automation).note_poll(Instant::now(), state.companion_poll_timeout);
+        for (verb, body) in [
+            ("mouse", serde_json::json!({"action":"move", "x":0, "y":0})),
+            ("type", serde_json::json!({"text":"TRUST"})),
+        ] {
+            let (status, _) = trust_test_request(router(Arc::clone(&state)), "POST", &format!("/session/{session}/{verb}"), body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{verb} implicitly restarted during review");
+        }
+        assert!(lock(&desktop.mice).is_empty());
+        assert!(lock(&desktop.typed).is_empty());
         let (status, second) = trust_test_request(app.clone(), "POST", "/mcp/discovery", selection.clone()).await;
         assert_eq!(status, StatusCode::OK);
         let (status, _) = trust_test_request(app.clone(), "POST", "/mcp/trust", serde_json::json!({"action":"cancel", "review_id":first["review_id"]})).await;
