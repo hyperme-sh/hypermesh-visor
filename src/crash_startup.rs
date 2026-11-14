@@ -243,6 +243,17 @@ mod tests {
             &serde_json::json!({"choice":"enable","binding":preview["binding"]})
         )
         .is_err());
+        let stale_off =
+            consent_ui_at(&config, "crash-consent-status", &serde_json::Value::Null).unwrap();
+        let (_, old_revision) = store.crash_choice().unwrap();
+        store.decide(Category::Crashes, false).unwrap();
+        assert!(store.enable_crash_if_revision(old_revision).is_err());
+        assert!(consent_ui_at(
+            &config,
+            "crash-consent-set",
+            &serde_json::json!({"choice":"enable","binding":stale_off["binding"]})
+        )
+        .is_err());
         let preview =
             consent_ui_at(&config, "crash-consent-status", &serde_json::Value::Null).unwrap();
         consent_ui_at(
