@@ -21,7 +21,7 @@ function Install-Candidate([string]$Tasks) {
 try {
     Install-Candidate ''
     if (Test-Path -LiteralPath $startup) { throw 'Startup was enabled without selecting the task' }
-    foreach ($file in @('hypermesh-visor.exe', 'hypermesh-native-desktop.exe', 'hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-desktop-mcp.exe')) {
+    foreach ($file in @('hypermesh-visor.exe', 'hypermesh-native-desktop.exe', 'hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-desktop-mcp.exe', 'hypermesh-acp.exe')) {
         if (!(Test-Path -LiteralPath (Join-Path $install $file))) { throw "Installed file missing: $file" }
     }
     $registration = Get-ItemProperty -LiteralPath $uninstallKey

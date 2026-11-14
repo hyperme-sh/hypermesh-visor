@@ -43,7 +43,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources && \
     dpkg-query -W > /usr/share/visor-packages.txt && rm -rf /var/lib/apt/lists/* && \
     groupadd --gid 2000 resources && useradd --uid 1000 --create-home --shell /bin/bash bot && \
     usermod -a -G resources bot && install -d -o bot -g bot -m 0700 /run/visor /home/bot/.config /home/bot/.local/state /home/bot/workspace
-COPY --from=build /src/target/release/hypermesh-visor /src/target/release/hypermesh-companion /src/target/release/hypermesh-desktop-mcp /usr/local/bin/
+COPY --from=build /src/target/release/hypermesh-visor /src/target/release/hypermesh-companion /src/target/release/hypermesh-desktop-mcp /src/target/release/hypermesh-acp /usr/local/bin/
 COPY --from=cli /out/hypermesh /usr/local/bin/hypermesh
 COPY --from=crash-sdk /crash-runtime /usr/local/lib/hypermesh-visor/crash-sdk
 RUN ldd /usr/local/lib/hypermesh-visor/crash-sdk/bin/crashpad_handler > /tmp/crash-dependencies && \

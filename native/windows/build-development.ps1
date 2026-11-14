@@ -7,11 +7,12 @@ $out = [System.IO.Path]::GetFullPath($Output)
 if (Test-Path -LiteralPath $out) { throw 'Output already exists' }
 & cargo rustc --locked --lib --crate-type cdylib
 if ($LASTEXITCODE -ne 0) { throw 'Native engine build failed' }
-& cargo build --locked -p hypermesh-visor-client --bin hypermesh-desktop-mcp-client
+& cargo build --locked -p hypermesh-visor-client --bins
 if ($LASTEXITCODE -ne 0) { throw 'Inverse MCP build failed' }
 & dotnet publish native/windows/app/HypermeshVisor.csproj -c Release -r win-x64 --self-contained true -p:RestoreLockedMode=true -o $out
 if ($LASTEXITCODE -ne 0) { throw 'Native companion build failed' }
 Copy-Item -LiteralPath target/debug/hypermesh_visor.dll -Destination $out
+Copy-Item -LiteralPath target/debug/hypermesh-acp.exe -Destination $out
 Copy-Item -LiteralPath target/debug/hypermesh-desktop-mcp-client.exe -Destination (Join-Path $out 'hypermesh-desktop-mcp.exe')
 Push-Location third_party/hypermesh-cli
 try {

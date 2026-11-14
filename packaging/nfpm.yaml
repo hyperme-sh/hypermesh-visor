@@ -17,6 +17,11 @@ homepage: https://github.com/FyberLabs/hypermesh-visor
 depends:
   - zenity
 contents:
+  - src: ${ACP_BIN}
+    dst: /usr/bin/hypermesh-acp
+    expand: true
+    file_info:
+      mode: 0755
   - src: ${CRASH_SDK}/
     dst: /usr/lib/hypermesh-visor/crash-sdk
     type: tree
