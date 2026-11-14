@@ -96,12 +96,12 @@ impl Store {
             scope,
             synchronized: Mutex::new([None; 5]),
         };
-        let changed = store.locked(|| Ok(store.read()?.is_some_and(|r| r.scope != store.scope)))?;
-        if changed {
-            // Persist a default-off scope transition so old processes cannot
-            // continue using the previous identity or notice's tickets.
-            store.decide(Category::Crashes, false)?;
-        }
+        store.locked(|| {
+            if store.read()?.is_some_and(|r| r.scope != store.scope) {
+                store.write_locked(&store.default_record())?;
+            }
+            Ok(())
+        })?;
         Ok(store)
     }
     fn locked<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
@@ -132,6 +132,33 @@ impl Store {
         }
         Ok(Some(record))
     }
+    fn default_record(&self) -> Record {
+        Record {
+            version: 1,
+            scope: self.scope.clone(),
+            categories: std::array::from_fn(|_| Decision {
+                enabled: false,
+                revision: Uuid::new_v4(),
+            }),
+        }
+    }
+    // Caller holds the cross-process lock from reading through replacement.
+    fn write_locked(&self, record: &Record) -> io::Result<()> {
+        let bytes = serde_json::to_vec(record).map_err(|_| refused())?;
+        let temporary = self.directory.join(format!(".{}", Uuid::new_v4()));
+        let result = (|| {
+            let mut file = storage::open(&temporary, storage::Open::New)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            drop(file);
+            storage::replace(&temporary, &self.directory.join("consent.json"))?;
+            storage::sync_dir(&self.directory)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
     /// Explicit local choice after displaying purpose, destination and retention.
     /// Switching identity or notice resets every category to off.
     pub fn decide(&self, category: Category, enabled: bool) -> io::Result<Uuid> {
@@ -140,32 +167,12 @@ impl Store {
             let current = self.read()?;
             let mut record = current
                 .filter(|r| r.scope == self.scope)
-                .unwrap_or_else(|| Record {
-                    version: 1,
-                    scope: self.scope.clone(),
-                    categories: std::array::from_fn(|_| Decision {
-                        enabled: false,
-                        revision: Uuid::new_v4(),
-                    }),
-                });
+                .unwrap_or_else(|| self.default_record());
             let revision = Uuid::new_v4();
             record.categories[category.index()] = Decision { enabled, revision };
             // Revoke the in-process upload authority before persistence is attempted.
             *synced = [None; 5];
-            let bytes = serde_json::to_vec(&record).map_err(|_| refused())?;
-            let temporary = self.directory.join(format!(".{}", Uuid::new_v4()));
-            let result = (|| {
-                let mut file = storage::open(&temporary, storage::Open::New)?;
-                file.write_all(&bytes)?;
-                file.sync_all()?;
-                drop(file);
-                storage::replace(&temporary, &self.directory.join("consent.json"))?;
-                storage::sync_dir(&self.directory)
-            })();
-            if result.is_err() {
-                let _ = fs::remove_file(&temporary);
-            }
-            result?;
+            self.write_locked(&record)?;
             Ok(revision)
         })
     }
@@ -340,6 +347,30 @@ mod tests {
             assert!(other.capture(Category::Crashes).unwrap().is_none());
             assert!(store.synchronized(&old).is_err());
         }
+    }
+    #[test]
+    fn opening_current_scope_preserves_a_completed_opt_in() {
+        let dir = Temp::new();
+        let old = Store::open(&dir.0, scope()).unwrap();
+        old.decide(Category::Crashes, true).unwrap();
+        let new_scope = scope();
+        let first = Store::open(&dir.0, new_scope.clone()).unwrap();
+        assert!(first.capture(Category::Crashes).unwrap().is_none());
+        first.decide(Category::Crashes, true).unwrap();
+        let ticket = first.capture(Category::Crashes).unwrap().unwrap();
+        first
+            .locked(|| {
+                assert!(Store::open(&dir.0, new_scope.clone()).is_err());
+                Ok(())
+            })
+            .unwrap();
+        let second = Store::open(&dir.0, new_scope).unwrap();
+        assert_eq!(
+            second.capture(Category::Crashes).unwrap().unwrap().revision,
+            ticket.revision
+        );
+        first.synchronized(&ticket).unwrap();
+        first.upload(&ticket, || Ok(())).unwrap();
     }
     #[test]
     fn corrupt_storage_fails_closed() {
