@@ -25,7 +25,8 @@ internal static class Contracts
             Require(terminalPlan.Environment["HYPERMESH_SESSION_CLI"] == @"C:\bundle with spaces\$(literal)\hypermesh.exe");
             Require(!terminalPlan.ArgumentList.Last().Contains("$(literal)") && !terminalPlan.ArgumentList.Last().Contains(selected));
             var wslPlan = SessionTerminal.WslPlan("wsl.exe", "/mnt/c/bundle with spaces/hypermesh.exe", selected, "second-instance");
-            Require(wslPlan.ArgumentList.SequenceEqual(new[] { "--exec", "/mnt/c/bundle with spaces/hypermesh.exe", "session-terminal", "--session", selected, "--instance", "second-instance" }));
+            Require(wslPlan.ArgumentList.SequenceEqual(new[] { "--exec", "/bin/sh", "-c", SessionTerminal.WslScript, "visor-session", "/mnt/c/bundle with spaces/hypermesh.exe", selected, "second-instance" }));
+            Require(!SessionTerminal.WslScript.Contains(selected) && SessionTerminal.WslScript.Contains("--raw-terminal"));
             Refuses(() => SessionTerminal.WslPlan("wsl.exe", "--help", selected, "default"));
             Refuses(() => SessionTerminal.PowerShellPlan("powershell.exe", "hypermesh.exe", "bad", "default"));
             Refuses(() => SessionTerminal.PowerShellPlan("powershell.exe", "hypermesh.exe", selected, "bad; command"));

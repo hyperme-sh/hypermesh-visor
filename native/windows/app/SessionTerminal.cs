@@ -5,6 +5,7 @@ namespace Hypermesh.Visor;
 
 internal static class SessionTerminal
 {
+    internal const string WslScript = "saved=$(stty -g) || exit 1; trap 'stty \"$saved\"' 0; trap 'exit 130' HUP INT TERM; stty raw -echo || exit 1; \"$1\" session-terminal --raw-terminal --session \"$2\" --instance \"$3\"; result=$?; exit \"$result\"";
     internal static ProcessStartInfo PowerShellPlan(string powershell, string cli, string session, string instance)
     {
         Validate(session, instance);
@@ -23,7 +24,8 @@ internal static class SessionTerminal
         Validate(session, instance);
         if (!cli.StartsWith('/') || cli.Length > 4096 || cli.Any(char.IsControl)) throw new InvalidOperationException("WSL path unavailable");
         ProcessStartInfo plan = new(wsl) { UseShellExecute = false };
-        foreach (string argument in new[] { "--exec", cli, "session-terminal", "--session", session, "--instance", instance }) plan.ArgumentList.Add(argument);
+        // A fixed wrapper owns the Linux PTY settings even when Windows interop supplies pipe handles.
+        foreach (string argument in new[] { "--exec", "/bin/sh", "-c", WslScript, "visor-session", cli, session, instance }) plan.ArgumentList.Add(argument);
         return plan;
     }
 

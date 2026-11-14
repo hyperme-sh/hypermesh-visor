@@ -19,6 +19,7 @@ jobs:
         run: |
           python3 native/macos/test-package.py --self-test
           python3 native/macos/test-keychain.py --self-test
+          python3 native/windows/test-terminal-wrapper.py
       - name: Check Conductor shutdown observer
         run: python3 ci/test-conductor-process.py
       - name: Check embedded includes

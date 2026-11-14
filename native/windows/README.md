@@ -97,7 +97,9 @@ while resolving a destination cancels the action.
 The tray can also open the selected session CLI in PowerShell or the default WSL
 distribution. Both run the bundled Windows CLI against the same private pipe
 instance, with one prompt per line and `/quit` to close. WSL requires Windows
-interoperability and `wslpath`; it does not start a second Linux Visor instance.
+interoperability, `wslpath`, `/bin/sh` and `stty`; a fixed wrapper saves/restores
+the Linux terminal settings so pasted prompts are not truncated by canonical
+input buffering. It does not start a second Linux Visor instance.
 CLI credentials remain in the user's existing CLI configuration. Opening a
 terminal does not grant desktop access or create a session.
 
