@@ -11,6 +11,17 @@ internal static class Contracts
     {
         try
         {
+            JsonElement review = JsonSerializer.SerializeToElement(new {
+                profile = "default", review_id = "00000000-0000-4000-8000-000000000001", profiles_path = "profiles.json",
+                servers = new[] { new { name = "example", status = "selected", transport = "http", enabled = true, argument_count = 1,
+                    environment_names = new[] { "KEY" }, header_names = new[] { "Authorization" }, overrides = Array.Empty<string>(),
+                    environment = new { KEY = "hidden-secret" }, args = new[] { "hidden-secret" } } }
+            });
+            Require(McpTrustWindow.ReviewId(review, "default") == "00000000-0000-4000-8000-000000000001");
+            Refuses(() => McpTrustWindow.ReviewId(review, "another-profile"));
+            string description = McpTrustWindow.Describe(review);
+            Require(description.Contains("KEY") && description.Contains("Authorization") && !description.Contains("hidden-secret"));
+            Require(McpTrustWindow.Safe("name\n\u202e") == "name\\u000a\\u202e");
             const string selected = "00000000-0000-4000-8000-000000000001";
             JsonElement DestinationResponse(string? forum) => JsonSerializer.SerializeToElement(new { status = 200, body = new { session = selected, forum } });
             Require(Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, selected, false) == "https://forum.example.test/t/1");

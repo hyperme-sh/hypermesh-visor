@@ -14,6 +14,7 @@ internal sealed class Companion : Form
     private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "Hypermesh Visor", Visible = true };
     private readonly Icon companionIcon = LoadIcon();
     private readonly PointerOverlay overlay = new();
+    private McpTrustWindow? trustWindow;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
     private readonly nuint marker = InputMonitor.CreateMarker();
     private readonly InputAuthority authority = new();
@@ -43,6 +44,13 @@ internal sealed class Companion : Form
         menu.Items.Add("Open workspace in VS Code", null, async (_, _) => await OpenDestination(true));
         menu.Items.Add("Session CLI in PowerShell", null, async (_, _) => await OpenTerminal(false));
         menu.Items.Add("Session CLI in WSL", null, async (_, _) => await OpenTerminal(true));
+        menu.Items.Add("MCP discovery and trust", null, (_, _) =>
+        {
+            if (!started || closing) return;
+            if (trustWindow == null || trustWindow.IsDisposed) trustWindow = new McpTrustWindow();
+            if (!trustWindow.Visible) trustWindow.Show(this);
+            trustWindow.Activate();
+        });
         menu.Items.Add("Allow desktop access", null, async (_, _) => await Approve());
         menu.Items.Add("Pause", null, (_, _) => Pause("Paused by you"));
         menu.Items.Add("Stop", null, (_, _) => Stop());
@@ -237,6 +245,7 @@ internal sealed class Companion : Form
         if (closing) return;
         args.Cancel = true; closing = true;
         Revoke(); consent.Stop(); timer.Stop(); tray.Visible = false;
+        trustWindow?.Close();
         monitor?.Dispose();
         try { await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
         SystemEvents.SessionSwitch -= SessionChanged;
