@@ -50,7 +50,26 @@ subprocess.run(['libtool', '-static', '-o', str(root / 'libvisor_crash_sdk.a'), 
 PY
 fi
 printf '%s\n' "$revision" > "$output/source-revision"
-git -C "$repo" rev-parse HEAD > "$output/visor-source-revision"
+if git -C "$repo" rev-parse HEAD > "$output/visor-source-revision" 2>/dev/null; then
+  :
+else
+  # Archive/container contexts omit Git metadata. Record the exact source tree
+  # bytes instead; the SDK and application compile in the same build context.
+  python3 - "$repo" > "$output/visor-source-revision" <<'PYHASH'
+import hashlib, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+hash = hashlib.sha256()
+paths = [root / 'Cargo.toml', root / 'Cargo.lock']
+for directory in ('src', 'native/crash', 'local-storage'):
+    paths.extend(p for p in (root / directory).rglob('*') if p.is_file())
+for path in sorted(paths):
+    relative = path.relative_to(root).as_posix().encode()
+    data = path.read_bytes()
+    hash.update(len(relative).to_bytes(8, 'big') + relative)
+    hash.update(len(data).to_bytes(8, 'big') + data)
+print('source-tree-sha256:' + hash.hexdigest())
+PYHASH
+fi
 git -C "$work/source" submodule status --recursive > "$output/submodule-revisions"
 while IFS= read -r file; do
   case "${file##*/}" in

@@ -9,10 +9,6 @@ concurrency:
 permissions:
   contents: read
 jobs:
-  native-crash-sdk:
-    uses: ./.github/workflows/crash-sdk.yml
-    with:
-      platforms: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
   contracts:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -36,7 +32,6 @@ jobs:
           VISOR_BOT_CONFIG_FILE="$RUNNER_TEMP/bot-config" VISOR_BOT_TOKEN_FILE="$RUNNER_TEMP/bot-token" docker compose -f container/compose.remote.yaml config --quiet
 
   native-image:
-    needs: native-crash-sdk
     strategy:
       fail-fast: false
       matrix:
@@ -51,12 +46,6 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-crash-sdk-${{ matrix.runner }}
-          path: ${{ runner.temp }}/visor-crash-sdk
-      - name: Stage matching native capture runtime
-        run: python3 native/crash/stage-runtime.py "$RUNNER_TEMP/visor-crash-sdk" .ci-crash-sdk --platform linux --revision "$(git rev-parse HEAD)"
       - name: Build native desktop image
         env:
           EXPECTED_MACHINE: ${{ matrix.machine }}

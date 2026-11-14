@@ -44,8 +44,9 @@ CI calls the reusable SDK build for each target and stages only artifacts whose
 `visor-source-revision` matches the application checkout. Set
 `HYPERMESH_CRASH_SDK_PATH` to that artifact for Windows and macOS builds. Linux
 packaging uses `HYPERMESH_CRASH_SDK_X86_64` and
-`HYPERMESH_CRASH_SDK_AARCH64`. The container build stages its matching Linux
-artifact into `.ci-crash-sdk` with `stage-runtime.py` before building the image.
+`HYPERMESH_CRASH_SDK_AARCH64`. The container builds its SDK inside a separate build stage from the same
+application source tree. When Git metadata is absent it records a SHA-256
+digest of the capture build inputs in place of a Git revision.
 No private runtime configuration or DSN belongs in these build artifacts.
 
 The standalone Linux executable and musl headless bundles do not include a
