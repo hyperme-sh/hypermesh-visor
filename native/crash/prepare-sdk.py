@@ -13,7 +13,7 @@ old = "    crashpad_register_wer_module(absolute_handler_path, data);"
 if text.count(old) != 1:
     raise SystemExit("unexpected native WER configuration")
 text = text.replace(old, "    // Visor uses only its consent-owned handler, never WER fallback.")
-text += '\nextern "C" SENTRY_API int visor_sentry_capture_policy_version(void) { return 1; }\n'
+text += '\nextern "C" SENTRY_API int sentry_visor_capture_policy_version(void) { return 1; }\n'
 backend.write_text(text)
 
 main = source / "external/crashpad/handler/main.cc"
