@@ -18,6 +18,11 @@ try {
     & go build -mod=readonly -buildvcs=false -trimpath -o (Join-Path $out 'hypermesh.exe') ./cmd/hypermesh
     if ($LASTEXITCODE -ne 0) { throw 'Bundled CLI build failed' }
 } finally { Pop-Location }
+Push-Location native/windows/launcher
+try {
+    & go build -mod=readonly -buildvcs=false -trimpath -ldflags '-H windowsgui' -o (Join-Path $out 'hypermesh-visor.exe') .
+    if ($LASTEXITCODE -ne 0) { throw 'Windows launcher build failed' }
+} finally { Pop-Location }
 $revision = '4a10fe08b7a4f89e3db444f4107d7b6c8de3e9fe'
 $digest = 'f37edc72b64f3c1a92b85e387d2d474bbd257a0bc8f351cfa0b47e534eb41e01'
 $source = Join-Path ([IO.Path]::GetTempPath()) ('visor-conductor-' + [guid]::NewGuid())
