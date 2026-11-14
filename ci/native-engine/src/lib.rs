@@ -27,9 +27,13 @@ mod tests {
         store.decide(Category::Crashes, true).unwrap();
         assert!(store.capture(Category::Sensors).unwrap().is_none());
         let capture = store.capture_lease().unwrap().unwrap();
+        let raw_runs = directory.join("raw-runs");
+        hypermesh_local_storage::create_dir(&raw_runs).unwrap();
+        assert!(hypermesh_visor::crash_recovery::recover(&store, "https://crashes.example.invalid/api/1/envelope/", &raw_runs).is_err());
         assert!(store.decide(Category::Crashes, false).is_err());
         assert!(Store::open(&directory, Scope { device: scope.subject, ..scope.clone() }).is_err());
         capture.withdraw().unwrap();
+        assert!(hypermesh_visor::crash_recovery::recover(&store, "https://crashes.example.invalid/api/1/envelope/", &raw_runs).unwrap().is_empty());
         assert!(store.capture(Category::Crashes).unwrap().is_none());
         store.decide(Category::Crashes, true).unwrap();
         let ticket = store.capture(Category::Crashes).unwrap().unwrap();

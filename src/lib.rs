@@ -44,6 +44,7 @@ pub mod crash_report;
 pub mod crash_dump;
 pub mod crash_upload;
 pub mod crash_dialog;
+pub mod crash_recovery;
 mod vault;
 mod usage;
 pub use usage::ResponseUsage;

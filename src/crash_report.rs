@@ -67,6 +67,24 @@ impl PendingCrash {
     ) -> io::Result<Self> {
         let dump = crate::crash_dump::reduce(directory, id)?;
         store.validate_capture(&ticket)?;
+        Self::from_reduced_dump(ticket, destination, dump)
+    }
+    /// Only recovery can obtain this proof, while its capture guard prevents
+    /// withdrawal, scope reset and new writers. No second consent lock is needed.
+    pub(crate) fn from_recovery_dump(
+        ticket: crate::health_consent::RecoveryTicket<'_>,
+        destination: &str,
+        directory: &std::path::Path,
+        id: Uuid,
+    ) -> io::Result<Self> {
+        let dump = crate::crash_dump::reduce(directory, id)?;
+        Self::from_reduced_dump(ticket.into_ticket(), destination, dump)
+    }
+    fn from_reduced_dump(
+        ticket: Ticket,
+        destination: &str,
+        dump: crate::crash_dump::ReducedDump,
+    ) -> io::Result<Self> {
         use crate::crash_dump::CrashCode;
         Self::from_code_at(
             ticket,
