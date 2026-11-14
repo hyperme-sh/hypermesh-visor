@@ -2,9 +2,9 @@ name: native crash SDK build contracts
 on:
   push:
     branches: [main]
-    paths: ['native/crash/**', '.github/workflows/crash-sdk.yml']
+    paths: ['native/crash/**', 'src/health_consent.rs', 'local-storage/**', 'Cargo.lock', '.github/workflows/crash-sdk.yml']
   pull_request:
-    paths: ['native/crash/**', '.github/workflows/crash-sdk.yml']
+    paths: ['native/crash/**', 'src/health_consent.rs', 'local-storage/**', 'Cargo.lock', '.github/workflows/crash-sdk.yml']
 permissions:
   contents: read
 concurrency:
@@ -19,6 +19,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Capture ownership unit contracts
+        run: cargo test --locked -p hypermesh-crash-guard
       - name: Install Linux Crashpad build dependencies
         if: runner.os == 'Linux'
         run: |

@@ -1,8 +1,10 @@
 /* Options contract only: never calls sentry_init or installs a crash handler. */
 #include <sentry.h>
 #include <string.h>
+extern int visor_sentry_capture_policy_version(void);
 
 int main(void) {
+    if (visor_sentry_capture_policy_version() != 1) return 1;
     sentry_options_t *options = sentry_options_new();
     if (!options) return 1;
     sentry_options_set_dsn(options, "");
