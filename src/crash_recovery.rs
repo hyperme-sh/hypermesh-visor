@@ -50,14 +50,14 @@ pub fn recover(
     runs.sort();
     // Reject unknown or unsafe roots before consuming any valid run.
     for run in &runs {
-        if uuid_name(&run).is_none() {
+        if uuid_name(run).is_none() {
             return Err(refused());
         }
         storage::check_dir(run).map_err(|_| refused())?;
     }
-    let mut reports = Vec::new();
+    let mut candidates = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for run in runs {
+    for run in &runs {
         // Invalid, missing, withdrawn or superseded metadata means delete, not
         // re-consent. The raw dump is not read on this path.
         let ticket = (|| {
@@ -87,7 +87,7 @@ pub fn recover(
                     let mut dumps = entries(&folder)?;
                     dumps.sort();
                     for path in dumps {
-                        if reports.len() == MAX_REPORTS {
+                        if candidates.len() == MAX_REPORTS {
                             break;
                         }
                         if path.extension().and_then(|s| s.to_str()) != Some("dmp") {
@@ -100,15 +100,21 @@ pub fn recover(
                         if !seen.insert(id) {
                             continue;
                         }
-                        if let Ok(report) =
-                            PendingCrash::from_dump(store, ticket.clone(), destination, &folder, id)
-                        {
-                            reports.push(report);
-                        }
+                        candidates.push((ticket.clone(), folder.clone(), id));
                     }
                 }
             }
         }
+    }
+    // All fallible metadata reads and directory enumeration finish before any
+    // report is consumed. The capture lock keeps crash decisions stable here.
+    let mut reports = Vec::new();
+    for (ticket, folder, id) in candidates {
+        if let Ok(report) = PendingCrash::from_dump(store, ticket, destination, &folder, id) {
+            reports.push(report);
+        }
+    }
+    for run in &runs {
         // remove_dir_all removes links themselves, never their targets. The
         // private run root was validated above, and no writer holds the lease.
         fs::remove_dir_all(&run).map_err(|_| refused())?;
@@ -197,6 +203,33 @@ mod tests {
         run
     }
     const DEST: &str = "https://glitchtip.example.invalid/api/42/envelope/";
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_later_ticket_preserves_earlier_runs() {
+        use std::os::unix::fs::PermissionsExt;
+        let consent = Temp::new();
+        let root = Temp::new();
+        let store = store(&consent.0);
+        store.decide(Category::Crashes, true).unwrap();
+        let mut runs = [
+            run(&root.0, &store, "pending"),
+            run(&root.0, &store, "pending"),
+        ];
+        runs.sort();
+        let ticket = runs[1].join("ticket.json");
+        fs::set_permissions(&ticket, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(recover(&store, DEST, &root.0).is_err());
+        for pending in &runs {
+            assert_eq!(
+                fs::read_dir(pending.join("database/pending"))
+                    .unwrap()
+                    .count(),
+                1
+            );
+        }
+        fs::set_permissions(&ticket, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(recover(&store, DEST, &root.0).unwrap().len(), 2);
+    }
     #[test]
     fn unknown_entry_preserves_all_valid_runs() {
         let consent = Temp::new();
