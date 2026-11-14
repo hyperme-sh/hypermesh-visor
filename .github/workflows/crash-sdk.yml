@@ -19,6 +19,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Install Linux Crashpad build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libcurl4-openssl-dev
       - name: Build pinned Sentry native SDK and Crashpad handler
         shell: bash
         run: bash native/crash/build-sdk.sh "$RUNNER_TEMP/visor-crash-sdk"
