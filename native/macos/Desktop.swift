@@ -529,6 +529,33 @@ func nativeStartupDirectories(home: String, environment: [String: String]) -> (r
     return (environment["HYPERMESH_RUNTIME_DIR"] ?? home + "/.local/state/hypermesh/native-run", config)
 }
 
+func nativeMcpSafe(_ value: String) -> String {
+    value.unicodeScalars.map { scalar in
+        CharacterSet.controlCharacters.contains(scalar) || scalar.properties.generalCategory == .format
+            ? String(format: "\\u{%04x}", scalar.value) : String(scalar)
+    }.joined()
+}
+func nativeMcpReviewID(_ body: [String:Any], profile: String) -> String? {
+    guard body["profile"] as? String == profile, body["servers"] is [[String:Any]],
+          let id = body["review_id"] as? String, let parsed = UUID(uuidString: id) else { return nil }
+    return parsed.uuidString.lowercased()
+}
+func nativeMcpDescription(_ body: [String:Any]) -> String {
+    func text(_ item: [String:Any], _ key: String) -> String { nativeMcpSafe(item[key] as? String ?? "none") }
+    func names(_ item: [String:Any], _ key: String) -> String { (item[key] as? [String] ?? []).map(nativeMcpSafe).joined(separator: ", ") }
+    var lines = ["Profile: \(text(body, "profile"))", "Profile configuration: \(text(body, "profiles_path"))"]
+    for server in body["servers"] as? [[String:Any]] ?? [] {
+        lines += ["", "\(text(server, "name")) — \(text(server, "status")) / \(text(server, "transport"))",
+                  "Enabled: \(server["enabled"] as? Bool ?? false) / Argument count: \(server["argument_count"] as? Int ?? 0)",
+                  "Source: \(text(server, "source"))", "File: \(text(server, "path"))",
+                  "Executable: \(text(server, "command"))", "Working directory: \(text(server, "cwd"))",
+                  "Endpoint origin: \(text(server, "endpoint"))", "Environment names: \(names(server, "environment_names"))",
+                  "Header names: \(names(server, "header_names"))", "Overrides: \(names(server, "overrides"))"]
+    }
+    lines.append("\nRead complete source files privately before approving. Argument, environment and header values and URL paths/credentials are hidden. TRUST permits commands and connections as you but starts nothing now. Native stdio workers remain unavailable.")
+    return lines.joined(separator: "\n")
+}
+
 func selfTest() throws {
     let defaults = nativeStartupDirectories(home: "/Users/test", environment: [:])
     try verifyNativeUnit(defaults.runtime == "/Users/test/.local/state/hypermesh/native-run")
@@ -537,6 +564,14 @@ func selfTest() throws {
     try verifyNativeUnit(custom.runtime == "/custom run" && custom.config == "/custom config")
     let xdg = nativeStartupDirectories(home: "/Users/test", environment: ["HYPERMESH_CONFIG_DIR": "  ", "XDG_CONFIG_HOME": "/xdg"])
     try verifyNativeUnit(xdg.config == "/xdg/hypermesh")
+    let trustID = "00000000-0000-4000-8000-000000000001"
+    let trustSnapshot: [String:Any] = ["profile": "test", "review_id": trustID, "servers": [["name": "safe", "secret": "DO_NOT_RENDER", "environment_names": ["TOKEN"]]]]
+    try verifyNativeUnit(nativeMcpReviewID(trustSnapshot, profile: "test") == trustID)
+    try verifyNativeUnit(nativeMcpReviewID(trustSnapshot, profile: "other") == nil)
+    try verifyNativeUnit(!nativeMcpDescription(trustSnapshot).contains("DO_NOT_RENDER"))
+    try verifyNativeUnit(nativeMcpDescription(trustSnapshot).contains("TOKEN"))
+    try verifyNativeUnit(nativeMcpSafe("one\ntwo\u{202e}") == "one\\u{000a}two\\u{202e}")
+
     let selected = "00000000-0000-4000-8000-000000000001", other = "00000000-0000-4000-8000-000000000002"
     func destination(_ value: String, editor: Bool = false, current: String? = nil) -> URL? {
         return nativeDestinationResponse(["status": 200, "body": ["session": selected, editor ? "workspace" : "forum": value]],
