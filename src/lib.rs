@@ -43,6 +43,7 @@ pub mod health_consent;
 pub mod crash_report;
 pub mod crash_dump;
 pub mod crash_upload;
+pub mod crash_dialog;
 mod vault;
 mod usage;
 pub use usage::ResponseUsage;
