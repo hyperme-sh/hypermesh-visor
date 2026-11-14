@@ -882,3 +882,14 @@ model, fetch links, automatically follow pages, or change session instructions.
 The same transport authorization, busy-attachment behavior and close-during-call
 handling as resource access apply. Audit rows include the operation and outcome,
 not template names, arguments, cursors or content. Errors omit remote payloads.
+
+### Desktop access during source review
+
+Publishing a review snapshot pauses desktop automation. Start and resume,
+including native idle resume, are refused while any unexpired review remains
+pending. Mouse and keyboard admission also checks this rule, including after
+Stop. Approve or cancel every pending review before resuming access;
+completing a review does not itself resume automation. Reviews expire
+after five minutes and expired snapshots cannot be approved. This rule also
+protects terminal and Linux dialog reviews, independently of native window
+controls. Previewing still starts no server or outbound connection.
