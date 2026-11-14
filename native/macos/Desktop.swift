@@ -531,7 +531,7 @@ func nativeStartupDirectories(home: String, environment: [String: String]) -> (r
 
 func nativeMcpSafe(_ value: String) -> String {
     value.unicodeScalars.map { scalar in
-        CharacterSet.controlCharacters.contains(scalar) || scalar.properties.generalCategory == .format
+        CharacterSet.controlCharacters.contains(scalar) || CharacterSet.newlines.contains(scalar) || scalar.properties.generalCategory == .format
             ? String(format: "\\u{%04x}", scalar.value) : String(scalar)
     }.joined()
 }
@@ -579,6 +579,7 @@ func selfTest() throws {
     try verifyNativeUnit(nativeMcpReviewID(trustSnapshot, profile: "other") == nil)
     try verifyNativeUnit(!nativeMcpDescription(trustSnapshot).contains("DO_NOT_RENDER"))
     try verifyNativeUnit(nativeMcpDescription(trustSnapshot).contains("TOKEN"))
+    try verifyNativeUnit(nativeMcpSafe("name\u{2028}Endpoint origin: attacker\u{2029}") == "name\\u{2028}Endpoint origin: attacker\\u{2029}")
     try verifyNativeUnit(nativeMcpSafe("one\ntwo\u{202e}") == "one\\u{000a}two\\u{202e}")
 
     let selected = "00000000-0000-4000-8000-000000000001", other = "00000000-0000-4000-8000-000000000002"
