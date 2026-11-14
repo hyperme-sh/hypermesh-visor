@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/FyberLabs/hypermesh-cli/internal/api"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 var terminalSession = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -21,7 +23,7 @@ func newSessionTerminalCmd(r *run) *cobra.Command {
 		Use:   "session-terminal --session UUID",
 		Short: "Enter prompts for one existing local Visor session",
 		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) (result error) {
 			if !terminalSession.MatchString(session) {
 				return fmt.Errorf("a canonical session UUID is required")
 			}
@@ -41,13 +43,24 @@ func newSessionTerminalCmd(r *run) *cobra.Command {
 					}
 				}()
 			}
-			return sessionTerminal(cmd.InOrStdin(), cmd.OutOrStdout(), strings.ToLower(session), func(text string) error {
+			input, output := cmd.InOrStdin(), cmd.OutOrStdout()
+			if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
+				fd := int(file.Fd())
+				state, err := term.MakeRaw(fd)
+				if err != nil {
+					return err
+				}
+				defer func() { result = errors.Join(result, flushTerminal(fd), term.Restore(fd, state)) }()
+				output = terminalOutput{output}
+				input = &terminalInput{input: bufio.NewReader(input), echo: output}
+			}
+			return sessionTerminal(input, output, strings.ToLower(session), func(text string) error {
 				// Empty URL selects the private local transport, regardless of TCP environment settings.
 				raw, err := r.client.PostVisorPrompt("", strings.ToLower(session), text, "")
 				if err != nil {
 					return fmt.Errorf("prompt failed; it was not retried")
 				}
-				return writeModelText(cmd.OutOrStdout(), api.RedactKey(string(raw), r.cfg.APIKey))
+				return writeModelText(output, api.RedactKey(string(raw), r.cfg.APIKey))
 			})
 		},
 	}

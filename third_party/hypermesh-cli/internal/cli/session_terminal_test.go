@@ -1,12 +1,43 @@
 package cli
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestRawTerminalInputPreservesLongLinesAndCancelsBeforeSending(t *testing.T) {
+	for _, count := range []int{5000, 16385} {
+		var echo, output bytes.Buffer
+		input := &terminalInput{input: bufio.NewReader(strings.NewReader(strings.Repeat("x", count) + "\n/quit\n")), echo: &echo}
+		var sent []string
+		err := sessionTerminal(input, &output, terminalTestSession, func(text string) error { sent = append(sent, text); return nil })
+		if count == 5000 && (err != nil || len(sent) != 1 || len(sent[0]) != count) {
+			t.Fatalf("long line: err=%v sent=%v", err, len(sent))
+		}
+		if count > 16384 && (err == nil || len(sent) != 0) {
+			t.Fatalf("oversized line: err=%v sent=%v", err, len(sent))
+		}
+	}
+	for _, control := range []byte{3, 4} {
+		input := &terminalInput{input: bufio.NewReader(strings.NewReader("unsent" + string(control))), echo: &bytes.Buffer{}}
+		if err := sessionTerminal(input, &bytes.Buffer{}, terminalTestSession, func(string) error { t.Fatal("cancelled input sent"); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := &terminalInput{input: bufio.NewReader(strings.NewReader("aé\x7fb\n/quit\n")), echo: &bytes.Buffer{}}
+	if err := sessionTerminal(input, &bytes.Buffer{}, terminalTestSession, func(text string) error {
+		if text != "ab" {
+			t.Fatalf("edited input %q", text)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 
 const terminalTestSession = "00000000-0000-4000-8000-000000000001"
 
