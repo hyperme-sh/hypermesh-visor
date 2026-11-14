@@ -26,6 +26,64 @@ pub fn set_crash_consent(enabled: bool) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("crash reporting is not configured"))?;
     set_consent_at(Path::new(&path), enabled)
 }
+/// Local native UI only; no network router exposes these decisions.
+pub(crate) fn consent_ui(
+    action: &str,
+    decision: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
+    let path = std::env::var_os("HYPERMESH_CRASH_CONFIG")
+        .ok_or_else(|| io::Error::other("crash reporting is not configured"))?;
+    consent_ui_at(Path::new(&path), action, decision)
+}
+fn consent_ui_at(
+    path: &Path,
+    action: &str,
+    decision: &serde_json::Value,
+) -> io::Result<serde_json::Value> {
+    use crate::health_consent::Category;
+    use sha2::{Digest, Sha256};
+    if !path.is_absolute() {
+        return Err(io::Error::other("private crash configuration required"));
+    }
+    let config =
+        Config::read(path)?.ok_or_else(|| io::Error::other("crash reporting is not configured"))?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| io::Error::other("invalid crash directory"))?;
+    let store = Store::open(&directory.join("health-consent"), config.scope.clone())?;
+    let ticket = store.capture(Category::Crashes)?;
+    let binding = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&serde_json::json!({
+            "scope":config.scope, "destination":config.destination(), "ticket":ticket,
+        }))?)
+    );
+    if action == "crash-consent-set" {
+        if decision["binding"].as_str() != Some(binding.as_str()) {
+            return Err(io::Error::other(
+                "crash configuration or decision changed; reopen controls",
+            ));
+        }
+        match decision["choice"].as_str() {
+            Some("enable") if ticket.is_none() => {
+                store.decide(Category::Crashes, true)?;
+            }
+            Some("disable") => {
+                crate::crash_capture::withdraw_configured(&store, directory)?;
+            }
+            _ => return Err(io::Error::other("invalid crash consent choice")),
+        }
+        return Ok(serde_json::json!({"saved":true}));
+    }
+    if action != "crash-consent-status" {
+        return Err(io::Error::other("invalid crash consent action"));
+    }
+    Ok(
+        serde_json::json!({"enabled":ticket.is_some(), "binding":binding,
+        "notice":format!("Crash diagnostics help diagnose Visor failures. Capture is off unless you enable it. Private local minidumps may contain process memory. On the next startup, Visor reduces them to a fixed crash code, version, event ID, time and tenant tag, then deletes raw files before review. Raw dumps are never uploaded. Each sanitized upload to {} requires a separate approval. Reports expire after 24 hours; raw runs are cleaned on startup or successful withdrawal. Enable takes effect after restarting Visor. Disable stops capture and purges local raw runs before it succeeds.", config.destination())}),
+    )
+}
+
 fn set_consent_at(path: &Path, enabled: bool) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(io::Error::other("private crash configuration required"));
@@ -158,6 +216,45 @@ mod tests {
         dump.extend_from_slice(b"excluded-private-prompt");
         write(&pending.join(format!("{}.dmp", Uuid::new_v4())), &dump);
         (config, store, run)
+    }
+    #[test]
+    fn native_consent_preview_binds_choice_to_config_and_current_decision() {
+        let dir = Temp::new();
+        let (config, store, run) = fixture(&dir.0);
+        let preview =
+            consent_ui_at(&config, "crash-consent-status", &serde_json::Value::Null).unwrap();
+        assert_eq!(preview["enabled"], true);
+        assert!(!preview.to_string().contains("fixture_key"));
+        assert!(consent_ui_at(
+            &config,
+            "crash-consent-set",
+            &serde_json::json!({"choice":"disable","binding":"old"})
+        )
+        .is_err());
+        assert!(run.exists());
+        consent_ui_at(
+            &config,
+            "crash-consent-set",
+            &serde_json::json!({"choice":"disable","binding":preview["binding"]}),
+        )
+        .unwrap();
+        assert!(!run.exists());
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
+        assert!(consent_ui_at(
+            &config,
+            "crash-consent-set",
+            &serde_json::json!({"choice":"enable","binding":preview["binding"]})
+        )
+        .is_err());
+        let preview =
+            consent_ui_at(&config, "crash-consent-status", &serde_json::Value::Null).unwrap();
+        consent_ui_at(
+            &config,
+            "crash-consent-set",
+            &serde_json::json!({"choice":"enable","binding":preview["binding"]}),
+        )
+        .unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_some());
     }
     #[test]
     fn explicit_local_setting_purges_on_withdrawal_without_review() {
