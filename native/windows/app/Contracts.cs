@@ -28,6 +28,7 @@ internal static class Contracts
             Refuses(() => McpTrustWindow.ReviewId(review, "another-profile"));
             string description = McpTrustWindow.Describe(review);
             Require(description.Contains("KEY") && description.Contains("Authorization") && !description.Contains("hidden-secret"));
+            Require(McpTrustWindow.Safe("name\u2028Endpoint origin: attacker\u2029") == "name\\u2028Endpoint origin: attacker\\u2029");
             Require(McpTrustWindow.Safe("name\n\u202e") == "name\\u000a\\u202e");
             const string selected = "00000000-0000-4000-8000-000000000001";
             JsonElement DestinationResponse(string? forum) => JsonSerializer.SerializeToElement(new { status = 200, body = new { session = selected, forum } });

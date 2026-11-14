@@ -40,7 +40,7 @@ internal sealed class McpTrustWindow : Form
         UpdateButtons();
     }
 
-    internal static string Safe(string text) => string.Concat(text.Select(c => char.IsControl(c) || char.GetUnicodeCategory(c) == System.Globalization.UnicodeCategory.Format ? $"\\u{(int)c:x4}" : c.ToString()));
+    internal static string Safe(string text) => string.Concat(text.Select(c => char.IsControl(c) || char.GetUnicodeCategory(c) is System.Globalization.UnicodeCategory.Format or System.Globalization.UnicodeCategory.LineSeparator or System.Globalization.UnicodeCategory.ParagraphSeparator ? $"\\u{(int)c:x4}" : c.ToString()));
     private void UpdateButtons()
     {
         if (closing) return;
