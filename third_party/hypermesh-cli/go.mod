@@ -8,6 +8,8 @@ require (
 	github.com/zalando/go-keyring v0.2.6
 )
 
+require golang.org/x/term v0.29.0
+
 require (
 	al.essio.dev/pkg/shellescape v1.5.1 // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
