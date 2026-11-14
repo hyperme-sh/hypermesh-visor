@@ -11,4 +11,5 @@ mod telemetry;
 #[path = "../../shared/local_runtime.rs"]
 mod local_runtime;
 mod client;
+pub mod acp;
 pub use client::{run, run_with_version};
