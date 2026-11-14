@@ -372,6 +372,10 @@ impl TrustStore {
         );
         Ok(profile)
     }
+    pub fn has_active_review(&self) -> bool {
+        self.pending.values().any(|pending| pending.at.elapsed() < TTL)
+    }
+
     pub fn cancel(&mut self, id: Uuid) {
         self.pending.remove(&id);
     }
@@ -480,6 +484,18 @@ mod tests {
     fn inspect_fixture(dir: &Path) -> Review {
         inspect(dir, None, Some(dir.join("project.json").to_str().unwrap())).unwrap()
     }
+    #[test]
+    fn expired_reviews_no_longer_block_but_cannot_be_approved() {
+        let dir = fixture();
+        let mut store = TrustStore::default();
+        let id = store.stage(inspect_fixture(&dir)).unwrap().review_id;
+        assert!(store.has_active_review());
+        store.pending.get_mut(&id).unwrap().at = Instant::now() - TTL;
+        assert!(!store.has_active_review());
+        assert!(store.approve(id).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn locked_storage_does_not_acknowledge_an_unwritten_decision() {
         use std::os::fd::AsRawFd;

@@ -461,6 +461,8 @@ impl AppState {
 
     #[cfg(any(target_os = "macos", windows, test))]
     pub(crate) fn native_idle_resume(&self, session: Uuid, epoch: u64) -> Option<u64> {
+        let trust = lock(&self.mcp_trust);
+        if trust.has_active_review() { return None; }
         let sessions = lock(&self.sessions);
         let mut gate = lock(&self.automation);
         if !sessions.contains_key(&session) || gate.session() != Some(session)
@@ -502,6 +504,12 @@ impl AppState {
             }
             gate.stop();
             return Ok(());
+        }
+        // Serialize start/resume with review publication. Review staging uses
+        // the same trust -> automation order and pauses before returning a preview.
+        let trust = lock(&self.mcp_trust);
+        if trust.has_active_review() {
+            return Err(ApiError::conflict("MCP source review is pending; approve or cancel it before resuming desktop access"));
         }
         // Start and resume only publish. They do not wait on the injection
         // lock. An in-flight call sees the snapshot at its next check.
@@ -762,13 +770,11 @@ async fn mcp_discovery(
             body.source_id.as_deref(),
         )
         .map_err(ApiError::from_mcp)?;
-        lock(&state.mcp_trust)
-            .sync(&state.mcp_dir)
-            .map_err(ApiError::from_mcp)?;
-        lock(&state.mcp_trust)
-            .stage(review)
-            .map(Json)
-            .map_err(ApiError::from_mcp)
+        let mut trust = lock(&state.mcp_trust);
+        trust.sync(&state.mcp_dir).map_err(ApiError::from_mcp)?;
+        let preview = trust.stage(review).map_err(ApiError::from_mcp)?;
+        lock(&state.automation).pause();
+        Ok(Json(preview))
     })
     .await
     .map_err(|_| ApiError::internal("MCP discovery task failed"))?
@@ -7550,6 +7556,38 @@ while True:
         session.finish_response_usage(current, Some(expected));
         session.finish_response_usage(old, None);
         assert_eq!(session.last_response_usage(), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn pending_mcp_review_pauses_and_blocks_every_resume_until_all_reviews_close() {
+        let (mut state, _, session) = task_fixture();
+        let dir = std::env::temp_dir().join(format!("hm-review-pause-{}", Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        Arc::get_mut(&mut state).unwrap().mcp_dir = dir.clone();
+        Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
+        lock(&state.automation).note_poll(Instant::now(), state.companion_poll_timeout);
+        assert!(state.control_automation(Control::Start, true, Some(session)).is_ok());
+        let app = companion_router(Arc::clone(&state));
+        let (status, first) = trust_test_request(app.clone(), "POST", "/mcp/discovery", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK, "{first}");
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+        let epoch = lock(&state.automation).epoch();
+        assert!(state.native_idle_resume(session, epoch).is_none());
+        for companion in [false, true] {
+            for action in [Control::Start, Control::Resume] {
+                assert!(state.control_automation(action, companion, Some(session)).is_err());
+            }
+        }
+        let (status, second) = trust_test_request(app.clone(), "POST", "/mcp/discovery", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = trust_test_request(app.clone(), "POST", "/mcp/trust", serde_json::json!({"action":"cancel", "review_id":first["review_id"]})).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(state.control_automation(Control::Resume, true, Some(session)).is_err());
+        let (status, _) = trust_test_request(app, "POST", "/mcp/trust", serde_json::json!({"action":"approve", "review_id":second["review_id"]})).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+        assert!(state.control_automation(Control::Resume, true, Some(session)).is_ok());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
