@@ -67,6 +67,7 @@ func New(name string) *cobra.Command {
 	root.AddCommand(newLeaseCmd(r))
 	root.AddCommand(newChatCmd(r))
 	root.AddCommand(newPromptCmd(r))
+	root.AddCommand(newSessionTerminalCmd(r))
 	root.AddCommand(newCompletionsCmd(r))
 	root.AddCommand(newMCPCmd(r))
 	return root
