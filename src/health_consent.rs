@@ -85,6 +85,24 @@ pub struct Store {
     // Deliberately not persisted: restart/offline startup requires fresh sync.
     synchronized: Mutex<[Option<(Uuid, Instant)>; 5]>,
 }
+/// Held by the process that owns the native crash writer. Stop and reap that
+/// writer before dropping this lease or completing withdrawal.
+pub struct CrashCaptureLease<'a> {
+    store: &'a Store,
+    file: fs::File,
+    ticket: Ticket,
+}
+impl CrashCaptureLease<'_> {
+    pub fn ticket(&self) -> &Ticket { &self.ticket }
+    /// The caller must already have stopped its writer and purged raw files.
+    pub fn withdraw(self) -> io::Result<()> {
+        self.store.decide_without_capture_guard(Category::Crashes, false)?;
+        Ok(())
+    }
+}
+impl Drop for CrashCaptureLease<'_> {
+    fn drop(&mut self) { drop(storage::UnlockOnDrop(&self.file)); }
+}
 fn refused() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -106,6 +124,7 @@ impl Store {
         };
         store.locked(|| {
             if store.read()?.is_some_and(|r| r.scope != store.scope) {
+                let _capture = store.capture_lock()?;
                 store.write_locked(&store.default_record())?;
             }
             Ok(())
@@ -170,12 +189,17 @@ impl Store {
     /// Explicit local choice after displaying purpose, destination and retention.
     /// Switching identity or notice resets every category to off.
     pub fn decide(&self, category: Category, enabled: bool) -> io::Result<Uuid> {
+        let _capture = if category == Category::Crashes { Some(self.capture_lock()?) } else { None };
+        self.decide_without_capture_guard(category, enabled)
+    }
+    fn decide_without_capture_guard(&self, category: Category, enabled: bool) -> io::Result<Uuid> {
         let mut synced = self.synchronized.lock().map_err(|_| refused())?;
         self.locked(|| {
             let current = self.read()?;
-            let mut record = current
-                .filter(|r| r.scope == self.scope)
-                .unwrap_or_else(|| self.default_record());
+            if current.as_ref().is_some_and(|r| r.scope != self.scope) {
+                return Err(refused());
+            }
+            let mut record = current.unwrap_or_else(|| self.default_record());
             let revision = Uuid::new_v4();
             record.categories[category.index()] = Decision { enabled, revision };
             // Revoke the in-process upload authority before persistence is attempted.
@@ -198,6 +222,20 @@ impl Store {
                     })
                 }))
         })
+    }
+    fn capture_lock(&self) -> io::Result<fs::File> {
+        storage::check_dir(&self.directory)?;
+        let file = storage::open(&self.directory.join("crash-capture.lock"), storage::Open::Lock)?;
+        storage::lock(&file)?;
+        Ok(file)
+    }
+    /// No native writer may start without this enabled, original decision.
+    /// A second writer, crash decision change or scope reset fails while held.
+    /// Other categories remain independently editable.
+    pub fn capture_lease(&self) -> io::Result<Option<CrashCaptureLease<'_>>> {
+        let file = self.capture_lock()?;
+        let Some(ticket) = self.capture(Category::Crashes)? else { return Ok(None); };
+        Ok(Some(CrashCaptureLease { store: self, file, ticket }))
     }
     /// Called only after the authenticated consent service confirms the exact
     /// subject/tenant/device/category/notice/purpose/revision. Not an HTTP route.
@@ -283,6 +321,27 @@ mod tests {
             notice_version: Uuid::new_v4(),
             purpose_version: Uuid::new_v4(),
         }
+    }
+    #[test]
+    fn capture_lease_prevents_successful_withdrawal_until_writer_stops() {
+        let dir = Temp::new();
+        let original = scope();
+        let store = Store::open(&dir.0, original.clone()).unwrap();
+        assert!(store.capture_lease().unwrap().is_none());
+        store.decide(Category::Crashes, true).unwrap();
+        let lease = store.capture_lease().unwrap().unwrap();
+        assert!(store.capture_lease().is_err());
+        assert!(store.decide(Category::Crashes, false).is_err());
+        store.decide(Category::Sensors, true).unwrap();
+        assert!(Store::open(&dir.0, scope()).is_err());
+        let same = Store::open(&dir.0, original).unwrap();
+        assert!(same.capture(Category::Crashes).unwrap().is_some());
+        lease.withdraw().unwrap();
+        assert!(same.capture(Category::Crashes).unwrap().is_none());
+        assert!(same.capture(Category::Sensors).unwrap().is_some());
+        let replacement = Store::open(&dir.0, scope()).unwrap();
+        assert!(same.decide(Category::Sensors, true).is_err());
+        assert!(replacement.capture(Category::Sensors).unwrap().is_none());
     }
     #[test]
     fn default_off_and_independent_categories() {
