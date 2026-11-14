@@ -31,6 +31,8 @@ jobs:
       - name: Check display typing interruption observer
         run: python3 ci/display/test-interrupt-type.py
       - run: cargo test --locked --workspace
+      - name: GlitchTip fake Sentry endpoint contract
+        run: cargo test --locked --lib crash_upload::tests::fake_sentry_endpoint_contract -- --ignored --exact
       - name: Session CLI terminal unit contracts
         run: |
           cargo build --locked -p hypermesh-companion

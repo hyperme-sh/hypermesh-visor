@@ -42,6 +42,7 @@ pub mod telemetry;
 pub mod health_consent;
 pub mod crash_report;
 pub mod crash_dump;
+pub mod crash_upload;
 mod vault;
 mod usage;
 pub use usage::ResponseUsage;
