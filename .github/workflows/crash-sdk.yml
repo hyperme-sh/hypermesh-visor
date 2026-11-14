@@ -37,8 +37,10 @@ jobs:
           export PATH="$RUNNER_TEMP/visor-crash-sdk/bin:$PATH"
           if [[ "$RUNNER_OS" == Windows ]]; then
             "$RUNNER_TEMP/visor-crash-contract/Release/visor-crash-sdk-contract.exe"
+            "$RUNNER_TEMP/visor-crash-contract/Release/visor-crash-arguments-contract.exe"
           else
             "$RUNNER_TEMP/visor-crash-contract/visor-crash-sdk-contract"
+            "$RUNNER_TEMP/visor-crash-contract/visor-crash-arguments-contract"
           fi
       - uses: actions/upload-artifact@v4
         with:
