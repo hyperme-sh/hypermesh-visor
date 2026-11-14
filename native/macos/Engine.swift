@@ -424,7 +424,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private let closed: () -> Void
     private var names: [String] = []
     private var sourceIDs: [String?] = []
-    private var grants: [String:String] = [:]
+    private var grants: [Data:String] = [:]
+    private var configurationUnavailable = false
     private var pending: String?
     private var busy = false
     private var closing = false
@@ -469,14 +470,15 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         profiles.isEnabled = !busy; sources.isEnabled = !busy; reload.isEnabled = !busy; confirmation.isEnabled = !busy
         preview.isEnabled = !busy && profile != nil && sources.indexOfSelectedItem >= 0
         approve.isEnabled = !busy && pending != nil && confirmation.stringValue == "TRUST"
-        revoke.isEnabled = !busy && profile.map { grants[$0] != nil } == true && confirmation.stringValue == "REVOKE"
+        revoke.isEnabled = !busy && profile.map { grants[Data($0.utf8)] != nil } == true && confirmation.stringValue == "REVOKE"
     }
     private func invalidate() {
         if let id = pending { Task { _ = try? await NativeRuntime.shared.mcpRequest("mcp-decision", decision: ["action": "cancel", "review_id": id]) } }
         pending = nil
         guard !closing else { return }
         confirmation.stringValue = ""; details.string = ""
-        message.stringValue = "Current trust: \(nativeMcpSafe(profile.flatMap { grants[$0] } ?? "not approved")). Preview starts nothing. Approval affects future sessions; close existing sessions to stop their attached servers."
+        message.stringValue = "Current trust: \(nativeMcpSafe(profile.flatMap { grants[Data($0.utf8)] } ?? "not approved")). Preview starts nothing. Approval affects future sessions; close existing sessions to stop their attached servers."
+        if configurationUnavailable { message.stringValue += " Profile configuration or sources are unavailable; existing approvals can still be revoked." }
         update()
     }
     @objc private func changed() { invalidate() }
@@ -491,18 +493,24 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     private func load() async throws {
         invalidate()
-        guard let data = try await NativeRuntime.shared.mcpRequest("mcp-profiles") as? [String:Any],
-              let entries = data["profiles"] as? [[String:Any]],
-              let sourceData = try await NativeRuntime.shared.mcpRequest("mcp-sources") as? [[String:Any]],
-              let trusted = try await NativeRuntime.shared.mcpRequest("mcp-trusted") as? [[String:Any]] else { throw NativeError.invalid }
-        guard !closing else { return }
         grants = [:]
-        for item in trusted { if let name = item["profile"] as? String, let status = item["status"] as? String { grants[name] = status } }
-        names = Array(Set(entries.compactMap { $0["name"] as? String } + Array(grants.keys))).sorted()
-        if names.isEmpty { names = [data["active"] as? String ?? "default"] }
+        guard let trusted = try await NativeRuntime.shared.mcpRequest("mcp-trusted") as? [[String:Any]] else { throw NativeError.invalid }
+        let data = (try? await NativeRuntime.shared.mcpRequest("mcp-profiles")) as? [String:Any]
+        let sourcesResult = (try? await NativeRuntime.shared.mcpRequest("mcp-sources")) as? [[String:Any]]
+        guard !closing else { return }
+        let entries = data?["profiles"] as? [[String:Any]] ?? []
+        configurationUnavailable = data == nil || sourcesResult == nil
+        var trustedNames: [String] = []
+        for item in trusted {
+            if let name = item["profile"] as? String, let status = item["status"] as? String {
+                grants[Data(name.utf8)] = status; trustedNames.append(name)
+            }
+        }
+        names = nativeMcpProfiles(configured: entries.compactMap { $0["name"] as? String }, trusted: trustedNames)
+        if names.isEmpty { names = [data?["active"] as? String ?? "default"] }
         profiles.removeAllItems(); profiles.addItems(withTitles: names.enumerated().map { "\($0.offset + 1). \(nativeMcpSafe($0.element))" })
         sources.removeAllItems(); sources.addItems(withTitles: ["Daemon configuration", "Choose an MCP configuration file…"]); sourceIDs = [nil, nil]
-        for item in sourceData where item["status"] as? String == "available_for_review" {
+        for item in sourcesResult ?? [] where item["status"] as? String == "available_for_review" {
             guard let id = item["id"] as? String else { continue }
             sources.addItem(withTitle: "\(sourceIDs.count + 1). " + nativeMcpSafe("\(item["label"] as? String ?? id) — \(item["path"] as? String ?? "")")); sourceIDs.append(id)
         }

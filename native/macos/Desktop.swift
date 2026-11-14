@@ -535,8 +535,13 @@ func nativeMcpSafe(_ value: String) -> String {
             ? String(format: "\\u{%04x}", scalar.value) : String(scalar)
     }.joined()
 }
+func nativeMcpProfiles(configured: [String], trusted: [String]) -> [String] {
+    var seen = Set<Data>()
+    return (configured + trusted).filter { seen.insert(Data($0.utf8)).inserted }
+        .sorted { $0.utf8.lexicographicallyPrecedes($1.utf8) }
+}
 func nativeMcpReviewID(_ body: [String:Any], profile: String) -> String? {
-    guard body["profile"] as? String == profile, body["servers"] is [[String:Any]],
+    guard let name = body["profile"] as? String, Data(name.utf8) == Data(profile.utf8), body["servers"] is [[String:Any]],
           let id = body["review_id"] as? String, let parsed = UUID(uuidString: id) else { return nil }
     return parsed.uuidString.lowercased()
 }
@@ -564,6 +569,10 @@ func selfTest() throws {
     try verifyNativeUnit(custom.runtime == "/custom run" && custom.config == "/custom config")
     let xdg = nativeStartupDirectories(home: "/Users/test", environment: ["HYPERMESH_CONFIG_DIR": "  ", "XDG_CONFIG_HOME": "/xdg"])
     try verifyNativeUnit(xdg.config == "/xdg/hypermesh")
+    let unicodeNames = ["caf\u{00e9}", "cafe\u{0301}"]
+    try verifyNativeUnit(nativeMcpProfiles(configured: unicodeNames, trusted: unicodeNames).count == 2)
+    try verifyNativeUnit(nativeMcpProfiles(configured: [], trusted: unicodeNames).count == 2)
+    try verifyNativeUnit(nativeMcpReviewID(["profile": unicodeNames[0], "review_id": "00000000-0000-4000-8000-000000000001", "servers": [] as [[String:Any]]], profile: unicodeNames[1]) == nil)
     let trustID = "00000000-0000-4000-8000-000000000001"
     let trustSnapshot: [String:Any] = ["profile": "test", "review_id": trustID, "servers": [["name": "safe", "secret": "DO_NOT_RENDER", "environment_names": ["TOKEN"]]]]
     try verifyNativeUnit(nativeMcpReviewID(trustSnapshot, profile: "test") == trustID)
