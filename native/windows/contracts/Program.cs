@@ -38,7 +38,7 @@ internal static class DesktopContracts
         fixture.Shown += async (_, _) =>
         {
             try { await Run(fixture, entry); result = 0; }
-            catch (Exception error) { Console.Error.WriteLine(error.Message); }
+            catch (Exception error) { Console.Error.WriteLine(error); }
             finally { fixture.Close(); }
         };
         Application.Run(fixture);
@@ -60,6 +60,7 @@ internal static class DesktopContracts
         {
             Require(monitor.Healthy && driver.ApproveLayout(), "Desktop monitor/layout unavailable");
             authority.Grant(authority.Generation, Session);
+            Console.WriteLine("STEP capture");
             JsonElement capture = Request(driver.Perform(Request(new { action = "view", session = Session })));
             using MemoryStream bytes = new(Convert.FromBase64String(capture.GetProperty("png").GetString()!));
             using Bitmap image = new(bytes);
@@ -68,22 +69,28 @@ internal static class DesktopContracts
             Require(image.Size == bounds.Size, "Capture dimensions differ from the virtual desktop");
             Require(image.GetPixel(sample.X - bounds.X, sample.Y - bounds.Y).ToArgb() == fixture.BackColor.ToArgb(), "Capture did not contain the fixture window");
             bool refused = false;
+            Console.WriteLine("STEP cross-session refusal");
             try { driver.Perform(Request(new { action = "view", session = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" })); }
             catch (OperationCanceledException) { refused = true; }
             Require(refused, "Another session reused desktop approval");
 
             Point target = entry.PointToScreen(new Point(25, 10));
+            Console.WriteLine("STEP pointer move");
             driver.Perform(Request(new { action = "pointer", session = Session, steps = new[] { new { kind = "move", x = target.X - bounds.X, y = target.Y - bounds.Y } } }));
             await Task.Delay(100);
+            Console.WriteLine("STEP click");
             driver.Perform(Request(new { action = "pointer", session = Session, steps = new[] { new { kind = "button", button = 0, down = true }, new { kind = "button", button = 0, down = false } } }));
             await Until(() => Win32.GetForegroundWindow() == fixture.Handle && entry.Focused, "Fixture did not receive focus");
+            Console.WriteLine("STEP Unicode input");
             driver.Perform(Request(new { action = "keyboard", session = Session, strokes = new[] { new { keysym = 97u, down = true }, new { keysym = 97u, down = false } } }));
             await Until(() => entry.Text == "a", "Unicode input did not reach the fixture");
             Require(authority.AllowedFor(Session) && Volatile.Read(ref interruptions) == 0, "Own marked input paused automation");
 
+            Console.WriteLine("STEP held key");
             driver.Perform(Request(new { action = "keyboard", session = Session, strokes = new[] { new { keysym = 0xFFE3u, down = true } } }));
             await Until(() => (Win32.GetAsyncKeyState(0x11) & 0x8000) != 0, "Held-key fixture did not press Control");
             Win32.Input other = new() { Type = 0 };
+            Console.WriteLine("STEP foreign input and release");
             other.Data.Mouse.X = 1; other.Data.Mouse.Flags = 1; other.Data.Mouse.Extra = marker ^ 2;
             Require(Win32.SendInput(1, [other], Marshal.SizeOf<Win32.Input>()) == 1, "Other-input fixture could not send its event");
             await Until(() => Volatile.Read(ref interruptions) > 0 && !authority.AllowedFor(Session), "Input hook did not revoke desktop access");
@@ -97,6 +104,7 @@ internal static class DesktopContracts
         }
         finally
         {
+            Console.WriteLine($"STATE allowed={authority.AllowedFor(Session)} monitor={monitor.Healthy} interruptions={Volatile.Read(ref interruptions)} failures={Volatile.Read(ref failures)}");
             authority.Revoke(); driver.Release();
             // Restore only this fixture's pointer movement; no desktop image is saved.
             SetCursorPos(original.X, original.Y);
