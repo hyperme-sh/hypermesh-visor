@@ -6,7 +6,7 @@ import (
 )
 
 func TestPlanKeepsServiceCredentialsOutOfDesktop(t *testing.T) {
-	env := map[string]string{"HYPERMESH_CONDUCTOR_CONFIG": `C:\config with quotes'\endpoints.json`, "HYPERMESH_CONDUCTOR_JOURNAL": `C:\data\journal.jsonl`, "SystemRoot": `C:\Windows`, "CONDUCTOR_AIUDITOR_TOKEN": "secret", "HYPERMESH_CONDUCTOR_SOCKET": "old", "DOTNET_STARTUP_HOOKS": "inject", "PATH": "unsafe", "HYPERMESH_DEFAULT_MODEL": "model"}
+	env := map[string]string{"HYPERMESH_CONDUCTOR_CONFIG": `C:\config with quotes'\endpoints.json`, "HYPERMESH_CONDUCTOR_JOURNAL": `C:\data\journal.jsonl`, "SystemRoot": `C:\Windows`, "CONDUCTOR_AIUDITOR_TOKEN": "secret", "HYPERMESH_CONDUCTOR_SOCKET": "old", "DOTNET_STARTUP_HOOKS": "inject", "PATH": "unsafe", "HYPERMESH_DEFAULT_MODEL": "model", "HYPERMESH_CONFIG_DIR": `C:\custom config`, "HYPERMESH_RUNTIME_DIR": `C:\custom runtime`}
 	p, err := plan(env, "S-1-5-21-1", "abc")
 	if err != nil {
 		t.Fatal(err)
@@ -19,6 +19,9 @@ func TestPlanKeepsServiceCredentialsOutOfDesktop(t *testing.T) {
 	}
 	if p.app["HYPERMESH_CONDUCTOR_SOCKET"] != p.conductor["HYPERMESH_CONDUCTOR_SOCKET"] || p.pipe != `\\.\pipe\hypermesh-conductor-S-1-5-21-1-visor-abc` {
 		t.Fatal("pipe selection")
+	}
+	if p.app["HYPERMESH_CONFIG_DIR"] != env["HYPERMESH_CONFIG_DIR"] || p.app["HYPERMESH_RUNTIME_DIR"] != env["HYPERMESH_RUNTIME_DIR"] {
+		t.Fatal("lost application configuration")
 	}
 	if p.instance != "default" || p.config != env["HYPERMESH_CONDUCTOR_CONFIG"] {
 		t.Fatal("plan changed explicit configuration")

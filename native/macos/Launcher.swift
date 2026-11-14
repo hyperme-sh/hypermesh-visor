@@ -28,7 +28,8 @@ struct LaunchPlan {
         self.socket = socket
         // Explicit allowlist: service credentials and provider environment stay in Conductor.
         let appKeys = Set(["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL",
-                           "HYPERMESH_DEFAULT_MODEL", "HYPERMESH_CONDUCTOR_LEASE_ID"])
+                           "HYPERMESH_DEFAULT_MODEL", "HYPERMESH_CONDUCTOR_LEASE_ID",
+                           "HYPERMESH_CONFIG_DIR", "HYPERMESH_RUNTIME_DIR"])
         var app = environment.filter { appKeys.contains($0.key) }
         app["HYPERMESH_CONDUCTOR_SOCKET"] = socket
         appEnvironment = app
@@ -301,6 +302,7 @@ private func contracts() throws {
     let environment = ["HOME": "/Users/test", "HYPERMESH_CONDUCTOR_CONFIG": "/config with ' quotes",
                        "HYPERMESH_CONDUCTOR_JOURNAL": "/journal", "CONDUCTOR_AIUDITOR_TOKEN": "secret",
                        "HYPERMESH_DEFAULT_MODEL": "model", "HYPERMESH_CONDUCTOR_LEASE_ID": "lease",
+                       "HYPERMESH_CONFIG_DIR": "/custom config", "HYPERMESH_RUNTIME_DIR": "/custom runtime",
                        "HYPERMESH_CONDUCTOR_ADDR": "old", "HYPERMESH_SUPERVISOR_URL": "old",
                        "DYLD_INSERT_LIBRARIES": "/bad"]
     let plan = try LaunchPlan(environment: environment, socket: "/tmp/private/c.sock")
@@ -309,6 +311,8 @@ private func contracts() throws {
     precondition(plan.appEnvironment["HYPERMESH_CONDUCTOR_CONFIG"] == nil)
     precondition(plan.appEnvironment["HYPERMESH_CONDUCTOR_ADDR"] == nil)
     precondition(plan.appEnvironment["HYPERMESH_SUPERVISOR_URL"] == nil)
+    precondition(plan.appEnvironment["HYPERMESH_CONFIG_DIR"] == "/custom config")
+    precondition(plan.appEnvironment["HYPERMESH_RUNTIME_DIR"] == "/custom runtime")
     precondition(plan.appEnvironment["HYPERMESH_DEFAULT_MODEL"] == "model")
     precondition(plan.appEnvironment["HYPERMESH_CONDUCTOR_LEASE_ID"] == "lease")
     precondition(plan.childEnvironment["CONDUCTOR_AIUDITOR_TOKEN"] == "secret")
