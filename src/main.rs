@@ -42,6 +42,7 @@ fn main() -> ExitCode {
         eprintln!("hypermesh-visor: refusing to run as root");
         return ExitCode::from(1);
     }
+    hypermesh_visor::crash_startup::startup();
     let tcp = if tcp_enabled(options.tcp, std::env::var("HYPERMESH_TCP").ok().as_deref()) {
         match parse_listen(&options.listen) {
             Ok(addr) => Some(addr),

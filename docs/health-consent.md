@@ -75,8 +75,14 @@ native dialogs whose default choice declines. Report text is data, never script
 source or a shell argument. Dismissal or dialog failure consumes the report
 without sending or retrying. Local consent is checked again after the dialog;
 withdrawal while the dialog is open refuses the send. This entry point adds no
-remote approval route. Native capture setup and startup processing still need
-to call it; adding these modules alone does not start a collector.
+remote approval route. The daemon and embedded native engine call startup
+recovery before accepting work. Set `HYPERMESH_CRASH_CONFIG` to the absolute path
+of the private JSON configuration. The containing private directory also owns
+`health-consent` (the shared consent store) and `crash-runs` (capture run roots).
+Missing configuration leaves this path disabled and creates no state. Startup
+purges completed raw runs before showing any preview. Review is synchronous; a
+dismissal or failure never produces a background retry. Capture setup remains
+separate; startup recovery does not itself install a native handler.
 
 `crash_dump::consume` reduces a completed owner-private UUID-named minidump to
 one fixed crash-code classification. It bounds file size and stream-directory
@@ -106,5 +112,5 @@ never parsed. Invalidated consent discards the run without reading its dumps.
 Recovery returns at most five unapproved sanitized reports, removes each entire
 raw run before returning any preview, and never follows directory links into
 other data. Unknown run names or cleanup failures refuse recovery. The native
-adapter must still create these runs, stop its writer and call recovery before
-the dialogs; no handler is enabled by this helper alone.
+adapter must still create these runs and stop its writer; the startup caller
+now connects recovery to the per-crash dialogs and sanitized sender.

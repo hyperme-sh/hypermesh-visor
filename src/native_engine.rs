@@ -55,6 +55,7 @@ pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
         if ENGINE.get().is_some() {
             return 1;
         }
+        crate::crash_startup::startup();
         let Ok(runtime) = tokio::runtime::Runtime::new() else {
             return 1;
         };
