@@ -12,6 +12,9 @@ internal sealed class InputMonitor : IDisposable
     private readonly nuint marker;
     private long heartbeat;
     private int failed;
+    private long foreignExtra;
+    private int foreignInjected;
+    internal (bool Injected, nuint Extra) LastForeignInput => (Volatile.Read(ref foreignInjected) != 0, unchecked((nuint)Interlocked.Read(ref foreignExtra)));
     private ApplicationContext? context;
     private WindowsFormsSynchronizationContext? synchronization;
     private Win32.Hook? keyboardCallback, mouseCallback;
@@ -26,6 +29,12 @@ internal sealed class InputMonitor : IDisposable
         if (!ready.Wait(TimeSpan.FromSeconds(5)) || !Healthy) Fail();
     }
     internal static bool IsOwn(bool injected, nuint extra, nuint marker) => injected && extra == marker;
+    private void ForeignInput(bool injected, nuint extra)
+    {
+        Interlocked.Exchange(ref foreignExtra, unchecked((long)extra));
+        Volatile.Write(ref foreignInjected, injected ? 1 : 0);
+        input();
+    }
     private void Fail()
     {
         if (Interlocked.Exchange(ref failed, 1) == 0) ThreadPool.QueueUserWorkItem(_ => lost());
@@ -50,7 +59,7 @@ internal sealed class InputMonitor : IDisposable
                 {
                     CheckPump();
                     Win32.KeyHook value = Marshal.PtrToStructure<Win32.KeyHook>(data);
-                    if (!IsOwn((value.Flags & 0x10) != 0, value.Extra, marker)) input();
+                    if (!IsOwn((value.Flags & 0x10) != 0, value.Extra, marker)) ForeignInput((value.Flags & 0x10) != 0, value.Extra);
                 }
                 return Win32.CallNextHookEx(0, code, message, data);
             };
@@ -60,7 +69,7 @@ internal sealed class InputMonitor : IDisposable
                 {
                     CheckPump();
                     Win32.MouseHook value = Marshal.PtrToStructure<Win32.MouseHook>(data);
-                    if (!IsOwn((value.Flags & 1) != 0, value.Extra, marker)) input();
+                    if (!IsOwn((value.Flags & 1) != 0, value.Extra, marker)) ForeignInput((value.Flags & 1) != 0, value.Extra);
                 }
                 return Win32.CallNextHookEx(0, code, message, data);
             };

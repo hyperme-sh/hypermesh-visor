@@ -105,6 +105,7 @@ internal static class DesktopContracts
         finally
         {
             Console.WriteLine($"STATE allowed={authority.AllowedFor(Session)} monitor={monitor.Healthy} interruptions={Volatile.Read(ref interruptions)} failures={Volatile.Read(ref failures)}");
+            Console.WriteLine($"INPUT injected={monitor.LastForeignInput.Injected} extra={monitor.LastForeignInput.Extra:x} marker={marker:x}");
             authority.Revoke(); driver.Release();
             // Restore only this fixture's pointer movement; no desktop image is saved.
             SetCursorPos(original.X, original.Y);
