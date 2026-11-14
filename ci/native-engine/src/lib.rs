@@ -113,6 +113,9 @@ mod tests {
                 403
             );
             assert_eq!(request(endpoint, "GET", "/mcp/sources", "").await.0, 403);
+            assert_eq!(request(endpoint, "GET", "/mcp/trust", "").await.0, 403);
+            assert_eq!(request(endpoint, "POST", "/mcp/discovery", r#"{"profile":"default"}"#).await.0, 403);
+            assert_eq!(request(endpoint, "POST", "/mcp/trust", r#"{"action":"approve","review_id":"00000000-0000-4000-8000-000000000001"}"#).await.0, 403);
         }
         stop.send(()).unwrap();
         tokio::time::timeout(Duration::from_secs(5), server)

@@ -78,6 +78,18 @@ client/bot before desktop access can be allowed. The launcher itself does not re
 
 ## Session destinations
 
+The tray's **MCP discovery and trust** screen lists configured profiles and known
+local sources. Preview displays source provenance without starting servers or
+making connections. A local file picker can select another MCP configuration.
+Opening this screen pauses automation and blocks desktop approval until it is
+closed, so an automated session cannot approve its own new MCP access.
+Read the complete files privately, then type `TRUST` and choose **Approve snapshot**
+to authorize that exact content for future sessions. Changed or expired snapshots
+require another review. Type `REVOKE` to revoke the selected profile for future
+sessions; close existing sessions to stop their attached servers. Closing the
+screen or changing selections cancels its pending review. Native stdio servers
+remain unavailable until the isolated worker is implemented.
+
 The tray menu opens the selected session's forum or workspace in Visual Studio
 Code. Configure these locally in `companion.toml` under the selected config
 directory; no destination is taken from remote task text:

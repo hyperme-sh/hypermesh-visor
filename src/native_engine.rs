@@ -20,6 +20,21 @@ pub(crate) fn is_embedded() -> bool {
 
 type Callback = unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32;
 
+fn mcp_ui_request(action: &str, value: &serde_json::Value) -> Option<(&'static str, &'static str, String)> {
+    let path = match action {
+        "mcp-profiles" => "/mcp/profiles",
+        "mcp-sources" => "/mcp/sources",
+        "mcp-trusted" => "/mcp/trust",
+        "mcp-preview" | "mcp-decision" => {
+            let (path, key) = if action == "mcp-preview" { ("/mcp/discovery", "selection") } else { ("/mcp/trust", "decision") };
+            let body = value.get(key).filter(|body| body.is_object())?;
+            return Some(("POST", path, body.to_string()));
+        }
+        _ => return None,
+    };
+    Some(("GET", path, String::new()))
+}
+
 #[no_mangle]
 pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
     #[cfg(windows)]
@@ -107,7 +122,7 @@ pub unsafe extern "C" fn hypermesh_native_control(
                 },
                 "pause" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
                 "monitor-lost" => ("POST", "/companion/interrupt", "{\"available\":false}".into()),
-                _ => return 1,
+                _ => match mcp_ui_request(action, &value) { Some(request) => request, None => return 1 },
             };
             let request = Request::builder().method(method).uri(path).header("content-type", "application/json").body(Body::from(body)).unwrap();
             engine.runtime.block_on(async {
@@ -146,6 +161,22 @@ pub unsafe extern "C" fn hypermesh_native_control(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_mcp_ui_has_only_fixed_review_routes() {
+        let value = serde_json::json!({"selection":{"profile":"default"},"decision":{"action":"cancel","review_id":"00000000-0000-4000-8000-000000000001"}});
+        assert_eq!(mcp_ui_request("mcp-sources", &value), Some(("GET", "/mcp/sources", String::new())));
+        let (method, path, body) = mcp_ui_request("mcp-preview", &value).unwrap();
+        assert_eq!((method, path), ("POST", "/mcp/discovery"));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), value["selection"]);
+        let (method, path, body) = mcp_ui_request("mcp-decision", &value).unwrap();
+        assert_eq!((method, path), ("POST", "/mcp/trust"));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), value["decision"]);
+        for action in ["mcp-edit", "/companion/automation", "mcp-../companion/automation"] {
+            assert!(mcp_ui_request(action, &value).is_none());
+        }
+        assert!(mcp_ui_request("mcp-preview", &serde_json::json!({"selection":"path"})).is_none());
+        assert!(mcp_ui_request("mcp-decision", &serde_json::Value::Null).is_none());
+    }
     #[test]
     fn absent_callback_cannot_start_native_engine() {
         assert_eq!(hypermesh_native_start(None), 1);
