@@ -561,6 +561,42 @@ func nativeMcpDescription(_ body: [String:Any]) -> String {
     return lines.joined(separator: "\n")
 }
 
+struct NativeMcpTarget {
+    let session: String
+    let server: String
+    let state: String
+}
+func nativeMcpTargets(_ body: [String:Any]) -> [NativeMcpTarget] {
+    guard let session = body["session"] as? [String:Any], let id = session["id"] as? String,
+          let parsed = UUID(uuidString: id), let items = session["mcp_attachments"] as? [[String:Any]] else { return [] }
+    return items.prefix(16).compactMap { item in
+        guard let server = item["server_id"] as? String, !server.isEmpty, server.utf8.count <= 512,
+              server.trimmingCharacters(in: .whitespacesAndNewlines) == server,
+              let state = item["routing_status"] as? String, state != "refreshing" else { return nil }
+        return NativeMcpTarget(session: parsed.uuidString.lowercased(), server: server, state: state)
+    }
+}
+func nativeMcpStatusDescription(_ body: [String:Any]) -> String {
+    guard let session = body["session"] as? [String:Any] else { return "No active session." }
+    func text(_ item: [String:Any], _ key: String) -> String {
+        if let value = item[key] as? String { return nativeMcpSafe(value) }
+        if let value = item[key] as? NSNumber { return value.stringValue }
+        return "unavailable"
+    }
+    var rows = ["Session: \(text(session, "id"))", "Prefer MCP: \(text(session, "prefer_mcp"))"]
+    if let match = session["mcp_match"] as? [String:Any] {
+        rows += ["reason", "bindings_status", "binding_index", "identity_matches", "healthy_matches"].map { "\($0): \(text(match, $0))" }
+    }
+    rows.append("Omitted attachments: \(text(session, "mcp_attachments_omitted"))")
+    for item in (session["mcp_attachments"] as? [[String:Any]] ?? []).prefix(16) {
+        rows.append("\n\(text(item, "name")) / \(text(item, "routing_status"))")
+    }
+    return rows.joined(separator: "\n")
+}
+func nativeMcpConnectionFields(_ target: NativeMcpTarget, reconnect: Bool) -> [String:String] {
+    ["action": reconnect ? "mcp-reconnect" : "mcp-refresh", "session": target.session, "server": target.server]
+}
+
 func selfTest() throws {
     let defaults = nativeStartupDirectories(home: "/Users/test", environment: [:])
     try verifyNativeUnit(defaults.runtime == "/Users/test/.local/state/hypermesh/native-run")
@@ -583,6 +619,24 @@ func selfTest() throws {
     try verifyNativeUnit(nativeMcpSafe("one\ntwo\u{202e}") == "one\\u{000a}two\\u{202e}")
 
     let selected = "00000000-0000-4000-8000-000000000001", other = "00000000-0000-4000-8000-000000000002"
+    let connectionStatus: [String:Any] = ["session": ["id": selected,
+        "mcp_match": ["reason": "server_unavailable", "private_value": "DO_NOT_RENDER"],
+        "mcp_attachments": [
+            ["name": "clipped", "server_id": "exact/../?é", "routing_status": "disconnected"],
+            ["name": "busy", "server_id": "busy", "routing_status": "refreshing"],
+            ["name": "long", "server_id": String(repeating: "é", count: 257), "routing_status": "ready"],
+            ["name": "spaces", "server_id": " padded ", "routing_status": "ready"]
+        ]]]
+    let targets = nativeMcpTargets(connectionStatus)
+    try verifyNativeUnit(targets.count == 1 && targets[0].session == selected && Data(targets[0].server.utf8) == Data("exact/../?é".utf8))
+    try verifyNativeUnit(nativeMcpTargets(["session": ["id": "../wrong"]]).isEmpty)
+    try verifyNativeUnit(nativeMcpTargets(["session": NSNull()]).isEmpty)
+    try verifyNativeUnit(nativeMcpStatusDescription(connectionStatus).contains("server_unavailable") && !nativeMcpStatusDescription(connectionStatus).contains("DO_NOT_RENDER"))
+    for reconnect in [false, true] {
+        let fields = nativeMcpConnectionFields(targets[0], reconnect: reconnect)
+        try verifyNativeUnit(fields["action"] == (reconnect ? "mcp-reconnect" : "mcp-refresh") && fields["session"] == selected && fields["server"] == "exact/../?é")
+    }
+
     func destination(_ value: String, editor: Bool = false, current: String? = nil) -> URL? {
         return nativeDestinationResponse(["status": 200, "body": ["session": selected, editor ? "workspace" : "forum": value]],
                                          expected: selected, current: current ?? selected, editor: editor)

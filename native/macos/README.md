@@ -129,3 +129,14 @@ non-web destinations are refused, and browser errors omit private URL values.
 ### MCP source review
 
 The native menu opens MCP discovery and trust controls for configured profiles, known sources, or an explicitly selected configuration file. Preview displays source provenance without starting servers. Type `TRUST` to approve the reviewed snapshot, or `REVOKE` to revoke a profile. Changes apply to future sessions; existing sessions keep their attachments until closed. Desktop automation is paused while the review window is open, and desktop approval stays disabled until it closes. Secret values are hidden; inspect complete source files privately before approving. Native stdio workers remain unavailable.
+
+### MCP connection controls
+
+The menu's **MCP connections** window reads bounded attachment states and the
+current app-matching reason without granting desktop access. Opening it pauses
+input; close it before allowing desktop access again. Select an existing server
+and confirm **Refresh tools** or **Reconnect**. The action retains the selected
+session and exact server ID even if another session becomes active. Reconnect
+uses the saved session configuration and may restart its server; no tool call
+is replayed. Read status after completion or an uncertain outcome before
+choosing another action. Native stdio workers remain unavailable.

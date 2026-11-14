@@ -49,6 +49,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var usageSummary: String?
     private var engineConnected = false
     private var trustController: NativeMcpTrustController?
+    private var connectionsController: NativeMcpConnectionsController?
     private var menuAllow: NSMenuItem?
     private var destinationItems: [NSMenuItem] = []
     private var compactUsage: String?
@@ -110,6 +111,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
         let trust = NSMenuItem(title: "MCP discovery and trust", action: #selector(openMcpTrust), keyEquivalent: "")
         trust.target = self; menu.addItem(trust)
+        let connections = NSMenuItem(title: "MCP connections", action: #selector(openMcpConnections), keyEquivalent: "")
+        connections.target = self; menu.addItem(connections)
         let controls = NSMenuItem(title: "Open control window", action: #selector(openControls), keyEquivalent: "")
         controls.target = self; menu.insertItem(controls, at: 0)
         let floating = NSMenuItem(title: "Show floating companion", action: #selector(toggleFloating), keyEquivalent: "")
@@ -136,13 +139,14 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         workspaceObservers.removeAll()
     }
-    private func control(_ action: String, session: String? = nil, pauseEpoch: UInt64? = nil, selection: [String:String]? = nil, decision: [String:String]? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
+    private func control(_ action: String, session: String? = nil, pauseEpoch: UInt64? = nil, selection: [String:String]? = nil, decision: [String:String]? = nil, server: String? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
         queue.async {
             var fields: [String:Any] = ["action": action]
             if let session { fields["session"] = session }
             if let pauseEpoch { fields["epoch"] = pauseEpoch }
             if let selection { fields["selection"] = selection }
             if let decision { fields["decision"] = decision }
+            if let server { fields["server"] = server }
             let data = try! JSONSerialization.data(withJSONObject: fields)
             var output: UnsafeMutablePointer<UInt8>?
             var size = 0
@@ -165,9 +169,9 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         label?.stringValue = "\(readiness)\nSession: \(currentSession ?? "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
-        allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil
+        allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil
         allowButton?.title = access.title
-        menuAllow?.isEnabled = access.enabled && !pendingApproval && trustController == nil
+        menuAllow?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil
         menuAllow?.title = access.title
         for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
@@ -278,6 +282,21 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         trustController?.show()
         update()
     }
+    @objc func openMcpConnections() {
+        guard started else { return }
+        pause("Paused for MCP connection controls; close the window before allowing desktop access")
+        if connectionsController == nil {
+            connectionsController = NativeMcpConnectionsController { [weak self] in self?.connectionsController = nil; self?.update() }
+        }
+        connectionsController?.show(); update()
+    }
+    func mcpConnection(_ target: NativeMcpTarget, reconnect: Bool) async throws {
+        let fields = nativeMcpConnectionFields(target, reconnect: reconnect)
+        let response: [String:Any]? = await withCheckedContinuation { continuation in
+            control(fields["action"]!, session: fields["session"], server: fields["server"]) { continuation.resume(returning: $0) }
+        }
+        guard response?["status"] as? Int == 204 else { throw NativeError.invalid }
+    }
     func mcpRequest(_ action: String, selection: [String:String]? = nil, decision: [String:String]? = nil) async throws -> Any {
         let response: [String:Any]? = await withCheckedContinuation { continuation in
             control(action, selection: selection, decision: decision) { continuation.resume(returning: $0) }
@@ -286,7 +305,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         return body
     }
     @objc func allow() {
-        guard trustController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
+        guard trustController == nil && connectionsController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
         idleResume = nil
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
@@ -549,6 +568,89 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             _ = try await NativeRuntime.shared.mcpRequest("mcp-decision", decision: ["action": "revoke", "profile": profile])
             try await self.load()
             if !self.closing { self.message.stringValue = "Revoked for future sessions. Close existing sessions to stop their attached servers." }
+        }
+    }
+}
+
+@MainActor final class NativeMcpConnectionsController: NSObject, NSWindowDelegate {
+    private let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 540), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    private let choices = NSPopUpButton(frame: NSRect(x: 16, y: 492, width: 748, height: 28))
+    private let details = NSTextView()
+    private let message = NSTextField(wrappingLabelWithString: "")
+    private let reload = NSButton(title: "Read status", target: nil, action: nil)
+    private let refresh = NSButton(title: "Refresh tools", target: nil, action: nil)
+    private let reconnect = NSButton(title: "Reconnect", target: nil, action: nil)
+    private let closed: () -> Void
+    private var targets: [NativeMcpTarget] = []
+    private var busy = false, closing = false, loaded = false
+    init(closed: @escaping () -> Void) {
+        self.closed = closed
+        super.init()
+        window.title = "MCP connections"; window.isReleasedWhenClosed = false; window.delegate = self
+        window.minSize = NSSize(width: 780, height: 540); window.center()
+        guard let content = window.contentView else { return }
+        choices.target = self; choices.action = #selector(changed); choices.autoresizingMask = [.minYMargin, .width]
+        message.frame = NSRect(x: 16, y: 422, width: 748, height: 64); message.autoresizingMask = [.minYMargin, .width]
+        let scroll = NSScrollView(frame: NSRect(x: 16, y: 60, width: 748, height: 352))
+        scroll.autoresizingMask = [.width, .height]; scroll.hasVerticalScroller = true
+        details.isEditable = false; details.isRichText = false; details.isAutomaticLinkDetectionEnabled = false
+        details.isVerticallyResizable = true; details.autoresizingMask = [.width]; details.textContainer?.widthTracksTextView = true
+        details.frame = scroll.contentView.bounds; details.minSize = NSSize(width: 0, height: scroll.contentSize.height)
+        details.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = details
+        for (index, pair) in [(reload, #selector(readClicked)), (refresh, #selector(refreshClicked)), (reconnect, #selector(reconnectClicked))].enumerated() {
+            pair.0.frame = NSRect(x: 16 + index * 180, y: 14, width: 170, height: 32)
+            pair.0.target = self; pair.0.action = pair.1; content.addSubview(pair.0)
+        }
+        for view in [choices, message, scroll] as [NSView] { content.addSubview(view) }
+        update()
+    }
+    func show() {
+        window.makeKeyAndOrderFront(nil); NSApplication.shared.activate(ignoringOtherApps: true)
+        if !loaded { loaded = true; readClicked() }
+    }
+    func windowWillClose(_ notification: Notification) { closing = true; closed() }
+    private var selected: NativeMcpTarget? { targets.indices.contains(choices.indexOfSelectedItem) ? targets[choices.indexOfSelectedItem] : nil }
+    @objc private func changed() { update() }
+    private func update() {
+        guard !closing else { return }
+        choices.isEnabled = !busy; reload.isEnabled = !busy
+        refresh.isEnabled = !busy && selected != nil; reconnect.isEnabled = refresh.isEnabled
+    }
+    private func clear() { targets = []; choices.removeAllItems() }
+    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard !busy && !closing else { return }
+        busy = true; update()
+        Task { @MainActor in
+            defer { busy = false; update() }
+            do { try await operation() }
+            catch { if !closing { clear(); details.string = ""; message.stringValue = "Request failed or its outcome is unknown. Read status before deciding whether to retry. No request was retried." } }
+        }
+    }
+    @objc private func readClicked() {
+        run {
+            guard let body = try await NativeRuntime.shared.mcpRequest("mcp-status") as? [String:Any] else { throw NativeError.invalid }
+            guard !self.closing else { return }
+            self.clear(); self.targets = nativeMcpTargets(body)
+            // Numbered titles keep visually identical Unicode names as separate choices.
+            self.choices.addItems(withTitles: self.targets.enumerated().map { "\($0.offset + 1). \(nativeMcpSafe($0.element.server)) / \(nativeMcpSafe($0.element.state))" })
+            self.details.string = nativeMcpStatusDescription(body)
+            self.message.stringValue = "Status does not grant desktop access. Select an existing attachment; refreshing or unaddressable targets are excluded."
+        }
+    }
+    @objc private func refreshClicked() { change(restart: false) }
+    @objc private func reconnectClicked() { change(restart: true) }
+    private func change(restart: Bool) {
+        guard !busy && !closing, let target = selected else { return }
+        let alert = NSAlert(); alert.messageText = restart ? "Reconnect MCP server?" : "Refresh MCP tools?"
+        let explanation = restart ? "Closes the old connection and may restart its server using this session's saved configuration." : "Reads tools from the current connection. Does not restart a disconnected server."
+        alert.informativeText = "\(nativeMcpSafe(target.server))\nSession: \(target.session)\n\n\(explanation)\nNo tool call is replayed."
+        alert.addButton(withTitle: "Continue"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        run {
+            try await NativeRuntime.shared.mcpConnection(target, reconnect: restart)
+            guard !self.closing else { return }
+            self.clear(); self.message.stringValue = "Connection action completed. Read status to see updated catalogs and matching. Desktop access remains paused."
         }
     }
 }
