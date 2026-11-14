@@ -6,6 +6,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 
 from image_manifest import validate
 
@@ -14,7 +15,30 @@ DIGEST = r'sha256:[0-9a-f]{64}'
 
 
 def run(*args):
-    return subprocess.check_output(['docker', *args], text=True, timeout=900)
+    try:
+        return subprocess.check_output(['docker', *args], text=True, timeout=900,
+                                       stderr=subprocess.PIPE)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        # Keep JSON stdout separate on success; retain bounded diagnostics on failure.
+        for stream in (error.stdout, error.stderr):
+            if isinstance(stream, bytes):
+                stream = stream.decode('utf-8', errors='replace')
+            for line in (stream or '')[-8192:].splitlines():
+                print('docker: ' + ''.join(c for c in line if c.isprintable()), file=sys.stderr)
+        raise
+
+
+def push_platform(command, tag, arch, sleep=time.sleep):
+    for attempt in range(3):
+        try:
+            # Archives contain one tested platform, not an arbitrary local index.
+            command('image', 'push', '--platform', f'linux/{arch}', tag)
+            return
+        except subprocess.CalledProcessError as error:
+            if attempt == 2 or 'unknown blob' not in (error.stderr or '').splitlines():
+                raise
+            print('Retrying the same platform push after unknown blob', file=sys.stderr)
+            sleep((5, 15)[attempt])
 
 
 def prepare(root, revision):
@@ -72,7 +96,7 @@ def publish(root, repository, revision, command=run):
             raise ValueError('Loaded image does not match its archive manifest')
         tag = f'{repository}:test-{revision}-{arch}'
         command('image', 'tag', image_id, tag)
-        command('image', 'push', tag)
+        push_platform(command, tag, arch)
         remote = json.loads(command('buildx', 'imagetools', 'inspect', '--format', '{{json .Manifest}}', tag))
         digest = remote.get('digest', '')
         if not re.fullmatch(DIGEST, digest) or remote.get('manifests'):
