@@ -23,8 +23,8 @@ try {
     & go build -mod=readonly -buildvcs=false -trimpath -ldflags '-H windowsgui' -o (Join-Path $out 'hypermesh-visor.exe') .
     if ($LASTEXITCODE -ne 0) { throw 'Windows launcher build failed' }
 } finally { Pop-Location }
-$revision = '4a10fe08b7a4f89e3db444f4107d7b6c8de3e9fe'
-$digest = 'f37edc72b64f3c1a92b85e387d2d474bbd257a0bc8f351cfa0b47e534eb41e01'
+$revision = '71ec23aa1646b4533e42b2d8296871e65d5e93b9'
+$digest = '97737999df403c5a4952cd726ffacea95a6a0b3c4b11901b9c6824b681e1073f'
 $source = Join-Path ([IO.Path]::GetTempPath()) ('visor-conductor-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $source | Out-Null
 try {
