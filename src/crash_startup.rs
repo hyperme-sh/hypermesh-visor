@@ -215,6 +215,43 @@ mod tests {
         (config, store, run)
     }
     #[test]
+    fn fresh_native_preview_defaults_off_with_stable_revision_and_allows_opt_in() {
+        let dir = Temp::new();
+        let path = dir.0.join("crash.json");
+        let scope = Scope {
+            subject: Uuid::new_v4(),
+            tenant: Uuid::new_v4(),
+            device: Uuid::new_v4(),
+            notice_version: Uuid::new_v4(),
+            purpose_version: Uuid::new_v4(),
+        };
+        write(&path, &serde_json::to_vec(&serde_json::json!({"dsn":"https://fixture_key@glitchtip.example.invalid/42", "scope":scope})).unwrap());
+        let first = consent_ui_at(&path, "crash-consent-status", &serde_json::Value::Null).unwrap();
+        assert_eq!(first["enabled"], false);
+        let second =
+            consent_ui_at(&path, "crash-consent-status", &serde_json::Value::Null).unwrap();
+        assert_eq!(first["binding"], second["binding"]);
+        assert!(!dir.0.join("crash-runs").exists());
+        let store = Store::open(&dir.0.join("health-consent"), scope).unwrap();
+        for category in [
+            Category::OsHealth,
+            Category::Sensors,
+            Category::ServiceHealth,
+            Category::Crashes,
+            Category::HumanReports,
+        ] {
+            assert!(store.capture(category).unwrap().is_none());
+        }
+        consent_ui_at(
+            &path,
+            "crash-consent-set",
+            &serde_json::json!({"choice":"enable","binding":first["binding"]}),
+        )
+        .unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_some());
+        assert!(!dir.0.join("crash-runs").exists());
+    }
+    #[test]
     fn native_consent_preview_binds_choice_to_config_and_current_decision() {
         let dir = Temp::new();
         let (config, store, run) = fixture(&dir.0);

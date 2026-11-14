@@ -280,10 +280,15 @@ impl Store {
     /// Include disabled revisions when binding a local settings preview.
     pub(crate) fn crash_choice(&self) -> io::Result<(bool, Uuid)> {
         self.locked(|| {
-            let record = self
-                .read()?
-                .filter(|r| r.scope == self.scope)
-                .ok_or_else(refused)?;
+            let record = match self.read()? {
+                Some(record) if record.scope == self.scope => record,
+                Some(_) => return Err(refused()),
+                None => {
+                    let record = self.default_record();
+                    self.write_locked(&record)?;
+                    record
+                }
+            };
             let choice = &record.categories[Category::Crashes.index()];
             Ok((choice.enabled, choice.revision))
         })
