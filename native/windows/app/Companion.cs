@@ -211,6 +211,7 @@ internal sealed class Companion : Form
             if (monitor?.Healthy != true && !consent.MonitorLost) MonitorLost();
             if (!Win32.Interactive() && consent.Allowed) Pause("Desktop session inactive; allow access again after returning");
             JsonElement? response = await Engine.Control("poll");
+            responseUsage = null; usage = "No response usage yet";
             if (!Success(response)) { Pause("Engine unavailable. Restart Visor."); return; }
             JsonElement body = Body(response);
             string? session = null;
@@ -220,7 +221,7 @@ internal sealed class Companion : Form
             if (purpose.Length > 160) purpose = purpose[..160] + "…";
             phase = body.GetProperty("automation").GetProperty("phase").GetString() ?? "off";
             if (consent.Allowed && phase != "running") Pause("Automation paused; allow access to continue");
-            responseUsage = CompactUsage.Read(selected);
+            responseUsage = session == null ? null : CompactUsage.Read(selected);
             usage = responseUsage?.Summary ?? "No response usage yet";
             if (consent.Allowed && phase == "running" && Win32.GetCursorPos(out Win32.Point point)) overlay.Follow(point.X, point.Y);
             else overlay.Hide();
@@ -236,7 +237,7 @@ internal sealed class Companion : Form
             }
             UpdateStatus();
         }
-        catch { Pause("Engine response unavailable. Restart Visor."); }
+        catch { responseUsage = null; usage = "No response usage yet"; Pause("Engine response unavailable. Restart Visor."); }
         finally { polling = false; resuming = false; }
     }
     private static bool Success(JsonElement? response) => response is { } value && value.TryGetProperty("status", out JsonElement status) && status.GetInt32() is >= 200 and < 300;
