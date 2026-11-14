@@ -11,6 +11,15 @@ It does not enroll a device, configure a VPN, make authorized agent calls,
 request sensor access or run a model. It is an app dependency, not an APK.
 Signing and store distribution remain deferred. Package version stays 0.1.0.
 
+CI also compiles a separate build-only consumer against this AAR and the declared
+JNA/Kotlin dependencies. The unsigned APK must contain exactly the ARM64 Visor
+and JNA native libraries, with 16 KiB ELF load alignment and uncompressed,
+16 KiB-aligned ZIP offsets. Visor's library bytes must match the input AAR.
+The consumer calls the public adapter and generated API at compile time; it has
+no entry points or permissions and is never installed or run. This checks
+consumption and packaging, not Android device behavior or enrollment. The APK
+is a temporary CI build output, not a distributed Visor app.
+
 ## Consume it from a native app
 
 Verify `checksums.txt` and the download's adjacent SHA256 file. `build.json`
