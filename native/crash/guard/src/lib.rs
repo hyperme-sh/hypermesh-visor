@@ -99,6 +99,11 @@ fn acquire(database: &Path) -> io::Result<(File, PathBuf)> {
     if store.restore_crash_ticket(&bytes)?.is_none() {
         return Err(refused());
     }
+    // The application may have canceled and purged a delayed startup while we
+    // waited for the lock. Never recreate that run or write after its cleanup.
+    if prepare(database)?.2 != bytes || stop_requested(&run)? {
+        return Err(refused());
+    }
     Ok((file, run))
 }
 
@@ -156,18 +161,27 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
         };
         let finished = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&finished);
+        let active = run.join("handler-active");
         let Ok(monitor) = thread::Builder::new()
             .name("visor-capture-control".into())
             .spawn(move || monitor(&run, &signal, || terminate()))
         else {
             return std::ptr::null_mut();
         };
-        Box::into_raw(Box::new(Guard {
+        let guard = Box::new(Guard {
             file,
             finished,
             monitor: Some(monitor),
-        }))
-        .cast()
+        });
+        let activated = (|| -> io::Result<()> {
+            let mut file = storage::open(&active, storage::Open::New)?;
+            file.write_all(b"active")?;
+            file.sync_all()
+        })();
+        if activated.is_err() {
+            return std::ptr::null_mut();
+        }
+        Box::into_raw(guard).cast()
     })
     .unwrap_or(std::ptr::null_mut())
 }

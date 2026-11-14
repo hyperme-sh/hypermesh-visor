@@ -146,6 +146,11 @@ fn refused() -> io::Error {
     )
 }
 impl Store {
+    /// The native owner already holds the capture lock and has purged its run.
+    pub(crate) fn withdraw_stopped_crash(&self) -> io::Result<()> {
+        self.decide_without_capture_guard(Category::Crashes, false)
+            .map(|_| ())
+    }
     /// Open an already provisioned scope without resetting or creating decisions.
     /// Native handlers use this to reject stale capture metadata after a reset.
     pub fn open_existing(directory: &Path, scope: Scope) -> io::Result<Self> {

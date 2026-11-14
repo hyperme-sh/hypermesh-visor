@@ -9,7 +9,12 @@ pub fn startup() {
     let Some(path) = std::env::var_os("HYPERMESH_CRASH_CONFIG") else {
         return;
     };
-    if recover_and_review(Path::new(&path), crate::crash_dialog::review_and_send).is_err() {
+    let result = recover_and_review(Path::new(&path), crate::crash_dialog::review_and_send)
+        .and_then(|capture| match capture {
+            Some((store, directory)) => crate::crash_capture::start(store, &directory),
+            None => Ok(()),
+        });
+    if result.is_err() {
         eprintln!("Visor crash recovery unavailable");
     }
 }
@@ -17,12 +22,12 @@ pub fn startup() {
 fn recover_and_review(
     path: &Path,
     mut review: impl FnMut(&Config, &Store, PendingCrash) -> io::Result<bool>,
-) -> io::Result<()> {
+) -> io::Result<Option<(Store, std::path::PathBuf)>> {
     if !path.is_absolute() {
         return Err(io::Error::other("private crash configuration required"));
     }
     let Some(config) = Config::read(path)? else {
-        return Ok(());
+        return Ok(None);
     };
     let directory = path
         .parent()
@@ -40,7 +45,7 @@ fn recover_and_review(
     for report in reports {
         review(&config, &store, report)?;
     }
-    Ok(())
+    Ok(Some((store, directory.to_owned())))
 }
 
 #[cfg(test)]
