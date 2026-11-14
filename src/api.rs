@@ -1790,7 +1790,7 @@ async fn view(
     if !state.mark_verb(id, Verb::View) {
         return Err(ApiError::missing());
     }
-    let desktop = Arc::clone(&state.desktop);
+    let desktop = state.desktop.for_session(id).unwrap_or_else(|| Arc::clone(&state.desktop));
     let (frame, focus) = tokio::task::spawn_blocking(move || {
         let frame = desktop.view()?;
         let focus = desktop.focused_app().ok().flatten();
@@ -1852,7 +1852,7 @@ async fn watch_loop(
                 .await;
             break;
         }
-        let desktop = Arc::clone(&state.desktop);
+        let desktop = state.desktop.for_session(id).unwrap_or_else(|| Arc::clone(&state.desktop));
         let viewed = tokio::task::spawn_blocking(move || {
             let frame = desktop.view()?;
             let focus = desktop.focused_app().ok().flatten();
@@ -1927,7 +1927,7 @@ async fn listen(
     if !state.mark_verb(id, Verb::Listen) {
         return Err(ApiError::missing());
     }
-    let desktop = Arc::clone(&state.desktop);
+    let desktop = state.desktop.for_session(id).unwrap_or_else(|| Arc::clone(&state.desktop));
     let reader = tokio::task::spawn_blocking(move || desktop.open_audio())
         .await
         .map_err(|_| ApiError::internal("desktop task failed"))?
@@ -2328,7 +2328,7 @@ async fn mouse_with_cancel(state: Arc<AppState>, id: String, op: MouseOp,
         return Err(ApiError::missing());
     }
     let activity = mouse_activity(&op);
-    let desktop = Arc::clone(&state.desktop);
+    let desktop = state.desktop.for_session(id).unwrap_or_else(|| Arc::clone(&state.desktop));
     let state2 = Arc::clone(&state);
     let op_for_drive = op.clone();
     tokio::task::spawn_blocking(move || {
@@ -2429,7 +2429,7 @@ async fn type_with_cancel(state: Arc<AppState>, id: String, mut body: TypeBody,
     if !state.has_session(id) {
         return Err(ApiError::missing());
     }
-    let desktop = Arc::clone(&state.desktop);
+    let desktop = state.desktop.for_session(id).unwrap_or_else(|| Arc::clone(&state.desktop));
     let state2 = Arc::clone(&state);
     tokio::task::spawn_blocking(move || {
         let _injection = lock(&state2.injection);
@@ -2906,6 +2906,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     struct FakeDesktop {
+        scoped_sessions: Mutex<Vec<Uuid>>,
         frame: Mutex<Vec<u8>>,
         audio: Mutex<Vec<u8>>,
         mice: Mutex<Vec<MouseOp>>,
@@ -2942,6 +2943,7 @@ mod tests {
     impl FakeDesktop {
         fn new() -> Arc<Self> {
             Arc::new(Self {
+                scoped_sessions: Mutex::new(Vec::new()),
                 frame: Mutex::new(encode_rgba_png(1, 1, &[9, 8, 7, 255]).unwrap()),
                 audio: Mutex::new(b"pcm-bytes".to_vec()),
                 mice: Mutex::new(Vec::new()),
@@ -2986,6 +2988,10 @@ mod tests {
     }
 
     impl Desktop for FakeDesktop {
+        fn for_session(&self, session: Uuid) -> Option<Arc<dyn Desktop>> {
+            lock(&self.scoped_sessions).push(session);
+            None
+        }
         fn view(&self) -> Result<Frame, DesktopError> {
             self.views.fetch_add(1, Ordering::SeqCst);
             if self.root.load(Ordering::SeqCst) {
@@ -6704,6 +6710,11 @@ while True:
         assert_eq!(status, 200);
         assert_eq!(headers["x-audio-format"], AUDIO_FORMAT);
         assert_eq!(body.as_ref(), b"pcm-bytes");
+        let (status, _, _) = send(addr, "POST", &format!("/session/{id}/type"), Some(r#"{"text":"hello"}"#.into())).await;
+        assert_eq!(status, 204);
+        let (_, _, second) = open_session_id(addr, serde_json::json!([])).await;
+        assert_eq!(send(addr, "POST", &format!("/session/{second}/view"), None).await.0, 200);
+        assert_eq!(*lock(&desktop.scoped_sessions), vec![id, id, id, id, second]);
     }
 
     #[tokio::test]

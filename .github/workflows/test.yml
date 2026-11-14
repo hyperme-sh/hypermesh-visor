@@ -44,12 +44,32 @@ jobs:
         run: cargo rustc --locked --lib --crate-type cdylib
       - name: Native engine protocol contracts
         run: cargo test --locked --manifest-path ci/native-engine/Cargo.toml
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+      - name: Build unsigned native Windows development bundle
+        run: ./native/windows/build-development.ps1
+      - name: Native companion unit contracts (no desktop opened)
+        run: |
+          $exe = Join-Path $pwd 'dist/windows-development/hypermesh-native-desktop.exe'
+          $stdout = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stdout'
+          $stderr = Join-Path $env:RUNNER_TEMP 'visor-native-contract.stderr'
+          $process = Start-Process -FilePath $exe -ArgumentList '--self-test' -PassThru -Wait -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          Get-Content $stdout
+          Get-Content $stderr
+          if ($process.ExitCode -ne 0) { throw 'Native companion contracts failed' }
+          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
+            if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
+          }
       - uses: actions/upload-artifact@v4
         with:
-          name: windows-native-engine-development
+          name: windows-native-companion-development
           retention-days: 1
           if-no-files-found: error
-          path: target/debug/hypermesh_visor.dll
+          path: dist/windows-development/
 
   native-session:
     name: Session units (${{ matrix.os }})

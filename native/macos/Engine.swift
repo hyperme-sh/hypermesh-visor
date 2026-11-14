@@ -372,16 +372,17 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     func perform(_ request: [String:Any]) async throws -> [String:Any] {
         guard started, !Task.isCancelled else { throw NativeError.denied }
         if request["action"] as? String == "release" { releaseHeld(); return [:] }
+        let requestSession = request["session"] as? String
         if request["action"] as? String != "info" {
-            guard allowed, permissionsAndMonitor(), layoutMatchesApproval() else { throw NativeError.denied }
+            guard requestSession != nil, requestSession == approvedSession, allowed, permissionsAndMonitor(), layoutMatchesApproval() else { throw NativeError.denied }
         }
         let generation = epoch
         let result = try await handle(request) {
-            guard self.allowed, self.epoch == generation, !Task.isCancelled,
+            guard requestSession != nil, requestSession == self.approvedSession, self.allowed, self.epoch == generation, !Task.isCancelled,
                   self.permissionsAndMonitor(), self.layoutMatchesApproval() else { throw NativeError.denied }
         }
         if request["action"] as? String != "info" {
-            guard allowed, epoch == generation, !Task.isCancelled else { throw NativeError.denied }
+            guard requestSession != nil, requestSession == approvedSession, allowed, epoch == generation, !Task.isCancelled else { throw NativeError.denied }
         }
         return result
     }
