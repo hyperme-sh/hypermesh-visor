@@ -48,6 +48,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var mascotTick = 0
     private var usageSummary: String?
     private var engineConnected = false
+    private var trustController: NativeMcpTrustController?
     private var menuAllow: NSMenuItem?
     private var destinationItems: [NSMenuItem] = []
     private var compactUsage: String?
@@ -107,6 +108,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         }
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
+        let trust = NSMenuItem(title: "MCP discovery and trust", action: #selector(openMcpTrust), keyEquivalent: "")
+        trust.target = self; menu.addItem(trust)
         let controls = NSMenuItem(title: "Open control window", action: #selector(openControls), keyEquivalent: "")
         controls.target = self; menu.insertItem(controls, at: 0)
         let floating = NSMenuItem(title: "Show floating companion", action: #selector(toggleFloating), keyEquivalent: "")
@@ -133,11 +136,13 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         workspaceObservers.removeAll()
     }
-    private func control(_ action: String, session: String? = nil, pauseEpoch: UInt64? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
+    private func control(_ action: String, session: String? = nil, pauseEpoch: UInt64? = nil, selection: [String:String]? = nil, decision: [String:String]? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
         queue.async {
             var fields: [String:Any] = ["action": action]
             if let session { fields["session"] = session }
             if let pauseEpoch { fields["epoch"] = pauseEpoch }
+            if let selection { fields["selection"] = selection }
+            if let decision { fields["decision"] = decision }
             let data = try! JSONSerialization.data(withJSONObject: fields)
             var output: UnsafeMutablePointer<UInt8>?
             var size = 0
@@ -160,9 +165,9 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         label?.stringValue = "\(readiness)\nSession: \(currentSession ?? "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
-        allowButton?.isEnabled = access.enabled && !pendingApproval
+        allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil
         allowButton?.title = access.title
-        menuAllow?.isEnabled = access.enabled && !pendingApproval
+        menuAllow?.isEnabled = access.enabled && !pendingApproval && trustController == nil
         menuAllow?.title = access.title
         for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
@@ -264,8 +269,24 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             }
         }
     }
+    @objc func openMcpTrust() {
+        guard started else { return }
+        pause("Paused for MCP trust review; close the review before allowing desktop access")
+        if trustController == nil {
+            trustController = NativeMcpTrustController { [weak self] in self?.trustController = nil; self?.update() }
+        }
+        trustController?.show()
+        update()
+    }
+    func mcpRequest(_ action: String, selection: [String:String]? = nil, decision: [String:String]? = nil) async throws -> Any {
+        let response: [String:Any]? = await withCheckedContinuation { continuation in
+            control(action, selection: selection, decision: decision) { continuation.resume(returning: $0) }
+        }
+        guard let response, let status = response["status"] as? Int, (200..<300).contains(status), let body = response["body"] else { throw NativeError.invalid }
+        return body
+    }
     @objc func allow() {
-        guard started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
+        guard trustController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
         idleResume = nil
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
@@ -386,5 +407,148 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             guard requestSession != nil, requestSession == approvedSession, allowed, epoch == generation, !Task.isCancelled else { throw NativeError.denied }
         }
         return result
+    }
+}
+
+@MainActor final class NativeMcpTrustController: NSObject, NSWindowDelegate, NSTextFieldDelegate {
+    private let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 860, height: 620), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+    private let profiles = NSPopUpButton(frame: NSRect(x: 16, y: 572, width: 240, height: 28))
+    private let sources = NSPopUpButton(frame: NSRect(x: 270, y: 572, width: 570, height: 28))
+    private let details = NSTextView()
+    private let message = NSTextField(wrappingLabelWithString: "")
+    private let confirmation = NSTextField(frame: NSRect(x: 16, y: 16, width: 110, height: 28))
+    private let preview = NSButton(title: "Preview source", target: nil, action: nil)
+    private let approve = NSButton(title: "Approve snapshot", target: nil, action: nil)
+    private let revoke = NSButton(title: "Revoke profile", target: nil, action: nil)
+    private let reload = NSButton(title: "Reload", target: nil, action: nil)
+    private let closed: () -> Void
+    private var names: [String] = []
+    private var sourceIDs: [String?] = []
+    private var grants: [Data:String] = [:]
+    private var configurationUnavailable = false
+    private var pending: String?
+    private var busy = false
+    private var closing = false
+    private var loaded = false
+
+    init(closed: @escaping () -> Void) {
+        self.closed = closed
+        super.init()
+        window.title = "MCP discovery and trust"; window.isReleasedWhenClosed = false
+        window.minSize = NSSize(width: 860, height: 620); window.delegate = self; window.center()
+        guard let content = window.contentView else { return }
+        profiles.target = self; profiles.action = #selector(changed)
+        sources.target = self; sources.action = #selector(changed)
+        profiles.autoresizingMask = [.minYMargin]; sources.autoresizingMask = [.minYMargin, .width]
+        message.frame = NSRect(x: 16, y: 480, width: 824, height: 80); message.autoresizingMask = [.minYMargin, .width]
+        let scroll = NSScrollView(frame: NSRect(x: 16, y: 60, width: 824, height: 410))
+        scroll.autoresizingMask = [.width, .height]; scroll.hasVerticalScroller = true
+        details.isEditable = false; details.isRichText = false; details.isAutomaticLinkDetectionEnabled = false
+        details.isVerticallyResizable = true; details.autoresizingMask = [.width]
+        details.textContainer?.widthTracksTextView = true
+        details.frame = scroll.contentView.bounds
+        details.minSize = NSSize(width: 0, height: scroll.contentSize.height)
+        details.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        scroll.documentView = details
+        confirmation.placeholderString = "TRUST / REVOKE"; confirmation.delegate = self
+        for (index, pair) in [(preview, #selector(previewClicked)), (approve, #selector(approveClicked)), (revoke, #selector(revokeClicked)), (reload, #selector(reloadClicked))].enumerated() {
+            pair.0.frame = NSRect(x: 140 + index * 170, y: 14, width: 160, height: 32)
+            pair.0.target = self; pair.0.action = pair.1; content.addSubview(pair.0)
+        }
+        for view in [profiles, sources, message, scroll, confirmation] as [NSView] { content.addSubview(view) }
+        update()
+    }
+    func show() {
+        window.makeKeyAndOrderFront(nil); NSApplication.shared.activate(ignoringOtherApps: true)
+        if !loaded { loaded = true; run { try await self.load() } }
+    }
+    func windowWillClose(_ notification: Notification) { closing = true; invalidate(); closed() }
+    func controlTextDidChange(_ notification: Notification) { update() }
+    private var profile: String? { names.indices.contains(profiles.indexOfSelectedItem) ? names[profiles.indexOfSelectedItem] : nil }
+    private func update() {
+        guard !closing else { return }
+        profiles.isEnabled = !busy; sources.isEnabled = !busy; reload.isEnabled = !busy; confirmation.isEnabled = !busy
+        preview.isEnabled = !busy && profile != nil && sources.indexOfSelectedItem >= 0
+        approve.isEnabled = !busy && pending != nil && confirmation.stringValue == "TRUST"
+        revoke.isEnabled = !busy && profile.map { grants[Data($0.utf8)] != nil } == true && confirmation.stringValue == "REVOKE"
+    }
+    private func invalidate() {
+        if let id = pending { Task { _ = try? await NativeRuntime.shared.mcpRequest("mcp-decision", decision: ["action": "cancel", "review_id": id]) } }
+        pending = nil
+        guard !closing else { return }
+        confirmation.stringValue = ""; details.string = ""
+        message.stringValue = "Current trust: \(nativeMcpSafe(profile.flatMap { grants[Data($0.utf8)] } ?? "not approved")). Preview starts nothing. Approval affects future sessions; close existing sessions to stop their attached servers."
+        if configurationUnavailable { message.stringValue += " Profile configuration or sources are unavailable; existing approvals can still be revoked." }
+        update()
+    }
+    @objc private func changed() { invalidate() }
+    private func run(_ operation: @escaping @MainActor () async throws -> Void) {
+        guard !busy && !closing else { return }
+        busy = true; update()
+        Task { @MainActor in
+            defer { busy = false; update() }
+            do { try await operation() }
+            catch { if !closing { invalidate(); message.stringValue = "Request unavailable or source changed. Reload and review again. No request was retried." } }
+        }
+    }
+    private func load() async throws {
+        invalidate()
+        grants = [:]
+        guard let trusted = try await NativeRuntime.shared.mcpRequest("mcp-trusted") as? [[String:Any]] else { throw NativeError.invalid }
+        let data = (try? await NativeRuntime.shared.mcpRequest("mcp-profiles")) as? [String:Any]
+        let sourcesResult = (try? await NativeRuntime.shared.mcpRequest("mcp-sources")) as? [[String:Any]]
+        guard !closing else { return }
+        let entries = data?["profiles"] as? [[String:Any]] ?? []
+        configurationUnavailable = data == nil || sourcesResult == nil
+        var trustedNames: [String] = []
+        for item in trusted {
+            if let name = item["profile"] as? String, let status = item["status"] as? String {
+                grants[Data(name.utf8)] = status; trustedNames.append(name)
+            }
+        }
+        names = nativeMcpProfiles(configured: entries.compactMap { $0["name"] as? String }, trusted: trustedNames)
+        if names.isEmpty { names = [data?["active"] as? String ?? "default"] }
+        profiles.removeAllItems(); profiles.addItems(withTitles: names.enumerated().map { "\($0.offset + 1). \(nativeMcpSafe($0.element))" })
+        sources.removeAllItems(); sources.addItems(withTitles: ["Daemon configuration", "Choose an MCP configuration file…"]); sourceIDs = [nil, nil]
+        for item in sourcesResult ?? [] where item["status"] as? String == "available_for_review" {
+            guard let id = item["id"] as? String else { continue }
+            sources.addItem(withTitle: "\(sourceIDs.count + 1). " + nativeMcpSafe("\(item["label"] as? String ?? id) — \(item["path"] as? String ?? "")")); sourceIDs.append(id)
+        }
+        invalidate()
+    }
+    @objc private func reloadClicked() { run { try await self.load() } }
+    @objc private func previewClicked() {
+        run {
+            guard let profile = self.profile else { return }
+            self.invalidate()
+            var selection = ["profile": profile]
+            let index = self.sources.indexOfSelectedItem
+            if index == 1 {
+                let picker = NSOpenPanel(); picker.canChooseDirectories = false; picker.allowsMultipleSelection = false
+                guard picker.runModal() == .OK, let url = picker.url, !self.closing else { return }
+                selection["project_path"] = url.path
+            } else if self.sourceIDs.indices.contains(index), let id = self.sourceIDs[index] { selection["source_id"] = id }
+            guard let body = try await NativeRuntime.shared.mcpRequest("mcp-preview", selection: selection) as? [String:Any],
+                  let id = nativeMcpReviewID(body, profile: profile) else { throw NativeError.invalid }
+            if self.closing { _ = try? await NativeRuntime.shared.mcpRequest("mcp-decision", decision: ["action": "cancel", "review_id": id]); return }
+            self.pending = id; self.details.string = nativeMcpDescription(body)
+            self.message.stringValue = "Read the source files privately and review the metadata. Type TRUST to approve this exact snapshot for future sessions. Changed or expired snapshots need a fresh review."
+        }
+    }
+    @objc private func approveClicked() {
+        run {
+            guard let id = self.pending, self.confirmation.stringValue == "TRUST" else { return }
+            _ = try await NativeRuntime.shared.mcpRequest("mcp-decision", decision: ["action": "approve", "review_id": id])
+            self.pending = nil; try await self.load()
+            if !self.closing { self.message.stringValue = "Approved for future sessions. No server was started. Existing attachments are unchanged." }
+        }
+    }
+    @objc private func revokeClicked() {
+        run {
+            guard let profile = self.profile, self.confirmation.stringValue == "REVOKE" else { return }
+            _ = try await NativeRuntime.shared.mcpRequest("mcp-decision", decision: ["action": "revoke", "profile": profile])
+            try await self.load()
+            if !self.closing { self.message.stringValue = "Revoked for future sessions. Close existing sessions to stop their attached servers." }
+        }
     }
 }

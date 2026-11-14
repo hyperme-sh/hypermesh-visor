@@ -125,3 +125,7 @@ The bundled CLI opens HTTP(S) sign-in and checkout destinations through the
 registered macOS browser. Browser launch failure falls back to device sign-in;
 unattended sessions should choose device sign-in explicitly. Invalid or
 non-web destinations are refused, and browser errors omit private URL values.
+
+### MCP source review
+
+The native menu opens MCP discovery and trust controls for configured profiles, known sources, or an explicitly selected configuration file. Preview displays source provenance without starting servers. Type `TRUST` to approve the reviewed snapshot, or `REVOKE` to revoke a profile. Changes apply to future sessions; existing sessions keep their attachments until closed. Desktop automation is paused while the review window is open, and desktop approval stays disabled until it closes. Secret values are hidden; inspect complete source files privately before approving. Native stdio workers remain unavailable.
