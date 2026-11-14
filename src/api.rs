@@ -315,23 +315,20 @@ impl AppState {
     /// Purpose, verb, and prefer-MCP mode for the desktop companion.
     /// The CLI auth key is not a session secret and is not included.
     fn companion_session(&self) -> Option<CompanionSession> {
-        let driving = {
+        let (driving, running) = {
             let gate = lock(&self.automation);
-            if gate.phase() != Phase::Running {
-                None
-            } else {
-                gate.session()
-            }
+            (if gate.phase() == Phase::Off { None } else { gate.session() }, gate.phase() == Phase::Running)
         };
         let chosen = {
             let sessions = lock(&self.sessions);
             let selected = *lock(&self.selected_session);
-            let session = if let Some(id) = driving {
-                sessions.get(&id)
+            let session = if running && driving.is_some() {
+                driving.and_then(|id| sessions.get(&id))
             } else if let Some(id) = selected {
                 sessions.get(&id)
             } else {
-                sessions.values().max_by_key(|session| session.touched())
+                driving.and_then(|id| sessions.get(&id))
+                    .or_else(|| sessions.values().max_by_key(|session| session.touched()))
             }?;
             let attachments: Vec<_> = session.mcp().servers.iter()
                 .map(|server| (server, server.routing_status())).collect();
@@ -7721,6 +7718,7 @@ while True:
         assert_eq!(lock(&state.automation).phase(), Phase::Off);
         assert!(state.control_automation(Control::Start, true, Some(first)).is_ok());
         assert!(state.control_automation(Control::Pause, true, None).is_ok());
+        assert_eq!(state.companion_session().unwrap().id, first);
         assert!(state.control_automation(Control::Resume, true, Some(wrong)).is_err());
         assert_eq!(lock(&state.automation).phase(), Phase::Paused);
         let original = lock(&state.sessions).remove(&first).unwrap();
@@ -7776,7 +7774,7 @@ while True:
         assert!(state.control_automation(Control::Stop, true, None).is_ok());
         let stopped_epoch = lock(&state.automation).epoch();
         assert!(InjectGuard::arm(&state, second, stopped_epoch, None).is_err());
-        assert!(state.control_automation(Control::Resume, true, Some(first)).is_ok());
+        assert!(state.control_automation(Control::Start, true, Some(first)).is_ok());
         let old = state.native_idle_pause(first).unwrap();
         assert!(state.select_companion_session(second).is_ok());
         assert_eq!(lock(&state.automation).phase(), Phase::Paused);
