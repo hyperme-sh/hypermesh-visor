@@ -7563,12 +7563,15 @@ while True:
         let (mut state, _, session) = task_fixture();
         let dir = std::env::temp_dir().join(format!("hm-review-pause-{}", Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
+        let project = dir.join("project.json");
+        std::fs::write(&project, r#"{"mcpServers":{}}"#).unwrap();
+        let selection = serde_json::json!({"project_path":project});
         Arc::get_mut(&mut state).unwrap().mcp_dir = dir.clone();
         Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
         lock(&state.automation).note_poll(Instant::now(), state.companion_poll_timeout);
         assert!(state.control_automation(Control::Start, true, Some(session)).is_ok());
         let app = companion_router(Arc::clone(&state));
-        let (status, first) = trust_test_request(app.clone(), "POST", "/mcp/discovery", serde_json::json!({})).await;
+        let (status, first) = trust_test_request(app.clone(), "POST", "/mcp/discovery", selection.clone()).await;
         assert_eq!(status, StatusCode::OK, "{first}");
         assert_eq!(lock(&state.automation).phase(), Phase::Paused);
         let epoch = lock(&state.automation).epoch();
@@ -7578,7 +7581,7 @@ while True:
                 assert!(state.control_automation(action, companion, Some(session)).is_err());
             }
         }
-        let (status, second) = trust_test_request(app.clone(), "POST", "/mcp/discovery", serde_json::json!({})).await;
+        let (status, second) = trust_test_request(app.clone(), "POST", "/mcp/discovery", selection.clone()).await;
         assert_eq!(status, StatusCode::OK);
         let (status, _) = trust_test_request(app.clone(), "POST", "/mcp/trust", serde_json::json!({"action":"cancel", "review_id":first["review_id"]})).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
