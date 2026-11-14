@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.22)
+project(visor_crash_sdk_contract LANGUAGES C)
+find_package(sentry CONFIG REQUIRED)
+add_executable(visor-crash-sdk-contract options.c)
+target_link_libraries(visor-crash-sdk-contract PRIVATE sentry::sentry)

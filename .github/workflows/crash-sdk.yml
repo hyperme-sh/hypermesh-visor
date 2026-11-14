@@ -1,0 +1,39 @@
+name: native crash SDK build contracts
+on:
+  push:
+    branches: [main]
+    paths: ['native/crash/**', '.github/workflows/crash-sdk.yml']
+  pull_request:
+    paths: ['native/crash/**', '.github/workflows/crash-sdk.yml']
+permissions:
+  contents: read
+concurrency:
+  group: crash-sdk-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  sdk:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build pinned Sentry native SDK and Crashpad handler
+        shell: bash
+        run: bash native/crash/build-sdk.sh "$RUNNER_TEMP/visor-crash-sdk"
+      - name: SDK option unit contract without capture
+        shell: bash
+        run: |
+          cmake -S native/crash/contract -B "$RUNNER_TEMP/visor-crash-contract" -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/visor-crash-sdk"
+          cmake --build "$RUNNER_TEMP/visor-crash-contract" --config Release
+          export PATH="$RUNNER_TEMP/visor-crash-sdk/bin:$PATH"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            "$RUNNER_TEMP/visor-crash-contract/Release/visor-crash-sdk-contract.exe"
+          else
+            "$RUNNER_TEMP/visor-crash-contract/visor-crash-sdk-contract"
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-crash-sdk-${{ matrix.os }}
+          path: ${{ runner.temp }}/visor-crash-sdk
