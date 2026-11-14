@@ -550,6 +550,9 @@ impl AppState {
                 sessions.values().max_by_key(|session| session.touched()).map(|session| session.id())
             })
         };
+        if expected_epoch.is_some_and(|epoch| epoch != gate.epoch()) {
+            return Err(ApiError::conflict("desktop control changed; approve the current pause"));
+        }
         if selected.is_some() && (!companion || expected_session != session || expected_epoch != Some(gate.epoch())) {
             return Err(ApiError::conflict("selected session requires fresh explicit approval"));
         }
@@ -7724,6 +7727,17 @@ while True:
         lock(&state.automation).set_keyboard_interrupt(false);
         assert!(state.native_idle_resume(session, paused).is_none());
         assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+    }
+
+    #[test]
+    fn native_guarded_approval_cannot_lift_a_newer_pause_without_explicit_selection() {
+        let (state, _, session) = task_fixture();
+        let old_epoch = lock(&state.automation).epoch();
+        assert!(state.control_automation(Control::Pause, true, None).is_ok());
+        assert!(state.control_automation_at(Control::Resume, true, Some(session), Some(old_epoch)).is_err());
+        let current = lock(&state.automation).epoch();
+        assert!(state.control_automation_at(Control::Resume, true, Some(session), Some(current)).is_ok());
+        assert_eq!(lock(&state.automation).phase(), Phase::Running);
     }
 
     #[test]
