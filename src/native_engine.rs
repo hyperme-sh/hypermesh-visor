@@ -129,6 +129,11 @@ pub unsafe extern "C" fn hypermesh_native_control(
                     let Some(session) = value["session"].as_str().and_then(crate::session_destinations::canonical_session) else { return 1; };
                     ("POST", "/companion/automation".into(), serde_json::json!({"action":action,"expected_session":session}).to_string())
                 },
+                "sessions" => ("GET", "/companion/sessions".into(), String::new()),
+                "select-session" => {
+                    let Some(session) = value["session"].as_str().and_then(crate::session_destinations::canonical_session) else { return 1; };
+                    ("POST", "/companion/sessions".into(), serde_json::json!({"session":session}).to_string())
+                },
                 "pause" | "stop" => ("POST", "/companion/automation".into(), serde_json::json!({"action":action}).to_string()),
                 "monitor-lost" => ("POST", "/companion/interrupt".into(), "{\"available\":false}".into()),
                 _ => match mcp_ui_request(action, &value) { Some(request) => request, None => return 1 },

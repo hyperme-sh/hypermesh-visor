@@ -824,12 +824,14 @@ fn on_click(
                 *app.status.lock().unwrap() = err;
             }
         }
-        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections => {
+        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections | Action::ChooseSession => {
             app.menu = false;
             let status = Arc::clone(&app.status);
             let action = hit.action;
             std::thread::spawn(move || {
-                let result = if action == Action::McpTrust {
+                let result = if action == Action::ChooseSession {
+                    crate::session_selection::run()
+                } else if action == Action::McpTrust {
                     crate::mcp_trust_gui::run()
                 } else if action == Action::McpConnections {
                     crate::mcp_connections::run()

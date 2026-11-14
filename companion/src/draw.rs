@@ -36,6 +36,7 @@ pub enum Action {
     McpDoctor,
     McpStatus,
     McpConnections,
+    ChooseSession,
     ContinueAutomation,
     DismissAutomation,
 }
@@ -263,6 +264,7 @@ pub fn render(
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
             ("MCP servers", Action::McpServers),
+            ("Choose session", Action::ChooseSession),
             ("MCP connections", Action::McpConnections),
             ("MCP status", Action::McpStatus),
             ("MCP doctor", Action::McpDoctor),

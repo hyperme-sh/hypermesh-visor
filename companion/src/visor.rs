@@ -359,6 +359,26 @@ fn exchange_at(path: &Path, request: &str) -> Option<String> {
 }
 
 /// Read-only status over the same-user companion socket.
+pub fn session_selection_request(session: Option<&str>) -> Result<serde_json::Value, String> {
+    let body = match session {
+        Some(id) => {
+            let id = crate::destinations::canonical_session(id).ok_or("Invalid session")?;
+            serde_json::json!({"session":id}).to_string()
+        }
+        None => String::new(),
+    };
+    let method = if session.is_some() { "POST" } else { "GET" };
+    let request = format!("{method} /companion/sessions HTTP/1.1\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+    let socket = socket_path().ok_or("Companion socket unavailable")?;
+    let Exchange::Body(response) = exchange_read_timeout(&socket, &request, Duration::from_secs(5)) else {
+        return Err("Session request outcome unknown; read current controls before retrying".into());
+    };
+    if !status_ok(&response) { return Err("Session request refused; refresh the list".into()); }
+    let body = body_of(&response).ok_or("Invalid session response")?;
+    if body.trim().is_empty() { return Ok(serde_json::json!({})); }
+    serde_json::from_str(body).map_err(|_| "Invalid session response".into())
+}
+
 pub fn mcp_status_request() -> Result<serde_json::Value, String> {
     let socket = socket_path().ok_or("Companion socket unavailable")?;
     let request = "GET /mcp/status HTTP/1.1\r\nhost: hypermesh\r\nconnection: close\r\n\r\n";

@@ -68,6 +68,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var epoch: UInt64 = 0
     private var polling = false
     private var started = false
+    private var selectingSession = false
     private var sessionOpen = false
     private var currentPhase = "off"
     private var message = "Desktop access is off"
@@ -111,6 +112,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         menu.addItem(NSMenuItem(title: "Quit Visor", action: #selector(NSApplication.terminate(_:)), keyEquivalent: ""))
         let trust = NSMenuItem(title: "MCP discovery and trust", action: #selector(openMcpTrust), keyEquivalent: "")
         trust.target = self; menu.addItem(trust)
+        let sessions = NSMenuItem(title: "Choose session", action: #selector(chooseSession), keyEquivalent: "")
+        sessions.target = self; menu.addItem(sessions)
         let connections = NSMenuItem(title: "MCP connections", action: #selector(openMcpConnections), keyEquivalent: "")
         connections.target = self; menu.addItem(connections)
         let controls = NSMenuItem(title: "Open control window", action: #selector(openControls), keyEquivalent: "")
@@ -171,7 +174,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
         allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil
         allowButton?.title = access.title
-        menuAllow?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil
+        menuAllow?.isEnabled = access.enabled && !selectingSession && !pendingApproval && trustController == nil && connectionsController == nil
         menuAllow?.title = access.title
         for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
@@ -243,6 +246,37 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     @objc func openCompanionMenu() {
         if let menu = statusItem?.menu { NativeCompanionPanel.shared.showMenu(menu) }
     }
+    @objc func chooseSession() {
+        guard engineConnected && !selectingSession else { return }
+        selectingSession = true
+        pause("Paused for session selection; allow access again after choosing a task")
+        control("sessions") { result in
+            defer { self.selectingSession = false; self.update() }
+            guard result?["status"] as? Int == 200,
+                  let body = result?["body"] as? [String:Any],
+                  let entries = body["sessions"] as? [[String:Any]] else {
+                self.message = "Session list unavailable"; self.update(); return
+            }
+            let choices: [(String, String)] = entries.prefix(128).compactMap { entry in
+                guard let raw = entry["id"] as? String, let id = UUID(uuidString: raw) else { return nil }
+                let purpose = String((entry["purpose"] as? String ?? "").prefix(160))
+                    .unicodeScalars.map { CharacterSet.controlCharacters.contains($0) ? " " : String($0) }.joined()
+                return (id.uuidString.lowercased(), purpose)
+            }
+            let alert = NSAlert(); alert.messageText = "Choose session"
+            alert.informativeText = "Selection keeps desktop input paused. Check the selected task before allowing access. First 128 open sessions shown."
+            let picker = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 480, height: 28))
+            for (id, purpose) in choices { picker.addItem(withTitle: "\(purpose) (\(id))") }
+            alert.accessoryView = picker
+            alert.addButton(withTitle: "Select session").isEnabled = !choices.isEmpty
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn, choices.indices.contains(picker.indexOfSelectedItem) else { return }
+            self.control("select-session", session: choices[picker.indexOfSelectedItem].0) { response in
+                self.message = response?["status"] as? Int == 204 ? "Session selected; allow access after checking the task" : "Selection failed or changed; refresh before retrying"
+                self.update()
+            }
+        }
+    }
     @objc func openForum() { openDestination(editor: false) }
     @objc func openWorkspace() { openDestination(editor: true) }
     private func openDestination(editor: Bool) {
@@ -305,7 +339,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         return body
     }
     @objc func allow() {
-        guard trustController == nil && connectionsController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
+        guard !selectingSession && trustController == nil && connectionsController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
         idleResume = nil
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),

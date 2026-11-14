@@ -48,6 +48,8 @@ the deserializers in `src/api.rs`, `src/input.rs`, `src/harness.rs`, and
 | `POST …/mcp/resources` | `server`, `action` list/templates/read, `decision` approve/deny, optional `params` | Explicit resource operation; requires advertised resource capability; returns outcome/result |
 | `POST …/mcp/prompts` | `server`, `action` list/get, `decision` approve/deny, optional `params` | Explicit template retrieval; requires advertised prompts capability; returns untrusted content without inference |
 | `GET /companion` | Desktop/session state, focus and preferred MCP binding | Does not grant execution permission |
+| `GET /companion/sessions` | none | Same-user companion only; at most 128 open session IDs and clipped purposes, plus omitted count; does not renew the input watchdog |
+| `POST /companion/sessions` | `session` UUID | Same-user companion only; selects an existing session, pauses input and invalidates old consent; 409 if closed; does not create a session or grant input |
 | `POST /companion/automation` | `action`; optional `expected_session` UUID for start/resume | Trusted companion link required to lift a user pause; a changed/closed selection with the guard returns 409. Native Allow/Resume always supplies it |
 | `POST /companion/interrupt`, `/companion/notice` | Companion control messages | See API request types; not task submission APIs |
 | `POST /prompt` | JSON `prompt`, `api_key`, and optional `model` | API key is in the JSON body (not `X-Api-Key`); configured routing and model validation |

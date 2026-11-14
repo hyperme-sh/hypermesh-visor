@@ -24,7 +24,7 @@ internal sealed class Companion : Form
     private readonly InputAuthority authority = new();
     private int inputPending;
     private long lastInput, approvalBaseline = -1;
-    private bool polling, approving, resuming, closing, started;
+    private bool polling, approving, resuming, closing, started, selecting;
     private string purpose = "";
     private string phase = "off", message = "Desktop access is off", usage = "No response usage yet";
     private long Now => Environment.TickCount64;
@@ -44,6 +44,7 @@ internal sealed class Companion : Form
         Controls.Add(status); Controls.Add(buttons);
         ContextMenuStrip menu = new();
         menu.Items.Add("Open controls", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
+        menu.Items.Add("Choose session", null, async (_, _) => await ChooseSession());
         menu.Items.Add("Open session forum", null, async (_, _) => await OpenDestination(false));
         menu.Items.Add("Open workspace in VS Code", null, async (_, _) => await OpenDestination(true));
         menu.Items.Add("Session CLI in PowerShell", null, async (_, _) => await OpenTerminal(false));
@@ -84,6 +85,40 @@ internal sealed class Companion : Form
         SystemEvents.SessionSwitch += SessionChanged;
         SystemEvents.DisplaySettingsChanged += DisplayChanged;
         FormClosing += CloseCompanion;
+    }
+    private async Task ChooseSession()
+    {
+        if (!started || closing || selecting) return;
+        selecting = true;
+        Pause("Paused for session selection. Allow access again after choosing a task.");
+        try
+        {
+            JsonElement? response = await Engine.Control("sessions");
+            if (closing || !Success(response)) return;
+            JsonElement body = Body(response);
+            if (!body.TryGetProperty("sessions", out var entries) || entries.ValueKind != JsonValueKind.Array) return;
+            var choices = entries.EnumerateArray().Take(128).Where(e => e.ValueKind == JsonValueKind.Object)
+                .Select(e => e.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && Guid.TryParseExact(id.GetString(), "D", out var parsed)
+                    ? new SessionChoice(parsed.ToString(), e.TryGetProperty("purpose", out var purpose) && purpose.ValueKind == JsonValueKind.String ? purpose.GetString() ?? "" : "") : null)
+                .OfType<SessionChoice>().ToArray();
+            using Form picker = new() { Text = "Choose session", Width = 620, Height = 180, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false };
+            ComboBox list = new() { Dock = DockStyle.Top, DropDownStyle = ComboBoxStyle.DropDownList };
+            list.Items.AddRange(choices); if (choices.Length > 0) list.SelectedIndex = 0;
+            Label note = new() { Dock = DockStyle.Fill, Text = "Selection keeps desktop input paused. Check the selected task before allowing access. First 128 open sessions shown.", Padding = new Padding(8) };
+            Button choose = new() { Dock = DockStyle.Bottom, Text = "Select session", Enabled = choices.Length > 0, DialogResult = DialogResult.OK };
+            picker.Controls.Add(note); picker.Controls.Add(list); picker.Controls.Add(choose);
+            if (picker.ShowDialog(this) == DialogResult.OK && list.SelectedItem is SessionChoice target)
+            {
+                response = await Engine.Control("select-session", target.Id);
+                message = Success(response) ? "Session selected; allow access after checking the task." : "Selection failed or changed. Refresh the list before retrying.";
+            }
+        }
+        catch { message = "Session selection unavailable. Refresh before retrying."; }
+        finally { selecting = false; if (!closing) UpdateStatus(); }
+    }
+    private sealed record SessionChoice(string Id, string Purpose)
+    {
+        public override string ToString() => McpTrustWindow.Safe(Purpose) + " (" + Id + ")";
     }
     private static Icon LoadIcon()
     {
@@ -195,7 +230,7 @@ internal sealed class Companion : Form
     }
     private async Task Approve()
     {
-        if (!started || approving || trustWindow is { IsDisposed: false } || connectionsWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
+        if (!started || selecting || approving || trustWindow is { IsDisposed: false } || connectionsWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
         approving = true;
         Revoke();
         long generation = consent.BeginApproval();
@@ -258,7 +293,7 @@ internal sealed class Companion : Form
     private void UpdateStatus()
     {
         status.Text = $"{message}\nTask: {purpose}\nScreen capture and mouse/keyboard input require your approval.\n\nSession: {consent.Selected ?? "none"}\n{usage}";
-        allow.Enabled = started && !approving && trustWindow is not { IsDisposed: false } && connectionsWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
+        allow.Enabled = started && !selecting && !approving && trustWindow is not { IsDisposed: false } && connectionsWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
         string shownPhase = CompactUsage.DisplayPhase(phase, consent.Allowed);
         tray.Text = $"Visor: {shownPhase}\n{usage}"[..Math.Min(63, $"Visor: {shownPhase}\n{usage}".Length)];
         string nextIcon = $"{shownPhase}:{responseUsage}";

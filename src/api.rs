@@ -78,6 +78,7 @@ pub struct AppState {
     /// `GET /companion` so sequence numbers from the previous process are
     /// not compared with this one.
     instance: u64,
+    selected_session: Mutex<Option<Uuid>>,
     /// `mcp-bindings.json`, refreshed outside the sessions lock.
     bindings: Mutex<BindingCache>,
     /// How long `running` may continue without a companion-socket poll.
@@ -170,6 +171,7 @@ impl AppState {
             host_bridge: None,
             tasks: tasks::Queue::new(),
             sessions: Mutex::new(HashMap::new()),
+            selected_session: Mutex::new(None),
             desktop,
             watch_poll,
             prompts,
@@ -315,7 +317,7 @@ impl AppState {
     fn companion_session(&self) -> Option<CompanionSession> {
         let driving = {
             let gate = lock(&self.automation);
-            if gate.phase() == Phase::Off {
+            if gate.phase() != Phase::Running {
                 None
             } else {
                 gate.session()
@@ -323,11 +325,14 @@ impl AppState {
         };
         let chosen = {
             let sessions = lock(&self.sessions);
-            let session = match driving {
-                Some(id) => sessions.get(&id),
-                None => None,
-            }
-            .or_else(|| sessions.values().max_by_key(|session| session.touched()))?;
+            let selected = *lock(&self.selected_session);
+            let session = if let Some(id) = driving {
+                sessions.get(&id)
+            } else if let Some(id) = selected {
+                sessions.get(&id)
+            } else {
+                sessions.values().max_by_key(|session| session.touched())
+            }?;
             let attachments: Vec<_> = session.mcp().servers.iter()
                 .map(|server| (server, server.routing_status())).collect();
             ChosenSession {
@@ -472,6 +477,17 @@ impl AppState {
         Some(gate.epoch())
     }
 
+    fn select_companion_session(&self, id: Uuid) -> Result<(), ApiError> {
+        let sessions = lock(&self.sessions);
+        if !sessions.contains_key(&id) { return Err(ApiError::conflict("session is no longer open")); }
+        let mut selected = lock(&self.selected_session);
+        let mut gate = lock(&self.automation);
+        // Selection never grants input. Epoch invalidation also cancels idle resume.
+        gate.pause();
+        *selected = Some(id);
+        Ok(())
+    }
+
     fn control_automation(&self, action: Control, companion: bool, expected_session: Option<Uuid>) -> Result<(), ApiError> {
         if expected_session.is_some() && !matches!(action, Control::Start | Control::Resume) {
             return Err(ApiError::bad("expected_session applies only to start or resume"));
@@ -516,11 +532,18 @@ impl AppState {
         // Keep selection, existence and the transition atomic with session close.
         // Other paths never retain the automation lock while acquiring sessions.
         let sessions = lock(&self.sessions);
+        let selected = *lock(&self.selected_session);
         let mut gate = lock(&self.automation);
         let live = if gate.phase() == Phase::Off { None } else { gate.session() };
-        let session = live.filter(|id| sessions.contains_key(id)).or_else(|| {
-            sessions.values().max_by_key(|session| session.touched()).map(|session| session.id())
-        });
+        let session = if gate.phase() == Phase::Running && live.is_some() {
+            live.filter(|id| sessions.contains_key(id))
+        } else if let Some(id) = selected {
+            sessions.contains_key(&id).then_some(id)
+        } else {
+            live.filter(|id| sessions.contains_key(id)).or_else(|| {
+                sessions.values().max_by_key(|session| session.touched()).map(|session| session.id())
+            })
+        };
         if expected_session.is_some() && expected_session != session {
             return Err(ApiError::conflict("selected session changed; approve the current session"));
         }
@@ -704,6 +727,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/host/mcp", post(host::mcp))
         .route("/companion", get(companion))
         .route("/companion/automation", post(companion_automation))
+        .route("/companion/sessions", get(companion_sessions).post(companion_select))
         .route("/companion/interrupt", post(companion_interrupt))
         .route("/companion/notice", post(companion_notice))
         .route("/session", post(open_session))
@@ -1705,6 +1729,32 @@ async fn companion(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionSelection { session: Uuid }
+
+async fn companion_sessions(
+    State(state): State<Arc<AppState>>,
+    Extension(CompanionLink(companion)): Extension<CompanionLink>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !companion { return Err(ApiError::forbidden("session selection requires the local companion socket")); }
+    let sessions = lock(&state.sessions);
+    let mut entries: Vec<_> = sessions.values().map(|session| (session.id(), clip_text(session.purpose(), SESSION_TEXT_MAX))).collect();
+    entries.sort_by_key(|entry| entry.0);
+    let omitted = entries.len().saturating_sub(128);
+    entries.truncate(128);
+    Ok(Json(serde_json::json!({"sessions":entries.into_iter().map(|(id,purpose)| serde_json::json!({"id":id,"purpose":purpose})).collect::<Vec<_>>(),"omitted":omitted})))
+}
+async fn companion_select(
+    State(state): State<Arc<AppState>>,
+    Extension(CompanionLink(companion)): Extension<CompanionLink>,
+    Json(body): Json<SessionSelection>,
+) -> Result<StatusCode, ApiError> {
+    if !companion { return Err(ApiError::forbidden("session selection requires the local companion socket")); }
+    state.select_companion_session(body.session)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
 struct AutomationRequest {
     action: String,
     #[serde(default)]
@@ -2272,6 +2322,10 @@ impl<'a> InjectGuard<'a> {
         let trust = lock(&state.mcp_trust);
         if trust.has_active_review() {
             return Err(ApiError::conflict("MCP source review is pending; desktop input is paused"));
+        }
+        let selected = lock(&state.selected_session);
+        if selected.is_some_and(|id| id != session) {
+            return Err(ApiError::conflict("another session is selected in the companion"));
         }
         let gate = &state.automation;
         let mut held = lock(gate);
@@ -3546,6 +3600,8 @@ mod tests {
             ("GET", "/no-such-route"),
             ("GET", "/companion"),
             ("POST", "/companion/automation"),
+            ("GET", "/companion/sessions"),
+            ("POST", "/companion/sessions"),
             ("POST", "/companion/interrupt"),
             ("POST", "/companion/notice"),
             ("POST", "/session"),
@@ -7685,6 +7741,58 @@ while True:
         assert!(state.control_automation(Control::Pause, true, None).is_ok());
         assert!(state.control_automation(Control::Resume, true, None).is_ok());
         drop(original);
+    }
+
+    #[tokio::test]
+    async fn companion_selection_is_private_and_does_not_grant_input() {
+        let (state, _, id) = task_fixture();
+        for app in [router(state.clone()), tcp_router(state.clone(), "fixture-token".into())] {
+            for method in ["GET", "POST"] {
+                assert_eq!(trust_test_request(app.clone(), method, "/companion/sessions", serde_json::json!({"session":id})).await.0, StatusCode::FORBIDDEN);
+            }
+        }
+        assert_eq!(lock(&state.automation).phase(), Phase::Off);
+        let app = companion_router(state.clone());
+        let (status, body) = trust_test_request(app.clone(), "GET", "/companion/sessions", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(body["sessions"][0]["id"], id.to_string());
+        assert_eq!(body["sessions"][0].as_object().unwrap().len(), 2);
+        assert_eq!(lock(&state.automation).phase(), Phase::Off);
+        let epoch = lock(&state.automation).epoch();
+        assert_eq!(trust_test_request(app, "POST", "/companion/sessions", serde_json::json!({"session":id})).await.0, StatusCode::NO_CONTENT);
+        let mut gate = lock(&state.automation);
+        assert_eq!(gate.phase(), Phase::Paused);
+        assert!(gate.begin_inject(id, epoch).is_err());
+    }
+
+    #[test]
+    fn companion_selection_pauses_and_requires_fresh_approval() {
+        let (mut state, _, first) = task_fixture();
+        Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
+        let (other, _, second) = task_fixture();
+        lock(&state.sessions).insert(second, lock(&other.sessions).remove(&second).unwrap());
+        assert!(state.select_companion_session(first).is_ok());
+        assert!(state.control_automation(Control::Stop, true, None).is_ok());
+        let stopped_epoch = lock(&state.automation).epoch();
+        assert!(InjectGuard::arm(&state, second, stopped_epoch, None).is_err());
+        assert!(state.control_automation(Control::Resume, true, Some(first)).is_ok());
+        let old = state.native_idle_pause(first).unwrap();
+        assert!(state.select_companion_session(second).is_ok());
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
+        assert_eq!(state.companion_session().unwrap().id, second);
+        assert!(state.native_idle_resume(first, old).is_none());
+        assert!(state.control_automation(Control::Resume, true, Some(first)).is_err());
+        assert!(state.control_automation(Control::Resume, false, Some(second)).is_err());
+        assert!(state.control_automation(Control::Resume, true, Some(second)).is_ok());
+        assert_eq!(lock(&state.automation).session(), Some(second));
+        lock(&state.sessions).remove(&second);
+        lock(&state.automation).note_session_closed(second);
+        assert!(state.companion_session().is_none());
+        assert!(state.control_automation(Control::Start, true, Some(first)).is_err());
+        assert!(state.select_companion_session(second).is_err());
+        assert!(state.select_companion_session(first).is_ok());
+        assert_eq!(lock(&state.automation).phase(), Phase::Paused);
     }
 
     #[tokio::test]
