@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 APP = 'Hypermesh Visor Development.app/Contents'
-PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp', 'libexec/conductor', 'libexec/hypermesh-visor']
+PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', f'{APP}/MacOS/crashpad_handler', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp', 'libexec/conductor', 'libexec/hypermesh-visor']
 
 
 def manifest(root):

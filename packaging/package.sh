@@ -154,6 +154,11 @@ for target in "${targets[@]}"; do
     exit 1
   fi
 
+  sdk_var="HYPERMESH_CRASH_SDK_${asset_arch^^}"
+  sdk=${!sdk_var:?Matching native crash SDK artifact is required}
+  export CRASH_SDK="$conductor_src/crash-sdk-$asset_arch"
+  python3 native/crash/stage-runtime.py "$sdk" "$CRASH_SDK" --platform linux --revision "$(git rev-parse HEAD)"
+
   deb="dist/hypermesh-visor-${asset_arch}.deb"
   rpm="dist/hypermesh-visor-${asset_arch}.rpm"
   VISOR_BIN="$raw" COMPANION_BIN="$companion" DESKTOP_MCP_BIN="$desktop_mcp" CLI_BIN="$cli_bin" HM_BIN="$hm_bin" \
@@ -182,6 +187,8 @@ for target in "${targets[@]}"; do
     './usr/bin/hypermesh-desktop-mcp' \
     './usr/bin/hypermesh' \
     './usr/lib/hypermesh-visor/conductor' \
+    './usr/lib/hypermesh-visor/crash-sdk/bin/crashpad_handler' \
+    './usr/lib/hypermesh-visor/crash-sdk/lib/libsentry.so' \
     './usr/bin/hm' \
     './etc/xdg/autostart/hypermesh-companion.desktop'
   do

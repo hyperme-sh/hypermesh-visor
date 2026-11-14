@@ -24,6 +24,7 @@ required-features = ["desktop"]
 default = ["desktop"]
 desktop = ["dep:hypermesh-visor-client", "dep:x11rb", "dep:zbus", "dep:tokio-rustls", "dep:webpki-roots", "hypermesh-session/os-keyring"]
 headless = []
+native-crash-static = []
 
 [dependencies]
 hypermesh-local-storage = { path = "local-storage" }

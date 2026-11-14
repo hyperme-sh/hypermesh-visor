@@ -99,6 +99,11 @@ fn acquire(database: &Path) -> io::Result<(File, PathBuf)> {
     if store.restore_crash_ticket(&bytes)?.is_none() {
         return Err(refused());
     }
+    // The application may have canceled and purged a delayed startup while we
+    // waited for the lock. Never recreate that run or write after its cleanup.
+    if prepare(database)?.2 != bytes || stop_requested(&run)? {
+        return Err(refused());
+    }
     Ok((file, run))
 }
 
@@ -156,18 +161,27 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
         };
         let finished = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&finished);
+        let active = run.join("handler-active");
         let Ok(monitor) = thread::Builder::new()
             .name("visor-capture-control".into())
             .spawn(move || monitor(&run, &signal, || terminate()))
         else {
             return std::ptr::null_mut();
         };
-        Box::into_raw(Box::new(Guard {
+        let guard = Box::new(Guard {
             file,
             finished,
             monitor: Some(monitor),
-        }))
-        .cast()
+        });
+        let activated = (|| -> io::Result<()> {
+            let mut file = storage::open(&active, storage::Open::New)?;
+            file.write_all(b"active")?;
+            file.sync_all()
+        })();
+        if activated.is_err() {
+            return std::ptr::null_mut();
+        }
+        Box::into_raw(guard).cast()
     })
     .unwrap_or(std::ptr::null_mut())
 }
@@ -246,6 +260,33 @@ mod tests {
             .join("health-consent");
         assert!(Store::open_existing(&directory, scope).is_err());
         assert!(store.capture(Category::Crashes).unwrap().is_some());
+    }
+    #[test]
+    fn canceled_capture_never_enters_the_writer() {
+        let (_root, store, run) = fixture();
+        storage::open(&run.join("stop-handler"), storage::Open::New)
+            .unwrap()
+            .write_all(b"stop")
+            .unwrap();
+        assert!(acquire(&run.join("database")).is_err());
+        store.decide(Category::Crashes, false).unwrap();
+    }
+    #[test]
+    fn purged_handoff_cannot_recreate_the_run() {
+        let (_root, store, run) = fixture();
+        let lease = store.capture_lease().unwrap().unwrap();
+        thread::scope(|scope| {
+            let waiting = scope.spawn(|| acquire(&run.join("database")));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !run.join("handler-ready").exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::remove_dir_all(&run).unwrap();
+            drop(lease);
+            assert!(waiting.join().unwrap().is_err());
+        });
+        assert!(!run.exists());
     }
     #[test]
     fn private_stop_request_invokes_only_the_injected_termination() {

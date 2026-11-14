@@ -48,6 +48,10 @@ $revision | Set-Content (Join-Path $out 'conductor-source-revision.txt') -Encodi
 & git rev-parse HEAD | Set-Content (Join-Path $out 'visor-source-revision.txt') -Encoding ascii
 'Unsigned development bundle. Native signing remains deferred.' | Set-Content (Join-Path $out 'UNSIGNED.txt') -Encoding ascii
 Copy-Item -LiteralPath native/windows/README.md -Destination (Join-Path $out 'README.md')
+if (!$env:HYPERMESH_CRASH_SDK_PATH) { throw 'HYPERMESH_CRASH_SDK_PATH must select the matching CI SDK artifact' }
+$visorRevision = (& git rev-parse HEAD).Trim()
+& python3 native/crash/stage-runtime.py $env:HYPERMESH_CRASH_SDK_PATH (Join-Path $out 'crash-sdk') --platform windows --revision $visorRevision
+if ($LASTEXITCODE -ne 0) { throw 'Native crash SDK staging failed' }
 $files = Get-ChildItem -LiteralPath $out -Recurse -File | Sort-Object FullName
 $manifest = foreach ($file in $files) {
     $relative = [IO.Path]::GetRelativePath($out, $file.FullName).Replace('\', '/')

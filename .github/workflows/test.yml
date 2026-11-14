@@ -10,6 +10,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  native-crash-sdk:
+    uses: ./.github/workflows/crash-sdk.yml
+    with:
+      platforms: '["macos-latest", "windows-latest"]'
   linux:
     runs-on: ubuntu-latest
     steps:
@@ -49,7 +53,7 @@ jobs:
         run: ./native/windows/test-desktop-contract.ps1
 
   native-windows-engine:
-    needs: native-windows-desktop-contract
+    needs: [native-windows-desktop-contract, native-crash-sdk]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -67,7 +71,13 @@ jobs:
       - name: Windows launcher process contracts
         working-directory: native/windows/launcher
         run: go test -mod=readonly -race ./...
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-crash-sdk-windows-latest
+          path: ${{ runner.temp }}/visor-crash-sdk
       - name: Build unsigned native Windows development bundle
+        env:
+          HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
         run: ./native/windows/build-development.ps1
       - name: Native companion unit contracts (no desktop opened)
         run: |
@@ -345,6 +355,7 @@ jobs:
 
   native-macos-workspace:
     name: Native macOS workspace
+    needs: native-crash-sdk
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -353,7 +364,13 @@ jobs:
         with:
           go-version: '1.25.x'
           cache: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-crash-sdk-macos-latest
+          path: ${{ runner.temp }}/visor-crash-sdk
       - name: Build native development distribution
+        env:
+          HYPERMESH_CRASH_SDK_PATH: ${{ runner.temp }}/visor-crash-sdk
         run: bash native/macos/package-development.sh "$RUNNER_TEMP/visor-distribution"
       - name: Native event mapping and unauthenticated bridge refusal
         run: |

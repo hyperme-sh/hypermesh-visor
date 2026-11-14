@@ -12,12 +12,17 @@ permissions:
   contents: read
 
 jobs:
+  native-crash-sdk:
+    uses: ./.github/workflows/crash-sdk.yml
+    with:
+      platforms: '["ubuntu-24.04", "ubuntu-24.04-arm"]'
   headless-packages:
     if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/headless.yml
 
   packages:
     name: linux packages
+    needs: native-crash-sdk
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -47,7 +52,14 @@ jobs:
       - name: Test
         run: cargo test --locked --workspace
 
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-crash-sdk-ubuntu-*
+          path: ${{ runner.temp }}/visor-crash-sdks
       - name: Package
+        env:
+          HYPERMESH_CRASH_SDK_X86_64: ${{ runner.temp }}/visor-crash-sdks/native-crash-sdk-ubuntu-24.04
+          HYPERMESH_CRASH_SDK_AARCH64: ${{ runner.temp }}/visor-crash-sdks/native-crash-sdk-ubuntu-24.04-arm
         run: bash packaging/package.sh
 
       - name: Upload packages

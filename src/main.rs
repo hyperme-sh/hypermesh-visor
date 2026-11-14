@@ -14,6 +14,7 @@ use hypermesh_visor::{
 
 #[derive(Debug)]
 struct Options {
+    crash_consent: Option<bool>,
     tcp: bool,
     listen: String,
     fixture_log: Option<std::path::PathBuf>,
@@ -41,6 +42,15 @@ fn main() -> ExitCode {
     if current_euid() == 0 {
         eprintln!("hypermesh-visor: refusing to run as root");
         return ExitCode::from(1);
+    }
+    if let Some(enabled) = options.crash_consent {
+        return match hypermesh_visor::crash_startup::set_crash_consent(enabled) {
+            Ok(()) => {
+                println!("{}", if enabled { "Local crash capture enabled for the next startup. Each sanitized upload still requires approval." } else { "Crash capture stopped and disabled." });
+                ExitCode::SUCCESS
+            }
+            Err(_) => { eprintln!("Crash consent could not be changed"); ExitCode::from(1) }
+        };
     }
     hypermesh_visor::crash_startup::startup();
     let tcp = if tcp_enabled(options.tcp, std::env::var("HYPERMESH_TCP").ok().as_deref()) {
@@ -203,6 +213,7 @@ where
     I: IntoIterator<Item = String>,
 {
     let mut args = args.into_iter();
+    let mut crash_consent = None;
     let mut tcp = false;
     let mut listen = "127.0.0.1:9847".to_string();
     let mut fixture = false;
@@ -213,8 +224,18 @@ where
     let mut routes = Vec::new();
     let mut experts = Vec::new();
     let mut answers = Vec::new();
+    let mut flags = 0;
     while let Some(arg) = args.next() {
+        flags += 1;
         match arg.as_str() {
+            "--crash-consent" => {
+                if crash_consent.is_some() { return Err("--crash-consent may appear only once".into()); }
+                crash_consent = Some(match args.next().as_deref() {
+                    Some("enable") => true,
+                    Some("disable") => false,
+                    _ => return Err("--crash-consent needs enable or disable".into()),
+                });
+            }
             "--tcp" => tcp = true,
             "--listen" => {
                 listen = args
@@ -254,7 +275,7 @@ where
             }
             "-h" | "--help" => {
                 println!(
-                    "hypermesh-visor [--tcp] [--listen 127.0.0.1:9847] [--fixture --fixture-log PATH]\n\
+                    "hypermesh-visor [--crash-consent enable|disable] [--tcp] [--listen 127.0.0.1:9847] [--fixture --fixture-log PATH]\n\
                      [--supervisor-url URL] [--supervisor-url-2 URL] [--default-model {DEFAULT_CATALOG_ID}]\n\
                      [--route CATALOG=URL] [--experts CATALOG] [--expert-answer CATALOG=URL]\n\
                      The control API listens on control.sock in the runtime directory.\n\
@@ -272,6 +293,9 @@ where
             other => return Err(format!("unknown argument {other}")),
         }
     }
+    if crash_consent.is_some() && flags != 1 {
+        return Err("--crash-consent must be used alone".into());
+    }
     if fixture && fixture_log.is_none() {
         return Err("--fixture needs --fixture-log".into());
     }
@@ -279,6 +303,7 @@ where
         return Err("--fixture-log needs --fixture".into());
     }
     Ok(Some(Options {
+        crash_consent,
         tcp,
         listen,
         fixture_log,
@@ -350,6 +375,15 @@ fn resolve_supervisor_url(flag: Option<&str>, env: Option<&str>) -> Option<Strin
 mod tests {
     use super::*;
 
+    #[test]
+    fn crash_consent_requires_one_explicit_standalone_choice() {
+        for (choice, expected) in [("enable", true), ("disable", false)] {
+            let options = parse_args_from(["--crash-consent".into(), choice.into()]).unwrap().unwrap();
+            assert_eq!(options.crash_consent, Some(expected));
+        }
+        assert!(parse_args_from(["--crash-consent".into(), "true".into()]).is_err());
+        assert!(parse_args_from(["--crash-consent".into(), "enable".into(), "--tcp".into()]).is_err());
+    }
     #[test]
     fn tcp_is_off_unless_the_flag_or_env_opts_in() {
         assert!(!tcp_enabled(false, None));
