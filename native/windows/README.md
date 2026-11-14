@@ -77,6 +77,24 @@ and the private Conductor pipe. An assigned session must still be opened by the
 client/bot before desktop access can be allowed. Installer and login registration
 remain under #25; this launcher does not register an autorun entry.
 
+## Session destinations
+
+The tray menu opens the selected session's forum or workspace in Visual Studio
+Code. Configure these locally in `companion.toml` under the selected config
+directory; no destination is taken from remote task text:
+
+```toml
+[sessions."00000000-0000-4000-8000-000000000001"]
+forum_url = "https://forum.example.test/t/123"
+workspace = 'C:\Users\you\Projects\my project'
+```
+
+Replace the example ID with the session ID shown in controls. Forums require
+HTTPS without credentials, query or fragment. Workspaces must exist and use an
+absolute path. VS Code is opened directly from its standard per-user or system
+installation; workspace paths are passed as literal arguments. A session change
+while resolving a destination cancels the action.
+
 The control window shows the selected session and purpose. **Allow desktop
 access** grants that session screen capture and mouse/keyboard input. **Pause**
 and **Stop** revoke local input immediately. Minimize to the bug in the notification
