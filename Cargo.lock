@@ -1052,6 +1052,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hypermesh-local-storage",
  "hypermesh-local-transport",
  "libc",
  "serde",

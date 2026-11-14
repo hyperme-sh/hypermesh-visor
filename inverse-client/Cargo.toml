@@ -9,7 +9,12 @@ publish = false
 name = "hypermesh-desktop-mcp-client"
 path = "src/main.rs"
 
+[[bin]]
+name = "hypermesh-acp"
+path = "src/bin/hypermesh-acp.rs"
+
 [dependencies]
+hypermesh-local-storage = { path = "../local-storage" }
 hypermesh-local-transport = { path = "../local-transport" }
 base64 = "0.22"
 bytes = "1"
@@ -19,7 +24,7 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["macros", "rt", "net", "sync", "time", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "sync", "time", "io-util", "io-std"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 ureq = { version = "2.12", default-features = false, features = ["tls"] }
 url = "2"

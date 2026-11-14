@@ -12,6 +12,8 @@ mkdir -p "$bundle/bin" "$bundle/libexec"
 bash native/macos/build-app.sh "$bundle/Hypermesh Visor Development.app"
 cargo build --locked --bin hypermesh-desktop-mcp
 cp target/debug/hypermesh-desktop-mcp "$bundle/libexec/"
+cargo build --locked -p hypermesh-visor-client --bin hypermesh-acp
+cp target/debug/hypermesh-acp "$bundle/libexec/"
 # Resolve the destination before entering the vendored CLI source directory.
 bundle=$(cd "$bundle" && pwd)
 (cd third_party/hypermesh-cli && CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath -o "$bundle/libexec/hypermesh" ./cmd/hypermesh)
@@ -30,7 +32,7 @@ printf '%s\n' "$conductor_sha256" > "$bundle/conductor-source-archive.sha256"
 swiftc -O native/macos/Launcher.swift -o "$bundle/libexec/hypermesh-visor"
 codesign --force --sign - --options runtime --identifier sh.hyperme.visor.launcher "$bundle/libexec/hypermesh-visor"
 "$bundle/libexec/hypermesh-visor" --self-test
-for program in hypermesh hypermesh-desktop-mcp conductor hypermesh-visor; do
+for program in hypermesh hypermesh-desktop-mcp hypermesh-acp conductor hypermesh-visor; do
   cp native/macos/launch-tool.sh "$bundle/bin/$program"
   chmod 755 "$bundle/bin/$program"
 done

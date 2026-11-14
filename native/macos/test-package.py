@@ -13,7 +13,7 @@ import tempfile
 import unittest
 
 APP = 'Hypermesh Visor Development.app/Contents'
-PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', f'{APP}/MacOS/crashpad_handler', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp', 'libexec/conductor', 'libexec/hypermesh-visor']
+PROGRAMS = [f'{APP}/MacOS/hypermesh-native-desktop', f'{APP}/MacOS/crashpad_handler', 'libexec/hypermesh', 'libexec/hypermesh-desktop-mcp', 'libexec/hypermesh-acp', 'libexec/conductor', 'libexec/hypermesh-visor']
 
 
 def manifest(root):
@@ -43,7 +43,7 @@ def verify(root):
             magic, cpu = struct.unpack('<II', stream.read(8))
         if (magic, cpu) != (0xfeedfacf, 0x0100000c) or not os.access(path, os.X_OK):
             raise ValueError('Expected an executable native ARM64 Mach-O program')
-    for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor', 'hypermesh-visor']:
+    for name in ['hypermesh', 'hypermesh-desktop-mcp', 'hypermesh-acp', 'conductor', 'hypermesh-visor']:
         assert os.access(root/'bin'/name, os.X_OK)
     help_result = subprocess.run([str(root/'bin/conductor'), '--help'], check=True,
                                  capture_output=True, text=True, timeout=10)
@@ -91,7 +91,7 @@ class LauncherContracts(unittest.TestCase):
             root = Path(directory)
             (root/'bin').mkdir()
             (root/'libexec').mkdir()
-            for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor', 'hypermesh-visor']:
+            for name in ['hypermesh', 'hypermesh-desktop-mcp', 'hypermesh-acp', 'conductor', 'hypermesh-visor']:
                 launch = root/'bin'/name
                 shutil.copyfile(Path(__file__).with_name('launch-tool.sh'), launch)
                 launch.chmod(0o755)
@@ -119,7 +119,7 @@ class LauncherContracts(unittest.TestCase):
             for bundle in bundles:
                 (bundle/'bin').mkdir(parents=True)
                 (bundle/'libexec').mkdir()
-                for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor', 'hypermesh-visor']:
+                for name in ['hypermesh', 'hypermesh-desktop-mcp', 'hypermesh-acp', 'conductor', 'hypermesh-visor']:
                     launcher = bundle/'bin'/name
                     shutil.copyfile(Path(__file__).with_name('launch-tool.sh'), launcher)
                     launcher.chmod(0o755)
@@ -129,7 +129,7 @@ class LauncherContracts(unittest.TestCase):
             env = dict(os.environ, HOME=str(home))
             env.pop('HYPERMESH_RUNTIME_DIR', None)
             for bundle in bundles:
-                for name in ['hypermesh', 'hypermesh-desktop-mcp', 'conductor', 'hypermesh-visor']:
+                for name in ['hypermesh', 'hypermesh-desktop-mcp', 'hypermesh-acp', 'conductor', 'hypermesh-visor']:
                     result = subprocess.run([str(bundle/'bin'/name)], check=True, capture_output=True, text=True, env=env)
                     self.assertEqual(json.loads(result.stdout), [str(bundle/'libexec'/name), str(home/'.local/state/hypermesh/native-run')])
                 self.assertEqual(config.read_bytes(), before)

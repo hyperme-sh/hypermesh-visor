@@ -120,6 +120,8 @@ for target in "${targets[@]}"; do
   built="target/${target}/release/hypermesh-visor"
   companion="target/${target}/release/hypermesh-companion"
   desktop_mcp="target/${target}/release/hypermesh-desktop-mcp"
+  export ACP_BIN="target/${target}/release/hypermesh-acp"
+  [[ -x "$ACP_BIN" ]] || { echo "Missing ACP adapter" >&2; exit 1; }
   raw="dist/hypermesh-visor-${asset_arch}"
   install -m 0755 "$built" "$raw"
   if [[ ! -x "$companion" ]]; then
@@ -184,7 +186,9 @@ for target in "${targets[@]}"; do
   for path in \
     './usr/bin/hypermesh-visor' \
     './usr/bin/hypermesh-companion' \
+    './usr/bin/hypermesh-acp' \
     './usr/bin/hypermesh-desktop-mcp' \
+    './usr/bin/hypermesh-acp' \
     './usr/bin/hypermesh' \
     './usr/lib/hypermesh-visor/conductor' \
     './usr/lib/hypermesh-visor/crash-sdk/bin/crashpad_handler' \
