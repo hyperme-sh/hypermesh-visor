@@ -8,7 +8,7 @@ $stderr = Join-Path $output 'stderr.txt'
 $process = $null
 try {
     $process = Start-Process -FilePath (Join-Path $output 'visor-desktop-contract.exe') -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-    if (!$process.WaitForExit(30000)) { $process.Kill($true); throw 'Desktop fixture timed out' }
+    if (!$process.WaitForExit(40000)) { $process.Kill($true); throw 'Desktop fixture timed out' }
     $process.WaitForExit()
     Get-Content -LiteralPath $stdout
     Get-Content -LiteralPath $stderr

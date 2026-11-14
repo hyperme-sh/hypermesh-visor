@@ -19,8 +19,16 @@ internal static class DesktopContracts
     }
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
+        if (args.Length == 0)
+        {
+            try { return FixtureProcess.Run(); }
+            catch (Exception error) { Console.Error.WriteLine(error.Message); return 1; }
+        }
+        if (args.Length != 1 || args[0] != "--fixture" || Environment.GetEnvironmentVariable("CI") != "true") return 1;
+        using StreamWriter log = new(Path.Combine(AppContext.BaseDirectory, "fixture.log")) { AutoFlush = true };
+        Console.SetOut(log); Console.SetError(log);
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
