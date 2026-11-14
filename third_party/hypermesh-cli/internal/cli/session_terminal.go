@@ -19,6 +19,7 @@ var terminalInstance = regexp.MustCompile(`^[a-zA-Z0-9-]{1,64}$`)
 
 func newSessionTerminalCmd(r *run) *cobra.Command {
 	var session, instance string
+	var externallyRaw bool
 	cmd := &cobra.Command{
 		Use:   "session-terminal --session UUID",
 		Short: "Enter prompts for one existing local Visor session",
@@ -44,6 +45,7 @@ func newSessionTerminalCmd(r *run) *cobra.Command {
 				}()
 			}
 			input, output := cmd.InOrStdin(), cmd.OutOrStdout()
+			rawInput := externallyRaw
 			if file, ok := input.(*os.File); ok && term.IsTerminal(int(file.Fd())) {
 				fd := int(file.Fd())
 				state, err := term.MakeRaw(fd)
@@ -51,6 +53,9 @@ func newSessionTerminalCmd(r *run) *cobra.Command {
 					return err
 				}
 				defer func() { result = errors.Join(result, flushTerminal(fd), term.Restore(fd, state)) }()
+				rawInput = true
+			}
+			if rawInput {
 				output = terminalOutput{output}
 				input = &terminalInput{input: bufio.NewReader(input), echo: output}
 			}
@@ -66,6 +71,7 @@ func newSessionTerminalCmd(r *run) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&session, "session", "", "existing session UUID")
 	cmd.Flags().StringVar(&instance, "instance", "", "Windows local pipe instance")
+	cmd.Flags().BoolVar(&externallyRaw, "raw-terminal", false, "caller owns raw terminal settings (WSL launcher)")
 	return cmd
 }
 
