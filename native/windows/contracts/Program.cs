@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace Hypermesh.Visor;
@@ -51,7 +50,7 @@ internal static class DesktopContracts
         Require(Win32.NormalUserWindow(fixture.Handle), "Windows contract requires a normal-user process without elevation");
         await Task.Delay(500);
         InputAuthority authority = new();
-        nuint marker = (nuint)(BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1UL);
+        nuint marker = InputMonitor.CreateMarker();
         int interruptions = 0, failures = 0;
         using InputMonitor monitor = new(marker, () => { authority.Revoke(); Interlocked.Increment(ref interruptions); }, () => { authority.Revoke(); Interlocked.Increment(ref failures); });
         DesktopDriver driver = new(marker, session => authority.AllowedFor(session) && monitor.Healthy, () => authority.Generation, () => Interlocked.Increment(ref failures));

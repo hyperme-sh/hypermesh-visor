@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace Hypermesh.Visor;
 
@@ -29,6 +30,9 @@ internal sealed class InputMonitor : IDisposable
         if (!ready.Wait(TimeSpan.FromSeconds(5)) || !Healthy) Fail();
     }
     internal static bool IsOwn(bool injected, nuint extra, nuint marker) => injected && extra == marker;
+    // Mouse input can retain only the low 32 bits. Positive 31-bit tags also
+    // survive signed intermediaries; received tags still require an exact match.
+    internal static nuint CreateMarker() => (nuint)RandomNumberGenerator.GetInt32(1, int.MaxValue);
     private void ForeignInput(bool injected, nuint extra)
     {
         Interlocked.Exchange(ref foreignExtra, unchecked((long)extra));

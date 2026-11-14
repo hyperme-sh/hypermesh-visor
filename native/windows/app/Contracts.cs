@@ -41,6 +41,11 @@ internal static class Contracts
             generation = consent.BeginApproval(); Require(consent.Approve("second", generation));
             consent.LoseMonitor(); Require(!consent.Allowed); generation = consent.BeginApproval(); Require(!consent.Approve("second", generation));
             Require(InputMonitor.IsOwn(true, 123, 123)); Require(!InputMonitor.IsOwn(false, 123, 123)); Require(!InputMonitor.IsOwn(true, 124, 123));
+            nuint marker = InputMonitor.CreateMarker();
+            Require(marker > 0 && marker < int.MaxValue);
+            Require(InputMonitor.IsOwn(true, (nuint)(uint)marker, marker));
+            Require(!InputMonitor.IsOwn(false, marker, marker));
+            Require(!InputMonitor.IsOwn(true, marker | ((nuint)1 << 32), marker));
             Require(Marshal.SizeOf<Win32.Input>() == 40); Require(Marshal.SizeOf<Win32.MouseHook>() == 32); Require(Marshal.SizeOf<Win32.KeyHook>() == 24);
             Require(DesktopDriver.Normalize(1919, 1079, 1920, 1080) == (65535, 65535));
             Require(DesktopDriver.Normalize(0, 0, 1, 1) == (0, 0));
