@@ -18,6 +18,36 @@ internal static class Contracts
                 ? JsonSerializer.SerializeToElement(new { status = 200, body = new[] { new { profile = "approved-profile", status = "approved" } } })
                 : JsonSerializer.SerializeToElement(new { status = 500 }))).GetAwaiter().GetResult();
             Require(partial.Profiles == null && partial.Sources == null && partial.Trusted.GetArrayLength() == 1);
+            const string mcpSession = "00000000-0000-4000-8000-000000000001";
+            JsonElement mcpStatus = JsonSerializer.SerializeToElement(new { session = new { id = mcpSession,
+                mcp_match = new { reason = "server_unavailable", bindings_status = "ready", private_value = "hidden-secret" },
+                mcp_attachments = new[] {
+                    new { name = "clipped", server_id = "exact/../?é", routing_status = "disconnected" },
+                    new { name = "busy", server_id = "busy", routing_status = "refreshing" },
+                    new { name = "spaces", server_id = " trailing ", routing_status = "ready" },
+                    new { name = "long", server_id = new string('é', 257), routing_status = "ready" }
+                } } });
+            var mcpTargets = McpConnectionsWindow.Targets(mcpStatus);
+            Require(mcpTargets.Length == 1 && mcpTargets[0].Server == "exact/../?é" && mcpTargets[0].Session == mcpSession);
+            string mcpDescription = McpConnectionsWindow.Describe(mcpStatus);
+            Require(mcpDescription.Contains("server_unavailable") && !mcpDescription.Contains("hidden-secret"));
+            Require(McpConnectionsWindow.Targets(JsonSerializer.SerializeToElement(new { session = new { id = "../wrong" } })).Length == 0);
+            Require(McpConnectionsWindow.Targets(JsonSerializer.SerializeToElement(new { session = (object?)null })).Length == 0);
+            Refuses(() => McpConnectionsWindow.Body(null));
+            foreach (bool reconnect in new[] { false, true })
+            {
+                int submitted = 0;
+                McpConnectionsWindow.Execute(mcpTargets[0], reconnect, (action, session, server) =>
+                {
+                    submitted++; Require(action == (reconnect ? "mcp-reconnect" : "mcp-refresh") && session == mcpSession && server == "exact/../?é");
+                    return Task.FromResult<JsonElement?>(JsonSerializer.SerializeToElement(new { status = 204 }));
+                }).GetAwaiter().GetResult();
+                Require(submitted == 1);
+                submitted = 0;
+                Refuses(() => McpConnectionsWindow.Execute(mcpTargets[0], reconnect, (_, _, _) => { submitted++; return Task.FromResult<JsonElement?>(null); }).GetAwaiter().GetResult());
+                Require(submitted == 1);
+            }
+
             JsonElement review = JsonSerializer.SerializeToElement(new {
                 profile = "default", review_id = "00000000-0000-4000-8000-000000000001", profiles_path = "profiles.json",
                 servers = new[] { new { name = "example", status = "selected", transport = "http", enabled = true, argument_count = 1,

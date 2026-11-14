@@ -18,6 +18,7 @@ internal sealed class Companion : Form
     private CompactUsage? responseUsage;
     private readonly PointerOverlay overlay = new();
     private McpTrustWindow? trustWindow;
+    private McpConnectionsWindow? connectionsWindow;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
     private readonly nuint marker = InputMonitor.CreateMarker();
     private readonly InputAuthority authority = new();
@@ -59,6 +60,18 @@ internal sealed class Companion : Form
             if (!trustWindow.Visible) trustWindow.Show(this);
             trustWindow.Activate();
             UpdateStatus();
+        });
+        menu.Items.Add("MCP connections", null, (_, _) =>
+        {
+            if (!started || closing) return;
+            Pause("Paused for MCP connection controls. Close the window before allowing desktop access again.");
+            if (connectionsWindow == null || connectionsWindow.IsDisposed)
+            {
+                connectionsWindow = new McpConnectionsWindow();
+                connectionsWindow.FormClosed += (_, _) => { if (!closing) UpdateStatus(); };
+            }
+            if (!connectionsWindow.Visible) connectionsWindow.Show(this);
+            connectionsWindow.Activate(); UpdateStatus();
         });
         menu.Items.Add("Allow desktop access", null, async (_, _) => await Approve());
         menu.Items.Add("Pause", null, (_, _) => Pause("Paused by you"));
@@ -182,7 +195,7 @@ internal sealed class Companion : Form
     }
     private async Task Approve()
     {
-        if (!started || approving || trustWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
+        if (!started || approving || trustWindow is { IsDisposed: false } || connectionsWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
         approving = true;
         Revoke();
         long generation = consent.BeginApproval();
@@ -245,7 +258,7 @@ internal sealed class Companion : Form
     private void UpdateStatus()
     {
         status.Text = $"{message}\nTask: {purpose}\nScreen capture and mouse/keyboard input require your approval.\n\nSession: {consent.Selected ?? "none"}\n{usage}";
-        allow.Enabled = started && !approving && trustWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
+        allow.Enabled = started && !approving && trustWindow is not { IsDisposed: false } && connectionsWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
         string shownPhase = CompactUsage.DisplayPhase(phase, consent.Allowed);
         tray.Text = $"Visor: {shownPhase}\n{usage}"[..Math.Min(63, $"Visor: {shownPhase}\n{usage}".Length)];
         string nextIcon = $"{shownPhase}:{responseUsage}";
@@ -264,7 +277,7 @@ internal sealed class Companion : Form
         if (closing) return;
         args.Cancel = true; closing = true;
         Revoke(); consent.Stop(); timer.Stop(); tray.Visible = false;
-        trustWindow?.Close();
+        trustWindow?.Close(); connectionsWindow?.Close();
         monitor?.Dispose();
         try { await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1)); } catch { }
         SystemEvents.SessionSwitch -= SessionChanged;
