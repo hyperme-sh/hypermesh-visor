@@ -140,13 +140,13 @@ impl PendingCrash {
         {
             return Err(denied());
         }
-        store.upload(&self.ticket, || send(&self.destination, &self.body))
+        store.upload_local_crash(&self.ticket, || send(&self.destination, &self.body))
     }
     /// Declining destroys the pending sanitized report and its approval.
     pub fn decline(self) {}
 }
 
-fn destination_url(value: &str) -> io::Result<String> {
+pub(crate) fn destination_url(value: &str) -> io::Result<String> {
     if value.len() > 2048 {
         return Err(denied());
     }
@@ -330,6 +330,21 @@ mod tests {
             .is_err());
         assert_eq!(calls, 1);
         pending(&store).decline();
+    }
+    #[test]
+    fn v0_approved_crash_uses_local_consent_without_server_sync() {
+        let (_dir, store) = fixture();
+        store.decide(Category::Crashes, true).unwrap();
+        let mut report = pending(&store);
+        approve(&mut report);
+        report.send_once(&store, |_, _| Ok(())).unwrap();
+        let mut report = pending(&store);
+        approve(&mut report);
+        store.decide(Category::Crashes, false).unwrap();
+        store.decide(Category::Crashes, true).unwrap();
+        assert!(report
+            .send_once(&store, |_, _| panic!("old revision"))
+            .is_err());
     }
     #[test]
     fn hosted_vendor_and_unsafe_destinations_are_refused() {

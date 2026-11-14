@@ -37,7 +37,6 @@ mod tests {
         assert!(!String::from_utf8_lossy(preview.sanitized_json).contains("excluded-private-text"));
         let (id, hash, destination) = (preview.id, preview.sha256.to_owned(), preview.destination.to_owned());
         crash.approve(id, &hash, &destination).unwrap();
-        store.synchronized(crash.consent_ticket()).unwrap();
         crash.send_once(&store, |endpoint, body| {
             assert_eq!(endpoint, destination);
             assert!(!body.is_empty());

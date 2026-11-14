@@ -71,6 +71,9 @@ pub struct Ticket {
     scope: Scope,
 }
 impl Ticket {
+    pub(crate) fn matches_scope(&self, scope: &Scope) -> bool {
+        self.scope == *scope
+    }
     pub(crate) fn crash_tenant(&self) -> Option<Uuid> {
         (self.category == Category::Crashes).then_some(self.scope.tenant)
     }
@@ -208,6 +211,21 @@ impl Store {
     }
     pub(crate) fn validate_capture(&self, ticket: &Ticket) -> io::Result<()> {
         self.locked(|| self.check(ticket))
+    }
+    /// v0 crash consent is device-local. Hold the decision lock through the
+    /// bounded send so withdrawal cannot complete while a send is active.
+    pub(crate) fn upload_local_crash<T>(
+        &self,
+        ticket: &Ticket,
+        send: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        if ticket.category != Category::Crashes {
+            return Err(refused());
+        }
+        self.locked(|| {
+            self.check(ticket)?;
+            send()
+        })
     }
     fn check(&self, ticket: &Ticket) -> io::Result<()> {
         let record = self.read()?.ok_or_else(refused)?;
