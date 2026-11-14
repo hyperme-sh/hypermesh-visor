@@ -13,12 +13,12 @@ they do not create a new bot identity or grant assignment authority.
 | Issue | Current work and remaining scope | Nightly coverage needed |
 | --- | --- | --- |
 | [#17](https://github.com/hyperme-sh/hypermesh-visor/issues/17) Wayland | Native portal/libei input and real-user pause remain unimplemented; refusal stays explicit. | GNOME and KDE permission, input, interruption and overlay scenarios. Existing Wayland refusal tests do not cover this. |
-| [#18](https://github.com/hyperme-sh/hypermesh-visor/issues/18) Native companions | The macOS development app embeds the daemon with visible Allow/Pause/Stop controls and an in-process desktop callback. The animated macOS pointer overlay and session-bound Allow/Resume are implemented. The movable macOS companion exposes the same session-bound controls and hover usage as the menu-bar surface. Windows support and isolated stdio workers remain open. | Separate native Windows/macOS desktop adapters with physical-input pause and recovery. |
-| [#25](https://github.com/hyperme-sh/hypermesh-visor/issues/25) Windows distribution | Native IPC, workspace support and unsigned installer remain open. Portable discovery tests are only one part. | Native installed Windows session and upgrade/removal checks. |
-| [#26](https://github.com/hyperme-sh/hypermesh-visor/issues/26) macOS distribution | Complete for the Apple Silicon development distribution: native app, CLI and inverse MCP ZIP, file checksums, source revision, private IPC, multi-display capture/input, permission recovery, pause/cancellation and native keychain/package contracts. Intel is explicitly unclaimed. Animated companion parity stays in #18, broader MCP work in #29 and signing in #84. | Apple Silicon permission refusal/recovery, installed application, interruption and keychain checks. |
+| [#18](https://github.com/hyperme-sh/hypermesh-visor/issues/18) Native companions | Complete native Windows/macOS companions: in-process desktop callbacks, visible Allow/Pause/Stop, physical-input pause and bounded idle resume. Windows landed in #186. Isolated native MCP stdio workers remain in #29. | Separate native Windows/macOS desktop adapters with physical-input pause and recovery. |
+| [#25](https://github.com/hyperme-sh/hypermesh-visor/issues/25) Windows distribution | Complete Windows x64 development distribution: private current-user IPC, bundled CLI, owned Conductor/app launcher, unsigned per-user installer and native desktop/package CI contracts (#187, #190–#193). ARM64 is unclaimed; signing stays in #84. | Native installed Windows session and upgrade/removal checks. |
+| [#26](https://github.com/hyperme-sh/hypermesh-visor/issues/26) macOS distribution | Complete Apple Silicon development distribution: native app, CLI, inverse MCP and Conductor bundle, private IPC, capture/input, permission recovery and keychain/package contracts. #182 adds automatic bundled startup; #199 preserves directory selectors. This does not claim login-item registration or Intel support. Signing stays in #84. | Apple Silicon permission refusal/recovery, installed application, interruption and keychain checks. |
 | [#27](https://github.com/hyperme-sh/hypermesh-visor/issues/27) Container bots | Complete local container deployment: Debian desktop image, bundled CLI, private state, scoped shared resources, native amd64/arm64 archives and automatic verified GHCR TEST publication. Cross-service registration and assignment remain in #30. | `visor-container` repeats two-bot isolation, resource, restart, MCP and app checks on x64; add native ARM64. |
 | [#28](https://github.com/hyperme-sh/hypermesh-visor/issues/28) Verb contract | Complete audit: HTTP/MCP inventory, limits, errors, coordinates, cancellation and task classification are documented. Missing native/service implementations stay in their own issues. | Browser/editor/terminal and display regression coverage stays in the scheduled batch; unsupported operations are explicitly classified in the verb contract. |
-| [#29](https://github.com/hyperme-sh/hypermesh-visor/issues/29) MCP discovery | Shared discovery has native filesystem unit checks. Tool I/O no longer holds the global session lock, and audit outcomes survive session close. Explicit resource access and offline argument/result schema validation are implemented. Additional integrations, native app matching and reconnect policy remain open. | Native platform application matching, permission/refusal, refresh and disconnect cases. |
+| [#29](https://github.com/hyperme-sh/hypermesh-visor/issues/29) MCP discovery | Discovery, native trust screens (#198/#200/#201), stable app identities, HTTP transport, schema checks and explicit catalog operations are implemented. #202 blocks automation during pending source reviews. Isolated Windows/macOS stdio workers remain unavailable; native connection-control UI is tracked separately in #203/#204 until merged. | Native platform application matching, permission/refusal, refresh and disconnect cases. |
 | [#30](https://github.com/hyperme-sh/hypermesh-visor/issues/30) Bot assignment | Plane #110–#112 implement owner-scoped enrollment, durable assignment, heartbeat, task deduplication, cancellation and revocation. Opt-in Visor outbound polling binds one local session and enforces local consent and short deadlines. Portal #114 adds owner enrollment and controls; Edge #59 routes scoped agent requests. Dedicated containers opt into one local startup consent with automatic restart disabled. | Infra-owned assigned-machine/container fixtures with denied owner, expired assignment and duplicate dispatch. |
 | [#31](https://github.com/hyperme-sh/hypermesh-visor/issues/31) Forum tasks | s3r.ch #387/#388 provide signed delegated task admission, durable replay protection, task cards and cancellation drafts. Visor #150 supplies consent-bound absolute task leases. s3r.ch #389 adds the opt-in worker, individual Gun subscriptions, durable reports and independently authorized private artifacts. s3r.ch #391 renders approval timing without publishing private approval handles. s3r.ch #392 and acl-service #78/#79/#82 supply complete primary history, atomic admission, quotas and explicit startup bindings to provisioned stores. Complete; opt-in worker configuration and private local approval files remain required. | One user/two bots, cross-thread refusal, replay, reconnect and cancellation. |
 | [#32](https://github.com/hyperme-sh/hypermesh-visor/issues/32) Inverse MCP | Session-bound bounded task submit/status/cancel, result resources, approved verbs, initialization and in-flight RPC cancellation are implemented. | MCP client subprocess contracts cover HTTP/Unix parity, denied requests, cancellation and disconnect cleanup. |
@@ -28,10 +28,10 @@ they do not create a new bot identity or grant assignment authority.
 | [#37](https://github.com/hyperme-sh/hypermesh-visor/issues/37) Shared vault | Cross-bot encrypted sharing, operation-specific grants, freshness and signer boundaries require coordinated SociACL/s3r.ch work. The headless session file store is not a shared vault. | Scoped user/two-bot sharing, denial, revocation, rotation, replay, offline expiry and secret containment. |
 | [#84](https://github.com/hyperme-sh/hypermesh-visor/issues/84) Signing | Deferred by owner. Do not publish signed/notarized claims or add approval gates. | Signing checks only after the required identities and specific release authority exist. |
 | [#88](https://github.com/hyperme-sh/hypermesh-visor/issues/88) Companion nest | One-default/up-to-four local companions, isolated app sessions, clone/restore and saved sets remain open. Squad control stays in the router. | Concurrent companion isolation, saved-set recovery and squad forum attachment. |
-| [#89](https://github.com/hyperme-sh/hypermesh-visor/issues/89) Compact UI | Persistent compact mode, an anchored hover card and a session-bound Linux CLI are merged. Latest-response token counts reported by Conductor are shown without inventing task totals or budgets. Local session-specific forum and VS Code destinations are available. macOS #152 adds session-bound forum and VS Code menu launchers. The macOS floating companion adds persistent visibility, recoverable positioning and reported usage. Windows launchers and nest support remain open. | Native UI interactions and correct per-companion launch targets. |
-| [#90](https://github.com/hyperme-sh/hypermesh-visor/issues/90) Bundled Conductor | Linux packaging has a verified source bundle and managed sidecar. The native app honors explicit external Conductor routing. Linux managed routing requires explicit configuration and a lease. Native bundled child isolation and default managed routing remain open. Existing package contracts cover model selection and token limits; they do not implement native sidecar isolation. | Installed sidecar startup/exit, limits, cancellation, selected recipe/model and measured host use. |
-| [#99](https://github.com/hyperme-sh/hypermesh-visor/issues/99) Headless hosts | Headless build and explicit private credential storage are implemented. Package work is separate from host delivery, opt-in capability schema and Conductor/AIuditor authorization. | Installed headless sessions, on-request download verification/removal, network refusal and AIuditor denial. |
-| [#100](https://github.com/hyperme-sh/hypermesh-visor/issues/100) Mobile | The session core builds for iOS and Android without desktop keyrings; embedding apps must supply a secure store. Native app/core bindings, enrolled device auth, VPN, share actions, sensor permissions and local model routing remain open. | Native Android/iOS simulator/device adapters; no claim of desktop-style iOS automation. |
+| [#89](https://github.com/hyperme-sh/hypermesh-visor/issues/89) Compact UI | Complete compact controls and reported usage across Linux, macOS and Windows. Windows #194/#196 add session-bound forum, VS Code and PowerShell/WSL launchers; #197 adds tray state and comparative token bars. Multi-companion nest behavior belongs to #88. | Native UI interactions and correct per-companion launch targets. |
+| [#90](https://github.com/hyperme-sh/hypermesh-visor/issues/90) Bundled Conductor | Complete bundled Conductor routing and owned startup: private sockets and cancellation (#179), task accounting (#181), macOS launcher (#182/#199), Windows job-owned launcher (#191), and the existing Linux managed sidecar. Explicit endpoint/journal/lease configuration remains required; implementation does not activate a provider. | Installed sidecar startup/exit, limits, cancellation, selected recipe/model and measured host use. |
+| [#99](https://github.com/hyperme-sh/hypermesh-visor/issues/99) Headless hosts | Complete headless delivery and owner-enabled capability API (#178): authenticated local machine bridge, guarded Conductor dispatcher, AIuditor review, duplicate-call protection and controller checks. Defaults remain off. The reference controller reads the clock; actuator drivers must supply their own immutable limits. See `host-capability-api.md`. | Installed headless sessions, on-request download verification/removal, network refusal and AIuditor denial. |
+| [#100](https://github.com/hyperme-sh/hypermesh-visor/issues/100) Mobile | Rust core and generated Swift/Kotlin bindings build for iOS/Android. Apple Keychain and Android Keystore adapters are implemented (#173/#175/#176). Native apps, enrolled device auth, VPN, share actions, sensor permissions and local model execution remain open. | Native Android/iOS simulator/device adapters; no claim of desktop-style iOS automation. |
 | [#101](https://github.com/hyperme-sh/hypermesh-visor/issues/101) Alpine | Complete implementation: native x86_64/ARM64 musl builds, APK/OpenRC and static bundles, Conductor, runtime image, install guide and verified release-asset wiring. Actual version publication still requires owner authorization. | Installed APK/native architecture, private sockets, non-display session and OpenRC remain scheduled regression coverage, not an issue-closing gate. |
 
 Crash reporting [#115](https://github.com/hyperme-sh/hypermesh-visor/issues/115)
@@ -56,23 +56,29 @@ or a provider. Artifact handles in
 #31 provide private task-result access only, not the shared credential vault in
 #37 or delegated access to s3r.ch media.
 
-Next platform work is #17 and #18/#25: native Wayland input/pause and Windows
-runtime/IPC/installer support. Those implementations also unblock the remaining
-native application matching in #29 and native launcher/nest scope in #89.
-#88 adds the independently isolated companions and saved sets; shared desktop
-input must not be presented as four isolated sessions. #90 still needs a native
-isolated Conductor worker before bundled native routing can be enabled.
+The original remaining issues are #17, #29, #34, #37, #84, #88 and #100.
+Native Windows/macOS companions and distributions, compact UI and bundled
+Conductor startup are implemented. #17 still needs native Wayland input,
+physical-input pause and overlay support. The portal refusal lane does not
+implement those features. #29 retains isolated native stdio workers; HTTP
+support and source-review screens do not provide that worker boundary.
 
-#99 retains on-request host delivery, opt-in non-desktop capabilities and
-Conductor/AIuditor authorization; headless compilation and Alpine packaging are
-already implemented. #100 is a separate native mobile core/client/sensor effort,
-not an extension of desktop input permissions. #37 requires its cross-repository
-encrypted-object and operation-specific grant contract before sharing secrets.
-#34 remains the umbrella tracker. #84 stays deferred by owner decision.
+#88 adds independently isolated companions and saved sets; shared desktop
+input must not be presented as four isolated sessions. Squad run-control stays
+with the router. #100 is a separate native mobile app/network/sensor effort,
+not an extension of desktop input permissions. #37 requires the coordinated
+encrypted-object and operation-specific grant contract before sharing secrets;
+its draft design (#153) still awaits the wallet-signer choice. #34 remains the
+umbrella tracker. #84 stays deferred by owner decision.
+
+#99's guarded host route is implemented and default-off. Enabling it requires
+explicit Host bridge, owner policy, machine identity and controller configuration.
+Closing the implementation issue does not start those services or grant access.
 
 Client unit tests run on bugtest. J4012 is reserved for the authorized Visor/host
-CI lanes; do not update its pinned packages. The X11 runner setup correction is
-Infra #889; its next scheduled batch supplies regression coverage. Do not run a
+CI lanes; do not update its pinned packages. The outstanding X11 startup failure is
+tracked in Infra #1088; #174 adds stage-specific diagnostics for the next
+scheduled batch. Do not run a
 manual batch to advance an implementation issue.
 
 ## Additional design requests
@@ -81,4 +87,6 @@ manual batch to advance an implementation issue.
 [#170: SLOPCANNON client](slop-client-design.md) define transport and authorization
 boundaries only. Neither authorizes implementation or provider activation.
 #171 adds a separate opt-in health-agent requirement; the existing #115 crash
-reporter does not implement that broader scope.
+reporter does not implement that broader scope. #188 (Agent Client Protocol)
+and #189 (external coding dispatch) are newer requests outside the original
+remaining-issue set.
