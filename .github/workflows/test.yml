@@ -35,7 +35,18 @@ jobs:
           cargo build --locked -p hypermesh-companion
           python3 companion/tests/session_cli_terminal.py
 
+  native-windows-desktop-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - name: Native desktop fixture contracts
+        run: ./native/windows/test-desktop-contract.ps1
+
   native-windows-engine:
+    needs: native-windows-desktop-contract
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7.0.1
@@ -67,8 +78,6 @@ jobs:
           foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-visor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
             if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
           }
-      - name: Native desktop fixture contracts
-        run: ./native/windows/test-desktop-contract.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: windows-native-companion-development
