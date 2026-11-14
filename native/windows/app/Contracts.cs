@@ -11,6 +11,13 @@ internal static class Contracts
     {
         try
         {
+            string[] unicodeProfiles = ["caf\u00e9", "cafe\u0301"];
+            Require(McpTrustWindow.ProfileNames(null, unicodeProfiles).Length == 2);
+            Require(McpTrustWindow.ProfileNames(null, ["approved-profile"]).SequenceEqual(["approved-profile"]));
+            var partial = McpTrustWindow.LoadData(action => Task.FromResult<JsonElement?>(action == "mcp-trusted"
+                ? JsonSerializer.SerializeToElement(new { status = 200, body = new[] { new { profile = "approved-profile", status = "approved" } } })
+                : JsonSerializer.SerializeToElement(new { status = 500 }))).GetAwaiter().GetResult();
+            Require(partial.Profiles == null && partial.Sources == null && partial.Trusted.GetArrayLength() == 1);
             JsonElement review = JsonSerializer.SerializeToElement(new {
                 profile = "default", review_id = "00000000-0000-4000-8000-000000000001", profiles_path = "profiles.json",
                 servers = new[] { new { name = "example", status = "selected", transport = "http", enabled = true, argument_count = 1,
@@ -21,6 +28,7 @@ internal static class Contracts
             Refuses(() => McpTrustWindow.ReviewId(review, "another-profile"));
             string description = McpTrustWindow.Describe(review);
             Require(description.Contains("KEY") && description.Contains("Authorization") && !description.Contains("hidden-secret"));
+            Require(McpTrustWindow.Safe("name\u2028Endpoint origin: attacker\u2029") == "name\\u2028Endpoint origin: attacker\\u2029");
             Require(McpTrustWindow.Safe("name\n\u202e") == "name\\u000a\\u202e");
             Require(CompactUsage.DisplayPhase("running", false) == "paused");
             Require(CompactUsage.DisplayPhase("running", true) == "running");
