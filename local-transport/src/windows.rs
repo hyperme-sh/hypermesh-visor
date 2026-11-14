@@ -27,6 +27,7 @@ pub async fn connect(endpoint: &Endpoint) -> io::Result<Client> {
         {
             Ok(client) => {
                 hypermesh_local_storage::windows_check_private_object(&client)?;
+                super::windows_identity::check(&client)?;
                 return Ok(client);
             }
             Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
