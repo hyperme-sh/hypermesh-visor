@@ -48,13 +48,16 @@ pub fn recover(
     }
     let mut runs = entries(directory)?;
     runs.sort();
-    let mut reports = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for run in runs {
+    // Reject unknown or unsafe roots before consuming any valid run.
+    for run in &runs {
         if uuid_name(&run).is_none() {
             return Err(refused());
         }
-        storage::check_dir(&run).map_err(|_| refused())?;
+        storage::check_dir(run).map_err(|_| refused())?;
+    }
+    let mut reports = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for run in runs {
         // Invalid, missing, withdrawn or superseded metadata means delete, not
         // re-consent. The raw dump is not read on this path.
         let ticket = (|| {
@@ -194,6 +197,25 @@ mod tests {
         run
     }
     const DEST: &str = "https://glitchtip.example.invalid/api/42/envelope/";
+    #[test]
+    fn unknown_entry_preserves_all_valid_runs() {
+        let consent = Temp::new();
+        let root = Temp::new();
+        let store = store(&consent.0);
+        store.decide(Category::Crashes, true).unwrap();
+        let pending = run(&root.0, &store, "pending");
+        let unknown = root.0.join("z-invalid");
+        storage::create_dir(&unknown).unwrap();
+        assert!(recover(&store, DEST, &root.0).is_err());
+        assert_eq!(
+            fs::read_dir(pending.join("database/pending"))
+                .unwrap()
+                .count(),
+            1
+        );
+        fs::remove_dir(&unknown).unwrap();
+        assert_eq!(recover(&store, DEST, &root.0).unwrap().len(), 1);
+    }
     #[test]
     fn busy_consent_preserves_run_until_validation_can_complete() {
         let consent = Temp::new();
