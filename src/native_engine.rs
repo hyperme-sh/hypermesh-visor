@@ -20,19 +20,28 @@ pub(crate) fn is_embedded() -> bool {
 
 type Callback = unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32;
 
-fn mcp_ui_request(action: &str, value: &serde_json::Value) -> Option<(&'static str, &'static str, String)> {
+fn mcp_ui_request(action: &str, value: &serde_json::Value) -> Option<(&'static str, String, String)> {
     let path = match action {
+        "mcp-status" => "/mcp/status",
+        "mcp-refresh" | "mcp-reconnect" => {
+            let session = value["session"].as_str().and_then(crate::session_destinations::canonical_session)?;
+            let server = value["server"].as_str()?;
+            if server.is_empty() || server.len() > 512 || server.trim() != server { return None; }
+            return Some(("POST", format!("/session/{session}/mcp/refresh"), serde_json::json!({
+                "server":server, "action":if action == "mcp-reconnect" { "reconnect" } else { "refresh" }
+            }).to_string()));
+        }
         "mcp-profiles" => "/mcp/profiles",
         "mcp-sources" => "/mcp/sources",
         "mcp-trusted" => "/mcp/trust",
         "mcp-preview" | "mcp-decision" => {
             let (path, key) = if action == "mcp-preview" { ("/mcp/discovery", "selection") } else { ("/mcp/trust", "decision") };
             let body = value.get(key).filter(|body| body.is_object())?;
-            return Some(("POST", path, body.to_string()));
+            return Some(("POST", path.into(), body.to_string()));
         }
         _ => return None,
     };
-    Some(("GET", path, String::new()))
+    Some(("GET", path.into(), String::new()))
 }
 
 #[no_mangle]
@@ -115,18 +124,18 @@ pub unsafe extern "C" fn hypermesh_native_control(
             })
         } else {
             let (method, path, body) = match action {
-                "poll" | "destinations" => ("GET", "/companion", String::new()),
+                "poll" | "destinations" => ("GET", "/companion".into(), String::new()),
                 "start" | "resume" => {
                     let Some(session) = value["session"].as_str().and_then(crate::session_destinations::canonical_session) else { return 1; };
-                    ("POST", "/companion/automation", serde_json::json!({"action":action,"expected_session":session}).to_string())
+                    ("POST", "/companion/automation".into(), serde_json::json!({"action":action,"expected_session":session}).to_string())
                 },
-                "pause" | "stop" => ("POST", "/companion/automation", serde_json::json!({"action":action}).to_string()),
-                "monitor-lost" => ("POST", "/companion/interrupt", "{\"available\":false}".into()),
+                "pause" | "stop" => ("POST", "/companion/automation".into(), serde_json::json!({"action":action}).to_string()),
+                "monitor-lost" => ("POST", "/companion/interrupt".into(), "{\"available\":false}".into()),
                 _ => match mcp_ui_request(action, &value) { Some(request) => request, None => return 1 },
             };
             let request = Request::builder().method(method).uri(path).header("content-type", "application/json").body(Body::from(body)).unwrap();
             engine.runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(3), async {
+                tokio::time::timeout(Duration::from_secs(if matches!(action, "mcp-refresh" | "mcp-reconnect") { 40 } else { 3 }), async {
                     let response = api::companion_router(Arc::clone(&engine.state)).oneshot(request).await.ok()?;
                     let status = response.status().as_u16();
                     let bytes = to_bytes(response.into_body(), 256 * 1024).await.ok()?;
@@ -164,18 +173,34 @@ mod tests {
     #[test]
     fn native_mcp_ui_has_only_fixed_review_routes() {
         let value = serde_json::json!({"selection":{"profile":"default"},"decision":{"action":"cancel","review_id":"00000000-0000-4000-8000-000000000001"}});
-        assert_eq!(mcp_ui_request("mcp-sources", &value), Some(("GET", "/mcp/sources", String::new())));
+        assert_eq!(mcp_ui_request("mcp-sources", &value), Some(("GET", "/mcp/sources".into(), String::new())));
         let (method, path, body) = mcp_ui_request("mcp-preview", &value).unwrap();
-        assert_eq!((method, path), ("POST", "/mcp/discovery"));
+        assert_eq!((method, path.as_str()), ("POST", "/mcp/discovery"));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), value["selection"]);
         let (method, path, body) = mcp_ui_request("mcp-decision", &value).unwrap();
-        assert_eq!((method, path), ("POST", "/mcp/trust"));
+        assert_eq!((method, path.as_str()), ("POST", "/mcp/trust"));
         assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), value["decision"]);
         for action in ["mcp-edit", "/companion/automation", "mcp-../companion/automation"] {
             assert!(mcp_ui_request(action, &value).is_none());
         }
         assert!(mcp_ui_request("mcp-preview", &serde_json::json!({"selection":"path"})).is_none());
         assert!(mcp_ui_request("mcp-decision", &serde_json::Value::Null).is_none());
+    }
+    #[test]
+    fn native_mcp_connections_preserve_exact_targets_and_fixed_actions() {
+        let session = "00000000-0000-4000-8000-000000000001";
+        for (action, operation) in [("mcp-refresh", "refresh"), ("mcp-reconnect", "reconnect")] {
+            let value = serde_json::json!({"session":session,"server":"literal/../?é","path":"/prompt"});
+            let (method, path, body) = mcp_ui_request(action, &value).unwrap();
+            assert_eq!(method, "POST");
+            assert_eq!(path, format!("/session/{session}/mcp/refresh"));
+            assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(), serde_json::json!({"server":"literal/../?é","action":operation}));
+            for server in ["", " leading", "trailing ", &"é".repeat(257)] {
+                assert!(mcp_ui_request(action, &serde_json::json!({"session":session,"server":server})).is_none());
+            }
+            assert!(mcp_ui_request(action, &serde_json::json!({"session":"../other","server":"ok"})).is_none());
+        }
+        assert_eq!(mcp_ui_request("mcp-status", &serde_json::Value::Null), Some(("GET", "/mcp/status".into(), String::new())));
     }
     #[test]
     fn absent_callback_cannot_start_native_engine() {

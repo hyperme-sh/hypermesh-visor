@@ -184,3 +184,19 @@ configuration/journal. Close Visor before replacing or removing the bundle.
 CI checks fresh install, same-version file replacement, optional startup, and
 uninstall with a preserved user-state fixture. A future-version upgrade baseline
 will be tested when that version is authorized; signing remains deferred.
+
+## MCP connection controls
+
+Open **MCP connections** from the tray menu to read the current session's
+attachment states and app-matching reason. This status read does not renew the
+companion heartbeat or grant desktop access. The window pauses desktop access;
+close it before allowing input again.
+
+Select an existing attachment and confirm **Refresh tools** or **Reconnect**.
+The confirmation retains that exact session and server ID, even if another
+session becomes active. Refresh reads the current connection; reconnect uses
+the session's saved configuration and may restart its server. Neither action
+replays a tool call. After completion or an uncertain result, use **Read status**
+to inspect the current state before deciding whether to retry. Only the bounded
+status list is shown; busy or unaddressable entries cannot be selected. Native
+stdio workers remain unavailable.

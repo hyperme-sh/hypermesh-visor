@@ -50,14 +50,14 @@ internal static class Engine
         return hypermesh_native_start(callback) == 0;
     }
 
-    internal static async Task<JsonElement?> Control(string action, string? session = null, ulong? epoch = null, object? selection = null, object? decision = null)
+    internal static async Task<JsonElement?> Control(string action, string? session = null, ulong? epoch = null, object? selection = null, object? decision = null, string? server = null)
     {
         await Calls.WaitAsync();
         try
         {
             return await Task.Run(() =>
             {
-                byte[] request = JsonSerializer.SerializeToUtf8Bytes(new { action, session, epoch, selection, decision });
+                byte[] request = JsonSerializer.SerializeToUtf8Bytes(new { action, session, epoch, selection, decision, server });
                 int status = hypermesh_native_control(request, (nuint)request.Length, out nint output, out nuint length);
                 try
                 {
