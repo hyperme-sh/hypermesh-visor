@@ -19,8 +19,11 @@ Only one prompt can be active. Cancellation is scoped to the bound session or
 active request ID, reaches the backend, and suppresses a late response body.
 EOF, invalid or oversized framing, queue overflow, timeout and output failure
 close the connection and signal cancellation. Input frames are limited to
-512 KiB, the pending queue to 16 frames, text/output to 64 KiB and backend work
-to 30 seconds. A backend must bound its own I/O and honor cancellation; closing
+512 KiB, the output queue to 16 messages, text/output to 64 KiB and backend work
+and stalled output to 30 seconds. Transport and backend futures own cancellable
+I/O; dropping them releases their handles without detached threads. Platform
+stdio handles must support cancellation; blocking stdio wrappers are unsuitable.
+A backend must bound its own I/O and honor cancellation; closing
 the connection cannot retract an operation already accepted by another service.
 Unknown outcomes are not retried. Errors contain fixed text, not backend
 diagnostics or prompt bodies. The backend must likewise avoid logging sensitive
