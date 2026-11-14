@@ -353,7 +353,8 @@ impl Gate {
     /// in the same step, unless a pause or a newer epoch already won.
     /// The sequence is the value the drive will store if this injection records.
     pub fn begin_inject(&mut self, session: Uuid, captured_epoch: u64) -> Result<u64, ()> {
-        if self.epoch != captured_epoch || self.phase == Phase::Paused {
+        if self.epoch != captured_epoch || self.phase == Phase::Paused || self.injecting
+            || (self.phase == Phase::Running && self.session != Some(session)) {
             return Err(());
         }
         self.inject_seq = self.inject_seq.saturating_add(1);
@@ -389,11 +390,11 @@ impl Gate {
         self.publish();
     }
 
-    /// A pause covers the whole desktop. Every session injects into the same
-    /// pointer, so another session must not move it until resume.
+    /// A pause covers the whole desktop. A running stretch also belongs to
+    /// exactly one session; another session cannot take over by sending input.
     #[allow(dead_code)]
-    pub fn blocks(&self, _session: Uuid) -> bool {
-        self.phase == Phase::Paused
+    pub fn blocks(&self, session: Uuid) -> bool {
+        self.phase == Phase::Paused || (self.phase == Phase::Running && self.session != Some(session))
     }
 
     /// The driving session went away. While an injection is in flight the
@@ -1046,6 +1047,31 @@ pub fn unix_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn running_input_cannot_be_taken_over_by_another_session() {
+        let mut gate = super::Gate::default();
+        let first = uuid::Uuid::new_v4();
+        let second = uuid::Uuid::new_v4();
+        let epoch = gate.epoch();
+        let sequence = gate.begin_inject(first, epoch).unwrap();
+        assert!(gate.begin_inject(first, epoch).is_err());
+        assert!(gate.begin_inject(second, epoch).is_err());
+        gate.end_inject();
+        assert!(gate.blocks(second));
+        assert!(!gate.blocks(first));
+        assert!(gate.begin_inject(second, epoch).is_err());
+        assert_eq!(gate.session(), Some(first));
+        assert_eq!(gate.inject_seq(), sequence);
+        assert_eq!(gate.begin_inject(first, epoch).unwrap(), sequence + 1);
+        gate.end_inject();
+        gate.stop();
+        assert!(gate.begin_inject(second, epoch).is_err());
+        gate.begin_inject(second, gate.epoch()).unwrap();
+        assert_eq!(gate.session(), Some(second));
+        gate.end_inject();
+        gate.pause();
+        assert!(gate.blocks(first) && gate.blocks(second));
+    }
     use super::*;
     use crate::input::Button;
 

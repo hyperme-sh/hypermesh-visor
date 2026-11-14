@@ -65,7 +65,11 @@ support and source-review screens do not provide that worker boundary.
 
 #88 adds independently isolated companions and saved sets; shared desktop
 input must not be presented as four isolated sessions. Squad run-control stays
-with the router. #100 is a separate native mobile app/network/sensor effort,
+with the router. A running input stretch belongs to one session: mouse and
+keyboard requests from another session are refused until the current stretch
+ends or an explicit control transition selects another session. This guard is
+not the nest UI, saved sets, or isolation between container desktops.
+#100 is a separate native mobile app/network/sensor effort,
 not an extension of desktop input permissions. #37 requires the coordinated
 encrypted-object and operation-specific grant contract before sharing secrets;
 its draft design (#153) still awaits the wallet-signer choice. #34 remains the
