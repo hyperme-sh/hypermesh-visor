@@ -34,7 +34,8 @@ from hypermesh-conductor PR #62. There is no requirement to run matching builds.
 | Audio and Linux machine bridge | Unavailable |
 | Native companion and physical-input pause | Low-level input hooks; manual continue or two-minute idle resume |
 | Bundled session CLI | Private control pipe, same instance as native companion |
-| Installer and automatic startup | Pending #25 |
+| Automatic app/Conductor startup | Bundled launcher owns both processes |
+| Installer and user-login registration | Pending #25 |
 | Signing | Deferred to #84 |
 
 PR CI builds the DLL and checks local pipe metadata, external pause-authority
@@ -54,15 +55,27 @@ engine DLL, native companion, inverse MCP adapter, session CLI, Conductor and ch
 Signing is deferred. Windows may show an unknown-publisher or SmartScreen prompt;
 this bundle does not request elevation or `uiAccess`.
 
-Start the bundled Conductor independently with your existing endpoint settings:
+Set the existing Conductor endpoint configuration and journal paths, then start
+the launcher as your normal user:
 
 ```powershell
-./conductor.exe serve --socket --config C:\Hypermesh\endpoints.json --journal C:\Hypermesh\measurements.jsonl
+$env:HYPERMESH_CONDUCTOR_CONFIG = 'C:\Hypermesh\endpoints.json'
+$env:HYPERMESH_CONDUCTOR_JOURNAL = 'C:\Hypermesh\measurements.jsonl'
+./hypermesh-visor.exe
 ```
 
-Then run `hypermesh-native-desktop.exe` as the same normal user. Do not pass the
-Conductor configuration environment variable into the native app. An assigned
-session must be opened by the client/bot before desktop access can be allowed.
+The launcher starts its bundled Conductor, verifies that the private pipe belongs
+to that child and returns a ready response, then opens the companion. Quit the
+companion to stop both. If either child fails or the launcher exits, its Windows
+job terminates the remaining processes. Assignment to that job happens during
+process creation; child processes never inherit the job handle. The launcher
+refuses elevation and a second copy of the same instance.
+
+Conductor credentials and configuration stay in its environment. The companion
+receives only the required user/system paths, model/lease hints, instance name,
+and the private Conductor pipe. An assigned session must still be opened by the
+client/bot before desktop access can be allowed. Installer and login registration
+remain under #25; this launcher does not register an autorun entry.
 
 The control window shows the selected session and purpose. **Allow desktop
 access** grants that session screen capture and mouse/keyboard input. **Pause**

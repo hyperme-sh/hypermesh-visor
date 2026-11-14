@@ -50,6 +50,9 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.25.x'
+      - name: Windows launcher process contracts
+        working-directory: native/windows/launcher
+        run: go test -mod=readonly -race ./...
       - name: Build unsigned native Windows development bundle
         run: ./native/windows/build-development.ps1
       - name: Native companion unit contracts (no desktop opened)
@@ -61,7 +64,7 @@ jobs:
           Get-Content $stdout
           Get-Content $stderr
           if ($process.ExitCode -ne 0) { throw 'Native companion contracts failed' }
-          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
+          foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-visor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
             if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
           }
       - uses: actions/upload-artifact@v4
