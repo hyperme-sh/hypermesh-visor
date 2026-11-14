@@ -426,6 +426,24 @@ impl Store {
             send()
         })
     }
+    /// Owner-approved device-local consent for numeric health metrics only.
+    /// Human reports and per-crash approval retain their separate paths.
+    pub(crate) fn upload_local_metrics<T>(
+        &self,
+        ticket: &Ticket,
+        send: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        if !matches!(
+            ticket.category,
+            Category::OsHealth | Category::Sensors | Category::ServiceHealth
+        ) {
+            return Err(refused());
+        }
+        self.locked(|| {
+            self.check(ticket)?;
+            send()
+        })
+    }
     fn check(&self, ticket: &Ticket) -> io::Result<()> {
         let record = self.read()?.ok_or_else(refused)?;
         let decision = &record.categories[ticket.category.index()];
