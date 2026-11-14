@@ -313,6 +313,29 @@ impl Store {
             self.write_locked(&record)
         })
     }
+    /// Invoke a bounded local sampler only while the category is enabled.
+    /// The decision lock prevents withdrawal from reporting success mid-sample.
+    pub(crate) fn collect<T>(
+        &self,
+        category: Category,
+        sample: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<Option<(Ticket, T)>> {
+        self.locked(|| {
+            let Some(record) = self.read()?.filter(|r| r.scope == self.scope) else {
+                return Ok(None);
+            };
+            let decision = &record.categories[category.index()];
+            if !decision.enabled {
+                return Ok(None);
+            }
+            let ticket = Ticket {
+                category,
+                revision: decision.revision,
+                scope: self.scope.clone(),
+            };
+            Ok(Some((ticket, sample()?)))
+        })
+    }
     pub fn capture(&self, category: Category) -> io::Result<Option<Ticket>> {
         self.locked(|| {
             Ok(self

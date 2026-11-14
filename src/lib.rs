@@ -40,6 +40,7 @@ mod session;
 mod stream;
 pub mod telemetry;
 pub mod health_consent;
+pub mod health_metrics;
 pub mod crash_report;
 pub mod crash_dump;
 pub mod crash_upload;
