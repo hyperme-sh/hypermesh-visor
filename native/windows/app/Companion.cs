@@ -63,6 +63,7 @@ internal sealed class Companion : Form
             trustWindow.Activate();
             UpdateStatus();
         });
+        menu.Items.Add("Crash diagnostics", null, async (_, _) => await CrashDiagnostics());
         menu.Items.Add("MCP connections", null, (_, _) =>
         {
             if (!started || closing) return;
@@ -86,6 +87,33 @@ internal sealed class Companion : Form
         SystemEvents.SessionSwitch += SessionChanged;
         SystemEvents.DisplaySettingsChanged += DisplayChanged;
         FormClosing += CloseCompanion;
+    }
+    private bool crashDialogOpen;
+    private async Task CrashDiagnostics()
+    {
+        if (!started || closing || crashDialogOpen) return;
+        crashDialogOpen = true;
+        Pause("Paused for crash diagnostics settings");
+        try
+        {
+            JsonElement? response = await Engine.Control("crash-consent-status");
+            if (closing) return;
+            if (!Success(response)) { message = "Crash diagnostics configuration unavailable"; return; }
+            JsonElement body = Body(response);
+            bool enabled = body.GetProperty("enabled").GetBoolean();
+            string binding = body.GetProperty("binding").GetString()!;
+            string notice = body.GetProperty("notice").GetString()!;
+            string choice = enabled ? "disable" : "enable";
+            if (MessageBox.Show(this, notice + "\n\nCurrent choice: " + (enabled ? "enabled" : "disabled") +
+                "\n\n" + (enabled ? "Disable capture and purge raw runs?" : "Enable private capture after restart?"),
+                "Crash diagnostics", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button2) != DialogResult.Yes) return;
+            response = await Engine.Control("crash-consent-set", decision: new { binding, choice });
+            message = Success(response) ? (enabled ? "Crash capture disabled and raw runs purged" : "Crash capture enabled for next startup; each upload still requires approval")
+                : "Crash setting could not be saved; reopen diagnostics to retry";
+        }
+        catch { message = "Crash diagnostics unavailable"; }
+        finally { crashDialogOpen = false; if (!closing) UpdateStatus(); }
     }
     private async Task ChooseSession()
     {

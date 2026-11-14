@@ -115,6 +115,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         trust.target = self; menu.addItem(trust)
         let sessions = NSMenuItem(title: "Choose session", action: #selector(chooseSession), keyEquivalent: "")
         sessions.target = self; menu.addItem(sessions)
+        let crashes = NSMenuItem(title: "Crash diagnostics", action: #selector(crashDiagnostics), keyEquivalent: "")
+        crashes.target = self; menu.addItem(crashes)
         let connections = NSMenuItem(title: "MCP connections", action: #selector(openMcpConnections), keyEquivalent: "")
         connections.target = self; menu.addItem(connections)
         let controls = NSMenuItem(title: "Open control window", action: #selector(openControls), keyEquivalent: "")
@@ -142,6 +144,32 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         timer?.invalidate()
         for observer in workspaceObservers { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
         workspaceObservers.removeAll()
+    }
+    private var crashDialogOpen = false
+    @objc func crashDiagnostics() {
+        guard started && !crashDialogOpen else { return }
+        crashDialogOpen = true
+        pause("Paused for crash diagnostics settings")
+        control("crash-consent-status") { [weak self] result in
+            guard let self else { return }
+            guard result?["status"] as? Int == 200, let body = result?["body"] as? [String:Any],
+                  let enabled = body["enabled"] as? Bool, let binding = body["binding"] as? String,
+                  let notice = body["notice"] as? String else {
+                self.crashDialogOpen = false; self.message = "Crash diagnostics configuration unavailable"; self.update(); return
+            }
+            let alert = NSAlert(); alert.messageText = "Crash diagnostics"
+            alert.informativeText = notice + "\n\nCurrent choice: " + (enabled ? "enabled" : "disabled")
+            alert.addButton(withTitle: "Keep current choice")
+            alert.addButton(withTitle: enabled ? "Disable and purge" : "Enable after restart")
+            guard alert.runModal() == .alertSecondButtonReturn else { self.crashDialogOpen = false; return }
+            self.control("crash-consent-set", decision: ["binding":binding, "choice": enabled ? "disable" : "enable"]) { result in
+                self.crashDialogOpen = false
+                self.message = result?["status"] as? Int == 200
+                    ? (enabled ? "Crash capture disabled and raw runs purged" : "Crash capture enabled for next startup; each upload still requires approval")
+                    : "Crash setting could not be saved; reopen diagnostics to retry"
+                self.update()
+            }
+        }
     }
     private func control(_ action: String, session: String? = nil, pauseEpoch: UInt64? = nil, selection: [String:String]? = nil, decision: [String:String]? = nil, server: String? = nil, completion: @escaping @MainActor ([String:Any]?) -> Void = { _ in }) {
         queue.async {

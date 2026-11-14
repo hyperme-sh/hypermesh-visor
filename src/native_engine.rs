@@ -55,7 +55,6 @@ pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
         if ENGINE.get().is_some() {
             return 1;
         }
-        crate::crash_startup::startup();
         let Ok(runtime) = tokio::runtime::Runtime::new() else {
             return 1;
         };
@@ -79,6 +78,7 @@ pub extern "C" fn hypermesh_native_start(callback: Option<Callback>) -> i32 {
         {
             return 1;
         }
+        crate::crash_startup::startup();
         let engine = ENGINE.get().unwrap();
         let state = Arc::clone(&engine.state);
         engine.runtime.spawn(async move {
@@ -108,10 +108,15 @@ pub unsafe extern "C" fn hypermesh_native_control(
     *output_length = 0;
     std::panic::catch_unwind(|| {
         let Some(engine) = ENGINE.get() else { return 1; };
-        if engine.failed.load(Ordering::Acquire) { return 1; }
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(std::slice::from_raw_parts(request, length)) else { return 1; };
         let action = value["action"].as_str().unwrap_or("");
-        let result = if matches!(action, "idle-pause" | "idle-resume") {
+        if engine.failed.load(Ordering::Acquire) && !matches!(action, "crash-consent-status" | "crash-consent-set") { return 1; }
+        let result = if matches!(action, "crash-consent-status" | "crash-consent-set") {
+            Some(match crate::crash_startup::consent_ui(action, &value["decision"]) {
+                Ok(body) => serde_json::json!({"status":200,"body":body}),
+                Err(_) => serde_json::json!({"status":409,"body":null}),
+            })
+        } else if matches!(action, "idle-pause" | "idle-resume") {
             let Some(session) = value["session"].as_str().and_then(|id| uuid::Uuid::parse_str(id).ok()) else { return 1; };
             let epoch = if action == "idle-pause" {
                 engine.state.native_idle_pause(session)
