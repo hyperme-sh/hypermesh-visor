@@ -59,7 +59,8 @@ fn classify(data: &[u8]) -> io::Result<CrashCode> {
         let offset = word(entry, 8)? as usize;
         let stream = region(data, offset, size)?;
         if kind == 6 {
-            if exception.is_some() || size < 168 || offset < directory + count * 12 {
+            let overlaps_directory = offset < directory + count * 12 && offset + size > directory;
+            if exception.is_some() || size < 168 || offset < 32 || overlaps_directory {
                 return Err(invalid());
             }
             exception = Some(word(stream, 8)?);
@@ -171,6 +172,18 @@ mod tests {
             .unwrap();
         assert!(consume(&dir.0, id).is_err());
         assert!(!path.exists());
+    }
+    #[test]
+    fn exception_stream_may_precede_its_directory() {
+        let mut data = fixture(0xc0000005);
+        data.copy_within(44..212, 32);
+        put(&mut data, 12, 200);
+        put(&mut data, 200, 6);
+        put(&mut data, 204, 168);
+        put(&mut data, 208, 32);
+        assert_eq!(classify(&data).unwrap(), CrashCode::InvalidMemoryAccess);
+        put(&mut data, 204, 169);
+        assert!(classify(&data).is_err());
     }
     #[test]
     fn truncated_and_overflowing_directories_are_refused() {
