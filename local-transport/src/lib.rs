@@ -11,6 +11,8 @@ mod peer;
 mod unix;
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+mod windows_identity;
 #[cfg(unix)]
 pub use unix::{Client, Listener, Server};
 #[cfg(windows)]
