@@ -195,6 +195,28 @@ jobs:
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-session-deps.txt"
           cargo tree --locked --manifest-path mobile/core/Cargo.toml --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-mobile-deps.txt"
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-mobile-deps.txt"
+      - name: Build and verify Apple mobile library bundle
+        if: matrix.os == 'macos-latest'
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+          IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo build --locked --release --manifest-path mobile/core/Cargo.toml --lib --target aarch64-apple-ios
+          IPHONEOS_DEPLOYMENT_TARGET=15.0 cargo build --locked --release --manifest-path mobile/core/Cargo.toml --lib --target aarch64-apple-ios-sim
+          cargo metadata --locked --manifest-path mobile/core/Cargo.toml --format-version 1 \
+            --filter-platform aarch64-apple-ios > "$RUNNER_TEMP/mobile-apple-metadata.json"
+          python3 -m unittest discover -s mobile/apple -p test_package.py
+          python3 mobile/apple/package.py "$RUNNER_TEMP/mobile-bindings" \
+            mobile/core/target/aarch64-apple-ios/release/libhypermesh_visor_mobile.a \
+            mobile/core/target/aarch64-apple-ios-sim/release/libhypermesh_visor_mobile.a \
+            "$RUNNER_TEMP/mobile-apple-metadata.json" \
+            "$RUNNER_TEMP/mobile-apple/hypermesh-visor-mobile-ios-arm64.zip"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'macos-latest'
+        with:
+          name: mobile-ios-arm64
+          retention-days: 1
+          if-no-files-found: error
+          path: ${{ runner.temp }}/mobile-apple/*
+
       - name: Android session core build
         if: matrix.os == 'ubuntu-latest'
         run: |

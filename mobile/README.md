@@ -137,3 +137,14 @@ available, follow the CI job's binding-generation and ARM64 release-build steps,
 then set `VISOR_MOBILE_BINDINGS` and `VISOR_MOBILE_ANDROID_LIB` to those exact
 outputs before running `gradle -p mobile/android/library assembleRelease`.
 The package script validates and bundles that AAR; it does not sign or publish.
+
+## Apple mobile library artifact
+
+The macOS session-unit CI job builds an unsigned XCFramework containing separate
+ARM64 device and simulator static libraries, matching generated Swift sources
+and the Keychain adapter. It compiles and links consumers from the packaged
+files against both SDKs; it does not launch an app or touch a user's Keychain.
+Platform/architecture metadata, original native bytes and generated headers are
+checked before a checksummed bundle with source revision and dependency notices
+is attached. See [Apple library consumption](apple/LIBRARY.md). Native apps,
+enrollment, VPN, agent access and signing remain open.
