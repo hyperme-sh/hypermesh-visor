@@ -62,3 +62,13 @@ first-party endpoint, actual WireGuard routing for HTTP, no redirects/proxies an
 a short send timeout. This module supplies no network client, native dialog or
 Crashpad adapter, and does not activate capture or upload. The existing Azure
 reporter remains separate and unchanged.
+
+`crash_dump::consume` reduces a completed owner-private UUID-named minidump to
+one fixed crash-code classification. It bounds file size and stream-directory
+reads, excludes memory and strings, and removes the raw file before returning
+either a classification or a parse/read error. Unsafe linked files are refused.
+`PendingCrash::from_dump` uses the original capture ticket; it never acquires a
+new decision for an old dump. Invalidated consent rejects the preview after raw
+cleanup. The capture adapter must stop its writer before reduction and handle
+startup cleanup and withdrawal. This reader does not install a crash handler or
+implement a persistent crash queue.

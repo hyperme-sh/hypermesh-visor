@@ -14,6 +14,15 @@ mod tests {
             "purpose_version":"55555555-5555-4555-8555-555555555555"
         })).unwrap();
         let store = Store::open(&directory, scope.clone()).unwrap();
+        // A completed malformed local dump is removed on Windows too.
+        let dump_path = directory.join(format!("{}.dmp", scope.device));
+        {
+            use std::io::Write;
+            let mut dump = hypermesh_local_storage::open(&dump_path, hypermesh_local_storage::Open::New).unwrap();
+            dump.write_all(b"excluded-private-dump").unwrap();
+        }
+        assert!(hypermesh_visor::crash_dump::consume(&directory, scope.device).is_err());
+        assert!(!dump_path.exists());
         assert!(store.capture(Category::Crashes).unwrap().is_none());
         store.decide(Category::Crashes, true).unwrap();
         assert!(store.capture(Category::Sensors).unwrap().is_none());
