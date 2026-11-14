@@ -39,6 +39,7 @@ mod prompt;
 mod session;
 mod stream;
 pub mod telemetry;
+pub mod health_consent;
 mod vault;
 mod usage;
 pub use usage::ResponseUsage;

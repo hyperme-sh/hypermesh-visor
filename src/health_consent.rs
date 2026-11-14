@@ -1,0 +1,372 @@
+//! Private category decisions. Stored consent alone never authorizes an upload.
+use hypermesh_local_storage as storage;
+use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
+use std::{
+    fs,
+    io::{self, Read, Write},
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
+use uuid::Uuid;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    OsHealth,
+    Sensors,
+    ServiceHealth,
+    Crashes,
+    HumanReports,
+}
+impl Category {
+    fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Scope {
+    pub subject: Uuid,
+    pub tenant: Uuid,
+    pub device: Uuid,
+    pub notice_version: Uuid,
+    pub purpose_version: Uuid,
+}
+impl Scope {
+    fn valid(&self) -> bool {
+        [
+            self.subject,
+            self.tenant,
+            self.device,
+            self.notice_version,
+            self.purpose_version,
+        ]
+        .iter()
+        .all(|id| !id.is_nil())
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Decision {
+    enabled: bool,
+    revision: Uuid,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Record {
+    version: u8,
+    scope: Scope,
+    categories: [Decision; 5],
+}
+
+/// A record may be collected only under this exact category decision. A later
+/// opt-in cannot revive a queued record from an earlier decision.
+#[derive(Clone, Debug, Serialize)]
+pub struct Ticket {
+    category: Category,
+    revision: Uuid,
+    scope: Scope,
+}
+
+pub struct Store {
+    directory: PathBuf,
+    scope: Scope,
+    // Deliberately not persisted: restart/offline startup requires fresh sync.
+    synchronized: Mutex<[Option<(Uuid, Instant)>; 5]>,
+}
+fn refused() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "telemetry consent unavailable",
+    )
+}
+impl Store {
+    /// The caller supplies an owner-controlled, dedicated directory and a scope
+    /// obtained from trusted enrollment and the displayed notice, never an event.
+    pub fn open(directory: &Path, scope: Scope) -> io::Result<Self> {
+        if !scope.valid() {
+            return Err(refused());
+        }
+        storage::create_dir(directory)?;
+        let store = Self {
+            directory: directory.into(),
+            scope,
+            synchronized: Mutex::new([None; 5]),
+        };
+        let changed = store.locked(|| Ok(store.read()?.is_some_and(|r| r.scope != store.scope)))?;
+        if changed {
+            // Persist a default-off scope transition so old processes cannot
+            // continue using the previous identity or notice's tickets.
+            store.decide(Category::Crashes, false)?;
+        }
+        Ok(store)
+    }
+    fn locked<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        storage::check_dir(&self.directory)?;
+        let file = storage::open(&self.directory.join("lock"), storage::Open::Lock)?;
+        storage::lock(&file)?;
+        let _unlock = storage::UnlockOnDrop(&file);
+        operation()
+    }
+    fn read(&self) -> io::Result<Option<Record>> {
+        let path = self.directory.join("consent.json");
+        let file = match storage::open(&path, storage::Open::Read { private: true }) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let mut bytes = Vec::new();
+        file.take(4097).read_to_end(&mut bytes)?;
+        if bytes.len() > 4096 {
+            return Err(refused());
+        }
+        let record: Record = serde_json::from_slice(&bytes).map_err(|_| refused())?;
+        if record.version != 1
+            || !record.scope.valid()
+            || record.categories.iter().any(|d| d.revision.is_nil())
+        {
+            return Err(refused());
+        }
+        Ok(Some(record))
+    }
+    /// Explicit local choice after displaying purpose, destination and retention.
+    /// Switching identity or notice resets every category to off.
+    pub fn decide(&self, category: Category, enabled: bool) -> io::Result<Uuid> {
+        let mut synced = self.synchronized.lock().map_err(|_| refused())?;
+        self.locked(|| {
+            let current = self.read()?;
+            let mut record = current
+                .filter(|r| r.scope == self.scope)
+                .unwrap_or_else(|| Record {
+                    version: 1,
+                    scope: self.scope.clone(),
+                    categories: std::array::from_fn(|_| Decision {
+                        enabled: false,
+                        revision: Uuid::new_v4(),
+                    }),
+                });
+            let revision = Uuid::new_v4();
+            record.categories[category.index()] = Decision { enabled, revision };
+            // Revoke the in-process upload authority before persistence is attempted.
+            *synced = [None; 5];
+            let bytes = serde_json::to_vec(&record).map_err(|_| refused())?;
+            let temporary = self.directory.join(format!(".{}", Uuid::new_v4()));
+            let result = (|| {
+                let mut file = storage::open(&temporary, storage::Open::New)?;
+                file.write_all(&bytes)?;
+                file.sync_all()?;
+                drop(file);
+                storage::replace(&temporary, &self.directory.join("consent.json"))?;
+                storage::sync_dir(&self.directory)
+            })();
+            if result.is_err() {
+                let _ = fs::remove_file(&temporary);
+            }
+            result?;
+            Ok(revision)
+        })
+    }
+    pub fn capture(&self, category: Category) -> io::Result<Option<Ticket>> {
+        self.locked(|| {
+            Ok(self
+                .read()?
+                .filter(|r| r.scope == self.scope)
+                .and_then(|r| {
+                    let decision = &r.categories[category.index()];
+                    decision.enabled.then(|| Ticket {
+                        category,
+                        revision: decision.revision,
+                        scope: self.scope.clone(),
+                    })
+                }))
+        })
+    }
+    /// Called only after the authenticated consent service confirms the exact
+    /// subject/tenant/device/category/notice/purpose/revision. Not an HTTP route.
+    pub fn synchronized(&self, ticket: &Ticket) -> io::Result<()> {
+        let mut synced = self.synchronized.lock().map_err(|_| refused())?;
+        self.locked(|| {
+            self.check(ticket)?;
+            synced[ticket.category.index()] = Some((ticket.revision, Instant::now()));
+            Ok(())
+        })
+    }
+    fn check(&self, ticket: &Ticket) -> io::Result<()> {
+        let record = self.read()?.ok_or_else(refused)?;
+        let decision = &record.categories[ticket.category.index()];
+        if ticket.scope != self.scope
+            || record.scope != self.scope
+            || !decision.enabled
+            || decision.revision != ticket.revision
+        {
+            return Err(refused());
+        }
+        Ok(())
+    }
+    /// Serializes one bounded upload with withdrawal, including across processes.
+    /// The callback must have a short timeout and must not queue deferred sends.
+    /// Withdrawal cannot report success while this callback is still active.
+    pub fn upload<T>(
+        &self,
+        ticket: &Ticket,
+        send: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut synced = self.synchronized.lock().map_err(|_| refused())?;
+        let Some((revision, confirmed)) = synced[ticket.category.index()].take() else {
+            return Err(refused());
+        };
+        if revision != ticket.revision || confirmed.elapsed() >= Duration::from_secs(5) {
+            return Err(refused());
+        }
+        self.locked(|| {
+            self.check(ticket)?;
+            send()
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            Self(std::env::temp_dir().join(format!("visor-consent-{}", Uuid::new_v4())))
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn scope() -> Scope {
+        Scope {
+            subject: Uuid::new_v4(),
+            tenant: Uuid::new_v4(),
+            device: Uuid::new_v4(),
+            notice_version: Uuid::new_v4(),
+            purpose_version: Uuid::new_v4(),
+        }
+    }
+    #[test]
+    fn default_off_and_independent_categories() {
+        let dir = Temp::new();
+        let store = Store::open(&dir.0, scope()).unwrap();
+        for c in [
+            Category::OsHealth,
+            Category::Sensors,
+            Category::ServiceHealth,
+            Category::Crashes,
+            Category::HumanReports,
+        ] {
+            assert!(store.capture(c).unwrap().is_none());
+        }
+        store.decide(Category::Crashes, true).unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_some());
+        assert!(store.capture(Category::Sensors).unwrap().is_none());
+        store.decide(Category::Sensors, true).unwrap();
+        store.decide(Category::Crashes, false).unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
+        assert!(store.capture(Category::Sensors).unwrap().is_some());
+    }
+    #[test]
+    fn upload_requires_fresh_single_use_sync_and_restart_resync() {
+        let dir = Temp::new();
+        let scope = scope();
+        let store = Store::open(&dir.0, scope.clone()).unwrap();
+        store.decide(Category::Crashes, true).unwrap();
+        let ticket = store.capture(Category::Crashes).unwrap().unwrap();
+        assert!(store
+            .upload(&ticket, || -> io::Result<()> { panic!("must not send") })
+            .is_err());
+        store.synchronized(&ticket).unwrap();
+        assert_eq!(store.upload(&ticket, || Ok(7)).unwrap(), 7);
+        assert!(store
+            .upload(&ticket, || -> io::Result<()> { panic!("must not retry") })
+            .is_err());
+        store.synchronized(&ticket).unwrap();
+        let restarted = Store::open(&dir.0, scope).unwrap();
+        assert!(restarted
+            .upload(&ticket, || -> io::Result<()> { panic!("must resync") })
+            .is_err());
+        store.synchronized.lock().unwrap()[Category::Crashes.index()] =
+            Some((ticket.revision, Instant::now() - Duration::from_secs(6)));
+        assert!(store
+            .upload(&ticket, || -> io::Result<()> { panic!("expired sync") })
+            .is_err());
+    }
+    #[test]
+    fn withdrawal_and_reenable_cannot_revive_old_records() {
+        let dir = Temp::new();
+        let scope = scope();
+        let first = Store::open(&dir.0, scope.clone()).unwrap();
+        first.decide(Category::Crashes, true).unwrap();
+        let old = first.capture(Category::Crashes).unwrap().unwrap();
+        first.synchronized(&old).unwrap();
+        let second = Store::open(&dir.0, scope).unwrap();
+        second.decide(Category::Crashes, false).unwrap();
+        assert!(first
+            .upload(&old, || -> io::Result<()> { panic!("withdrawn") })
+            .is_err());
+        second.decide(Category::Crashes, true).unwrap();
+        assert!(first.synchronized(&old).is_err());
+        let new = first.capture(Category::Crashes).unwrap().unwrap();
+        assert_ne!(old.revision, new.revision);
+    }
+    #[test]
+    fn identity_or_notice_change_resets_all_categories() {
+        for field in 0..5 {
+            let dir = Temp::new();
+            let old_scope = scope();
+            let store = Store::open(&dir.0, old_scope.clone()).unwrap();
+            store.decide(Category::Crashes, true).unwrap();
+            let old = store.capture(Category::Crashes).unwrap().unwrap();
+            let mut new_scope = old_scope;
+            *match field {
+                0 => &mut new_scope.subject,
+                1 => &mut new_scope.tenant,
+                2 => &mut new_scope.device,
+                3 => &mut new_scope.notice_version,
+                _ => &mut new_scope.purpose_version,
+            } = Uuid::new_v4();
+            let other = Store::open(&dir.0, new_scope).unwrap();
+            assert!(other.capture(Category::Crashes).unwrap().is_none());
+            assert!(other.synchronized(&old).is_err());
+            assert!(store.synchronized(&old).is_err());
+            other.decide(Category::Sensors, true).unwrap();
+            assert!(other.capture(Category::Crashes).unwrap().is_none());
+            assert!(store.synchronized(&old).is_err());
+        }
+    }
+    #[test]
+    fn corrupt_storage_fails_closed() {
+        let dir = Temp::new();
+        let store = Store::open(&dir.0, scope()).unwrap();
+        let mut file = storage::open(&dir.0.join("consent.json"), storage::Open::New).unwrap();
+        file.write_all(b"not json").unwrap();
+        drop(file);
+        assert!(store.capture(Category::Crashes).is_err());
+        assert!(store.decide(Category::Crashes, true).is_err());
+    }
+    #[test]
+    fn withdrawal_does_not_succeed_during_upload() {
+        let dir = Temp::new();
+        let scope = scope();
+        let first = Store::open(&dir.0, scope.clone()).unwrap();
+        let second = Store::open(&dir.0, scope).unwrap();
+        first.decide(Category::Crashes, true).unwrap();
+        let ticket = first.capture(Category::Crashes).unwrap().unwrap();
+        first.synchronized(&ticket).unwrap();
+        first
+            .upload(&ticket, || {
+                assert!(second.decide(Category::Crashes, false).is_err());
+                Ok(())
+            })
+            .unwrap();
+        second.decide(Category::Crashes, false).unwrap();
+        assert!(first.synchronized(&ticket).is_err());
+    }
+}

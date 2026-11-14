@@ -1,6 +1,31 @@
 //! Native engine protocol contracts without opening or controlling a desktop.
 #[cfg(all(test, windows))]
 mod tests {
+    #[test]
+    fn native_category_consent_store() {
+        use hypermesh_visor::health_consent::{Category, Scope, Store};
+        let directory = std::env::temp_dir().join(format!("visor-health-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let scope: Scope = serde_json::from_value(serde_json::json!({
+            "subject":"11111111-1111-4111-8111-111111111111",
+            "tenant":"22222222-2222-4222-8222-222222222222",
+            "device":"33333333-3333-4333-8333-333333333333",
+            "notice_version":"44444444-4444-4444-8444-444444444444",
+            "purpose_version":"55555555-5555-4555-8555-555555555555"
+        })).unwrap();
+        let store = Store::open(&directory, scope.clone()).unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
+        store.decide(Category::Crashes, true).unwrap();
+        assert!(store.capture(Category::Sensors).unwrap().is_none());
+        let ticket = store.capture(Category::Crashes).unwrap().unwrap();
+        store.synchronized(&ticket).unwrap();
+        store.upload(&ticket, || Ok(())).unwrap();
+        let restarted = Store::open(&directory, scope).unwrap();
+        assert!(restarted.upload(&ticket, || Ok(())).is_err());
+        restarted.decide(Category::Crashes, false).unwrap();
+        assert!(store.synchronized(&ticket).is_err());
+        std::fs::remove_dir_all(directory).unwrap();
+    }
     use bytes::Bytes;
     use http_body_util::{BodyExt, Full};
     use hypermesh_local_transport::{connect, Endpoint};
