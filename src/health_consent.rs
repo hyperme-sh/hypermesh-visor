@@ -206,6 +206,9 @@ impl Store {
             Ok(())
         })
     }
+    pub(crate) fn validate_capture(&self, ticket: &Ticket) -> io::Result<()> {
+        self.locked(|| self.check(ticket))
+    }
     fn check(&self, ticket: &Ticket) -> io::Result<()> {
         let record = self.read()?.ok_or_else(refused)?;
         let decision = &record.categories[ticket.category.index()];

@@ -43,8 +43,6 @@ impl PendingCrash {
         let Some(ticket) = store.capture(Category::Crashes)? else {
             return Ok(None);
         };
-        let destination = destination_url(destination)?;
-        let id = Uuid::new_v4();
         // Never copy SDK messages, stacks, contexts, attachments or breadcrumbs.
         // Only a fixed error-code mapping crosses this boundary.
         let code = match native_event.get("signal").and_then(Value::as_i64) {
@@ -54,6 +52,35 @@ impl PendingCrash {
             Some(8) => "arithmetic_fault",
             _ => "native_crash",
         };
+        Self::from_code(ticket, destination, code).map(Some)
+    }
+    /// Reduce and delete a completed local dump before constructing its preview.
+    /// The adapter supplies the ticket captured before starting the dump writer.
+    /// Never acquire a new ticket here: re-enabling consent cannot revive a dump.
+    pub fn from_dump(
+        store: &Store,
+        ticket: Ticket,
+        destination: &str,
+        directory: &std::path::Path,
+        id: Uuid,
+    ) -> io::Result<Self> {
+        let code = crate::crash_dump::consume(directory, id)?;
+        store.validate_capture(&ticket)?;
+        use crate::crash_dump::CrashCode;
+        Self::from_code(
+            ticket,
+            destination,
+            match code {
+                CrashCode::InvalidMemoryAccess => "invalid_memory_access",
+                CrashCode::IllegalInstruction => "illegal_instruction",
+                CrashCode::ArithmeticFault => "arithmetic_fault",
+                CrashCode::NativeCrash => "native_crash",
+            },
+        )
+    }
+    fn from_code(ticket: Ticket, destination: &str, code: &str) -> io::Result<Self> {
+        let destination = destination_url(destination)?;
+        let id = Uuid::new_v4();
         let tenant = ticket.crash_tenant().ok_or_else(denied)?;
         let body = serde_json::to_vec(&json!({
             "event_id": id.simple().to_string(),
@@ -65,7 +92,7 @@ impl PendingCrash {
             "tags": {"tenant_id": tenant.to_string()}
         })).map_err(|_| denied())?;
         let digest = format!("{:x}", Sha256::digest(&body));
-        Ok(Some(Self {
+        Ok(Self {
             id,
             destination,
             body,
@@ -73,7 +100,7 @@ impl PendingCrash {
             ticket,
             approved: None,
             captured: Instant::now(),
-        }))
+        })
     }
     pub fn preview(&self) -> Preview<'_> {
         Preview {
