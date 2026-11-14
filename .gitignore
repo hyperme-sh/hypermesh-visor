@@ -9,3 +9,5 @@ __pycache__/
 /native/windows/contracts/obj/
 /mobile/android/library/.gradle/
 /mobile/android/library/build/
+/mobile/android/consumer/.gradle/
+/mobile/android/consumer/build/

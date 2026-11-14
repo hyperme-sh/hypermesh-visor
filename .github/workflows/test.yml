@@ -245,6 +245,15 @@ jobs:
             mobile/android/library/build/outputs/aar/hypermesh-visor-mobile-release.aar \
             "$VISOR_MOBILE_ANDROID_LIB" "$VISOR_MOBILE_BINDINGS" "$RUNNER_TEMP/mobile-metadata.json" \
             "$RUNNER_TEMP/mobile-android/hypermesh-visor-mobile-android-arm64.zip"
+      - name: Compile Android library consumer and check both native dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          export VISOR_MOBILE_AAR="$PWD/mobile/android/library/build/outputs/aar/hypermesh-visor-mobile-release.aar"
+          gradle --no-daemon -p mobile/android/consumer assembleRelease
+          apk=mobile/android/consumer/build/outputs/apk/release/visor-mobile-consumer-contract-release-unsigned.apk
+          python3 -m unittest discover -s mobile/android -p test_consumer.py
+          python3 mobile/android/check_consumer.py "$apk" "$VISOR_MOBILE_AAR"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -P 16 4 "$apk"
       - uses: actions/upload-artifact@v4
         if: matrix.os == 'ubuntu-latest'
         with:
