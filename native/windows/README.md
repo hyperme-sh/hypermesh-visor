@@ -2,7 +2,7 @@
 
 The Rust engine builds as `hypermesh_visor.dll` on Windows x64. This is a
 component embedded by the native Windows Forms companion. The development
-bundle is self-contained and unsigned; an installer is still pending. Windows ARM64 desktop packaging is not enabled yet.
+bundle is self-contained and unsigned; a per-user development installer is included. Windows ARM64 desktop packaging is not enabled yet.
 
 The native app must register its callback in-process. Callback output buffers
 use `hypermesh_native_alloc` and `hypermesh_native_free` from this DLL; never
@@ -35,12 +35,12 @@ from hypermesh-conductor PR #62. There is no requirement to run matching builds.
 | Native companion and physical-input pause | Low-level input hooks; manual continue or two-minute idle resume |
 | Bundled session CLI | Private control pipe, same instance as native companion |
 | Automatic app/Conductor startup | Bundled launcher owns both processes |
-| Installer and user-login registration | Pending #25 |
+| Installer and user-login registration | Unsigned per-user setup; optional sign-in shortcut |
 | Signing | Deferred to #84 |
 
 PR CI builds the DLL and checks local pipe metadata, external pause-authority
 refusal, and shutdown without opening a desktop. This does not claim that the
-Windows companion or installer is complete.
+Windows desktop has been exercised outside CI.
 
 ## Run the development bundle
 
@@ -74,8 +74,7 @@ refuses elevation and a second copy of the same instance.
 Conductor credentials and configuration stay in its environment. The companion
 receives only the required user/system paths, model/lease hints, instance name,
 and the private Conductor pipe. An assigned session must still be opened by the
-client/bot before desktop access can be allowed. Installer and login registration
-remain under #25; this launcher does not register an autorun entry.
+client/bot before desktop access can be allowed. The launcher itself does not register an autorun entry.
 
 The control window shows the selected session and purpose. **Allow desktop
 access** grants that session screen capture and mouse/keyboard input. **Pause**
@@ -112,3 +111,31 @@ terminal arguments. Windows terminal launch actions are still tracked in #89.
 
 The CLI source is Visor's existing `third_party/hypermesh-cli` snapshot, including
 its local-session API changes; it is not replaced by the separate upstream CLI.
+
+## Per-user development installer
+
+After building the bundle, run `./native/windows/build-installer.ps1` on Windows
+with Inno Setup 6 available. The script verifies the bundle checksums and uses
+the package version already recorded in `Cargo.toml`; it does not create a tag,
+release, or new version. `dist/windows-installer` contains the unsigned setup
+executable, its checksum, and the unsigned notice.
+
+Setup installs under your local Programs directory and adds a Start menu entry.
+It does not request administrator privileges or open the desktop automatically.
+The optional **Start Visor when I sign in** task adds a shortcut for your account.
+Configure the two Conductor paths before enabling that task. To make the paths
+available at sign-in, save them in your user environment as well as the current
+PowerShell session:
+
+```powershell
+[Environment]::SetEnvironmentVariable('HYPERMESH_CONDUCTOR_CONFIG', $env:HYPERMESH_CONDUCTOR_CONFIG, 'User')
+[Environment]::SetEnvironmentVariable('HYPERMESH_CONDUCTOR_JOURNAL', $env:HYPERMESH_CONDUCTOR_JOURNAL, 'User')
+```
+
+Reinstalling replaces application files and keeps the selected startup task.
+Uninstall removes application files, registration, and shortcuts; it preserves
+`%LOCALAPPDATA%\HypermeshVisor`, Credential Manager entries, and your Conductor
+configuration/journal. Close Visor before replacing or removing the bundle.
+CI checks fresh install, same-version file replacement, optional startup, and
+uninstall with a preserved user-state fixture. A future-version upgrade baseline
+will be tested when that version is authorized; signing remains deferred.
