@@ -520,7 +520,23 @@ func nativeDestinationResponse(_ result: [String:Any]?, expected: String, curren
     return parts.url
 }
 
+func nativeStartupDirectories(home: String, environment: [String: String]) -> (runtime: String, config: String) {
+    func configured(_ key: String) -> String? {
+        guard let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return nil }
+        return value
+    }
+    let config = configured("HYPERMESH_CONFIG_DIR") ?? configured("XDG_CONFIG_HOME").map { $0 + "/hypermesh" } ?? home + "/.config/hypermesh"
+    return (environment["HYPERMESH_RUNTIME_DIR"] ?? home + "/.local/state/hypermesh/native-run", config)
+}
+
 func selfTest() throws {
+    let defaults = nativeStartupDirectories(home: "/Users/test", environment: [:])
+    try verifyNativeUnit(defaults.runtime == "/Users/test/.local/state/hypermesh/native-run")
+    try verifyNativeUnit(defaults.config == "/Users/test/.config/hypermesh")
+    let custom = nativeStartupDirectories(home: "/Users/test", environment: ["HYPERMESH_RUNTIME_DIR": "/custom run", "HYPERMESH_CONFIG_DIR": "/custom config", "XDG_CONFIG_HOME": "/xdg"])
+    try verifyNativeUnit(custom.runtime == "/custom run" && custom.config == "/custom config")
+    let xdg = nativeStartupDirectories(home: "/Users/test", environment: ["HYPERMESH_CONFIG_DIR": "  ", "XDG_CONFIG_HOME": "/xdg"])
+    try verifyNativeUnit(xdg.config == "/xdg/hypermesh")
     let selected = "00000000-0000-4000-8000-000000000001", other = "00000000-0000-4000-8000-000000000002"
     func destination(_ value: String, editor: Bool = false, current: String? = nil) -> URL? {
         return nativeDestinationResponse(["status": 200, "body": ["session": selected, editor ? "workspace" : "forum": value]],

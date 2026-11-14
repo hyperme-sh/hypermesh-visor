@@ -76,9 +76,10 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     func start() {
         guard !started else { return }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        runtimePath = home + "/.local/state/hypermesh/native-run"
+        let directories = nativeStartupDirectories(home: home, environment: ProcessInfo.processInfo.environment)
+        runtimePath = directories.runtime
         setenv("HYPERMESH_RUNTIME_DIR", runtimePath, 1)
-        setenv("HYPERMESH_CONFIG_DIR", home + "/.config/hypermesh", 1)
+        setenv("HYPERMESH_CONFIG_DIR", directories.config, 1)
         // No env/CLI argument can enable this callback; only the app links it.
         guard hypermesh_native_start(desktopCallback) == 0 else { message = "Native engine failed to start"; update(); return }
         started = true
