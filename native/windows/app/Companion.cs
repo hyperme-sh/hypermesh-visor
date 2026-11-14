@@ -25,6 +25,7 @@ internal sealed class Companion : Form
     private int inputPending;
     private long lastInput, approvalBaseline = -1;
     private bool polling, approving, resuming, closing, started, selecting;
+    private ulong? selectedEpoch;
     private string purpose = "";
     private string phase = "off", message = "Desktop access is off", usage = "No response usage yet";
     private long Now => Environment.TickCount64;
@@ -240,7 +241,7 @@ internal sealed class Companion : Form
             await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1));
             if (closing || baseline != authority.Generation || !consent.PendingApproval(session, generation)) return;
             if (!desktop.Released || !desktop.ApproveLayout()) { Pause("Input cleanup is unavailable; restart after returning to your desktop"); return; }
-            JsonElement? response = await Engine.Control(phase == "paused" ? "resume" : "start", session);
+            JsonElement? response = await Engine.Control(phase == "paused" ? "resume" : "start", session, selectedEpoch);
             if (!closing && Success(response) && desktop.LayoutMatches && baseline == authority.Generation && monitor.Healthy && Win32.Interactive() && !Win32.HeldInput() && consent.Approve(session, generation))
             {
                 authority.Grant(baseline, session); message = "Desktop access allowed for this session";
@@ -267,7 +268,9 @@ internal sealed class Companion : Form
             if (session != consent.Selected) { Revoke(); consent.Select(session); message = session == null ? "Open a session to begin" : "New session. Allow desktop access to begin."; }
             purpose = selected.ValueKind == JsonValueKind.Object && selected.TryGetProperty("purpose", out JsonElement task) ? task.GetString() ?? "" : "";
             if (purpose.Length > 160) purpose = purpose[..160] + "…";
-            phase = body.GetProperty("automation").GetProperty("phase").GetString() ?? "off";
+            var automation = body.GetProperty("automation");
+            phase = automation.GetProperty("phase").GetString() ?? "off";
+            selectedEpoch = automation.TryGetProperty("epoch", out var epochValue) && epochValue.TryGetUInt64(out ulong parsedEpoch) ? parsedEpoch : null;
             if (consent.Allowed && phase != "running") Pause("Automation paused; allow access to continue");
             responseUsage = session == null ? null : CompactUsage.Read(selected);
             usage = responseUsage?.Summary ?? "No response usage yet";

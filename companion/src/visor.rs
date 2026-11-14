@@ -288,6 +288,7 @@ fn apply_poll(
 ) -> bool {
     match fetched {
         PollFetch::Ready(next) => {
+            if next.explicit_selection { queue.retain(|action| *action != "resume"); }
             *pause_asked = false;
             link.ok(next);
             true
@@ -359,6 +360,16 @@ fn exchange_at(path: &Path, request: &str) -> Option<String> {
 }
 
 /// Read-only status over the same-user companion socket.
+pub fn approve_selected_session(session: &str, epoch: u64) -> Result<(), String> {
+    let session = crate::destinations::canonical_session(session).ok_or("Invalid session")?;
+    let body = serde_json::json!({"action":"resume","expected_session":session,"expected_epoch":epoch}).to_string();
+    let request = format!("POST /companion/automation HTTP/1.1\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+    match exchange(&request) {
+        Exchange::Body(text) if status_ok(&text) => Ok(()),
+        _ => Err("Approval changed or was not confirmed. Check the selected task before retrying.".into()),
+    }
+}
+
 pub fn session_selection_request(session: Option<&str>) -> Result<serde_json::Value, String> {
     let body = match session {
         Some(id) => {
@@ -912,6 +923,17 @@ mod tests {
         assert!(queue.is_empty());
         assert!(link.disconnected());
         assert!(!link.current().connected);
+    }
+
+    #[test]
+    fn explicit_selection_removes_queued_idle_resumes() {
+        let next = crate::auth::snapshot_from_body(r#"{"open":true,"explicit_selection":true,"automation":{"phase":"paused","epoch":42}}"#).unwrap();
+        assert_eq!(next.control_epoch, 42);
+        let mut link = Link::new(Snapshot::disconnected());
+        let mut queue = VecDeque::from(["resume", "pause", "resume"]);
+        let mut asked = false;
+        assert!(apply_poll(&mut link, &mut queue, &mut asked, PollFetch::Ready(next)));
+        assert_eq!(queue.into_iter().collect::<Vec<_>>(), ["pause"]);
     }
 
     #[test]

@@ -79,6 +79,7 @@ pub struct AppState {
     /// not compared with this one.
     instance: u64,
     selected_session: Mutex<Option<Uuid>>,
+    selected_approved: AtomicBool,
     /// `mcp-bindings.json`, refreshed outside the sessions lock.
     bindings: Mutex<BindingCache>,
     /// How long `running` may continue without a companion-socket poll.
@@ -172,6 +173,7 @@ impl AppState {
             tasks: tasks::Queue::new(),
             sessions: Mutex::new(HashMap::new()),
             selected_session: Mutex::new(None),
+            selected_approved: AtomicBool::new(false),
             desktop,
             watch_poll,
             prompts,
@@ -481,11 +483,16 @@ impl AppState {
         let mut gate = lock(&self.automation);
         // Selection never grants input. Epoch invalidation also cancels idle resume.
         gate.pause();
+        self.selected_approved.store(false, Ordering::SeqCst);
         *selected = Some(id);
         Ok(())
     }
 
     fn control_automation(&self, action: Control, companion: bool, expected_session: Option<Uuid>) -> Result<(), ApiError> {
+        self.control_automation_at(action, companion, expected_session, None)
+    }
+
+    fn control_automation_at(&self, action: Control, companion: bool, expected_session: Option<Uuid>, expected_epoch: Option<u64>) -> Result<(), ApiError> {
         if expected_session.is_some() && !matches!(action, Control::Start | Control::Resume) {
             return Err(ApiError::bad("expected_session applies only to start or resume"));
         }
@@ -506,6 +513,7 @@ impl AppState {
             return Ok(());
         }
         if action == Control::Stop {
+            let _selection = lock(&self.selected_session);
             // Stop does not take the injection lock. An in-flight call sees
             // the new epoch at its next chunk; the phase stays running until
             // that call ends.
@@ -515,6 +523,7 @@ impl AppState {
                     "a paused automation can only be resumed by the companion",
                 ));
             }
+            self.selected_approved.store(false, Ordering::SeqCst);
             gate.stop();
             return Ok(());
         }
@@ -541,6 +550,9 @@ impl AppState {
                 sessions.values().max_by_key(|session| session.touched()).map(|session| session.id())
             })
         };
+        if selected.is_some() && (!companion || expected_session != session || expected_epoch != Some(gate.epoch())) {
+            return Err(ApiError::conflict("selected session requires fresh explicit approval"));
+        }
         if expected_session.is_some() && expected_session != session {
             return Err(ApiError::conflict("selected session changed; approve the current session"));
         }
@@ -561,7 +573,9 @@ impl AppState {
                 automation::ControlReject::StalePoll => {
                     ApiError::unavailable(automation::STALE_POLL)
                 }
-            })
+            })?;
+        if selected.is_some() { self.selected_approved.store(true, Ordering::SeqCst); }
+        Ok(())
     }
 }
 
@@ -579,6 +593,7 @@ struct CompanionBody {
     /// Set when the companion cannot see physical key presses.
     #[serde(skip_serializing_if = "Option::is_none")]
     interrupt: Option<&'static str>,
+    explicit_selection: bool,
     automation: AutomationBody,
     #[serde(skip_serializing_if = "Option::is_none")]
     session: Option<CompanionSession>,
@@ -1712,6 +1727,7 @@ async fn companion(
         backend: state.desktop.backend_name(),
         notice,
         interrupt,
+        explicit_selection: lock(&state.selected_session).is_some(),
         automation: AutomationBody {
             epoch,
             phase,
@@ -1735,7 +1751,7 @@ async fn companion_sessions(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     if !companion { return Err(ApiError::forbidden("session selection requires the local companion socket")); }
     let sessions = lock(&state.sessions);
-    let mut entries: Vec<_> = sessions.values().map(|session| (session.id(), clip_text(session.purpose(), SESSION_TEXT_MAX))).collect();
+    let mut entries: Vec<_> = sessions.values().map(|session| (session.id(), clip_text(session.purpose(), 160))).collect();
     entries.sort_by_key(|entry| entry.0);
     let omitted = entries.len().saturating_sub(128);
     entries.truncate(128);
@@ -1756,6 +1772,8 @@ struct AutomationRequest {
     action: String,
     #[serde(default)]
     expected_session: Option<Uuid>,
+    #[serde(default)]
+    expected_epoch: Option<u64>,
 }
 
 /// `start`, `pause`, `resume`, or `stop`. `start` and `stop` are the seam for
@@ -1770,7 +1788,7 @@ async fn companion_automation(
 ) -> Result<StatusCode, ApiError> {
     let action = Control::parse(&body.action)
         .ok_or_else(|| ApiError::bad("action must be start, pause, resume, or stop"))?;
-    state.control_automation(action, companion, body.expected_session)?;
+    state.control_automation_at(action, companion, body.expected_session, body.expected_epoch)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2321,7 +2339,7 @@ impl<'a> InjectGuard<'a> {
             return Err(ApiError::conflict("MCP source review is pending; desktop input is paused"));
         }
         let selected = lock(&state.selected_session);
-        if selected.is_some_and(|id| id != session) {
+        if selected.is_some_and(|id| id != session || !state.selected_approved.load(Ordering::SeqCst)) {
             return Err(ApiError::conflict("another session is selected in the companion"));
         }
         let gate = &state.automation;
@@ -7764,6 +7782,26 @@ while True:
         assert!(gate.begin_inject(id, epoch).is_err());
     }
 
+    #[tokio::test]
+    async fn companion_selection_list_fits_transport_with_escaped_unicode() {
+        let (state, _, _) = task_fixture();
+        lock(&state.sessions).clear();
+        for index in 0..129 {
+            let id = Uuid::new_v4();
+            let purpose = if index % 2 == 0 { "😀".repeat(512) } else { "\u{0001}".repeat(512) };
+            let session = Session::create(id, Harness { purpose, recipes: vec![], agent: Agent { name: "fixture".into(), instructions: "secret instructions excluded".into() }, skills: vec![] },
+                Vault::open(&[], std::env::temp_dir().join("unused-selection-vault")).unwrap(), mcp::McpBundle::default());
+            lock(&state.sessions).insert(id, session);
+        }
+        let (status, body) = trust_test_request(companion_router(state), "GET", "/companion/sessions", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["sessions"].as_array().unwrap().len(), 128);
+        assert_eq!(body["omitted"], 1);
+        let serialized = serde_json::to_vec(&body).unwrap();
+        assert!(serialized.len() < 192 * 1024);
+        assert!(!String::from_utf8(serialized).unwrap().contains("secret instructions"));
+    }
+
     #[test]
     fn companion_selection_pauses_and_requires_fresh_approval() {
         let (mut state, _, first) = task_fixture();
@@ -7774,7 +7812,10 @@ while True:
         assert!(state.control_automation(Control::Stop, true, None).is_ok());
         let stopped_epoch = lock(&state.automation).epoch();
         assert!(InjectGuard::arm(&state, second, stopped_epoch, None).is_err());
-        assert!(state.control_automation(Control::Start, true, Some(first)).is_ok());
+        assert!(InjectGuard::arm(&state, first, stopped_epoch, None).is_err());
+        assert!(state.control_automation_at(Control::Start, false, Some(first), Some(stopped_epoch)).is_err());
+        assert!(state.control_automation(Control::Start, true, Some(first)).is_err());
+        assert!(state.control_automation_at(Control::Start, true, Some(first), Some(stopped_epoch)).is_ok());
         let old = state.native_idle_pause(first).unwrap();
         assert!(state.select_companion_session(second).is_ok());
         assert_eq!(lock(&state.automation).phase(), Phase::Paused);
@@ -7782,8 +7823,13 @@ while True:
         assert!(state.native_idle_resume(first, old).is_none());
         assert!(state.control_automation(Control::Resume, true, Some(first)).is_err());
         assert!(state.control_automation(Control::Resume, false, Some(second)).is_err());
-        assert!(state.control_automation(Control::Resume, true, Some(second)).is_ok());
+        let selected_epoch = lock(&state.automation).epoch();
+        assert!(state.control_automation_at(Control::Resume, true, Some(second), Some(old)).is_err());
+        assert!(state.control_automation(Control::Resume, true, None).is_err());
+        assert!(state.control_automation_at(Control::Resume, true, Some(second), Some(selected_epoch)).is_ok());
         assert_eq!(lock(&state.automation).session(), Some(second));
+        assert!(state.select_companion_session(second).is_ok());
+        assert!(state.control_automation_at(Control::Resume, true, Some(second), Some(selected_epoch)).is_err());
         lock(&state.sessions).remove(&second);
         lock(&state.automation).note_session_closed(second);
         assert!(state.companion_session().is_none());

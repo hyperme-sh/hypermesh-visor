@@ -38,6 +38,7 @@ struct App {
     menu: bool,
     compact: bool,
     session_id: Option<String>,
+    selected_approval: Option<(String, u64)>,
     eyes_follow: bool,
     bug_cursor: bool,
     sleep_after_ms: u64,
@@ -92,6 +93,7 @@ pub fn run() -> Result<(), String> {
         menu: false,
         compact: settings::compact_mode(&config),
         session_id: None,
+        selected_approval: None,
         eyes_follow: settings::eyes_follow_pointer(&config),
         bug_cursor: settings::bug_cursor(&config),
         sleep_after_ms: settings::sleep_after_secs(&config).saturating_mul(1000),
@@ -236,6 +238,13 @@ fn show(mut app: App) -> Result<(), String> {
         let dt = last_frame.elapsed().as_millis() as u64;
         last_frame = Instant::now();
         let (snap, epoch) = app.poller.snapshot();
+        app.machine.require_selection_approval(snap.explicit_selection);
+        app.selected_approval = if snap.explicit_selection {
+            app.poller.cancel_resume();
+            if app.pending == Some("resume") { app.pending = None; }
+            snap.session_id.clone().map(|id| (id, snap.control_epoch))
+        } else { None };
+
         let restarted = if snap.connected {
             app.machine.note_instance(snap.instance, snap.resume_seq)
         } else {
@@ -735,6 +744,14 @@ fn on_click(
             BugClick::ToggleMenu => app.menu = !app.menu,
         },
         Action::ContinueAutomation => {
+            if let Some((session, epoch)) = app.selected_approval.clone() {
+                app.poller.cancel_resume();
+                let status = app.status.clone();
+                std::thread::spawn(move || {
+                    if let Err(error) = crate::visor::approve_selected_session(&session, epoch) { *status.lock().unwrap() = error; }
+                });
+                return;
+            }
             let effect = app.machine.continue_now(now_ms);
             note_effect(app, effect);
             if effect == Effect::Resume {

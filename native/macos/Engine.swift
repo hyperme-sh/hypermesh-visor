@@ -68,6 +68,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var epoch: UInt64 = 0
     private var polling = false
     private var started = false
+    private var selectedEpoch: UInt64?
     private var selectingSession = false
     private var sessionOpen = false
     private var currentPhase = "off"
@@ -218,6 +219,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             self.usageSummary = self.sessionOpen ? nativeUsageSummary(body["session"] as? [String:Any]) : nil
             self.compactUsage = self.sessionOpen ? nativeCompactUsage(body["session"] as? [String:Any]) : nil
             self.currentPhase = automation["phase"] as? String ?? "off"
+            self.selectedEpoch = nativeEpoch(automation["epoch"])
             if self.allowed && (!self.sessionOpen || self.currentPhase != "running" || self.currentSession != self.approvedSession) { self.pause("Session changed, stopped or paused") }
             if self.allowed, let interruption = desktopInterruption(permissionsAndMonitor: self.permissionsAndMonitor(), layoutMatches: self.layoutMatchesApproval()) {
                 self.pause(interruption.message, lost: interruption.permanent)
@@ -352,7 +354,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         let generation = epoch
         pendingApproval = true
         update()
-        control(currentPhase == "paused" ? "resume" : "start", session: selected) { result in
+        control(currentPhase == "paused" ? "resume" : "start", session: selected, pauseEpoch: selectedEpoch) { result in
             guard generation == self.epoch else { return }
             self.pendingApproval = false
             guard result?["status"] as? Int == 204 else { self.message = "Unable to start; check session and permissions"; self.update(); return }
