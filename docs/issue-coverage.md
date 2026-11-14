@@ -68,7 +68,13 @@ input must not be presented as four isolated sessions. Squad run-control stays
 with the router. A running input stretch belongs to one session: mouse and
 keyboard requests from another session are refused until the current stretch
 ends or an explicit control transition selects another session. This guard is
-not the nest UI, saved sets, or isolation between container desktops.
+not the nest UI, saved sets, or isolation between container desktops. The native
+Windows/macOS menus and Linux companion provide an explicit chooser for existing
+sessions. Choosing pauses input and invalidates automatic resume; the selected
+task requires fresh approval tied to its current pause epoch. Linux idle timers
+cannot approve an explicitly selected session; click the paused companion and
+Continue. Native idle resume remains bound to its own prior pause. A closed explicit selection stays empty until the
+operator chooses another session. This does not create companions or save sets.
 #100 is a separate native mobile app/network/sensor effort,
 not an extension of desktop input permissions. #37 requires the coordinated
 encrypted-object and operation-specific grant contract before sharing secrets;

@@ -38,6 +38,8 @@ struct App {
     menu: bool,
     compact: bool,
     session_id: Option<String>,
+    selected_approval: Option<(String, u64)>,
+    guarded_resume_failed: Arc<AtomicBool>,
     eyes_follow: bool,
     bug_cursor: bool,
     sleep_after_ms: u64,
@@ -92,6 +94,8 @@ pub fn run() -> Result<(), String> {
         menu: false,
         compact: settings::compact_mode(&config),
         session_id: None,
+        selected_approval: None,
+        guarded_resume_failed: Arc::new(AtomicBool::new(false)),
         eyes_follow: settings::eyes_follow_pointer(&config),
         bug_cursor: settings::bug_cursor(&config),
         sleep_after_ms: settings::sleep_after_secs(&config).saturating_mul(1000),
@@ -235,7 +239,19 @@ fn show(mut app: App) -> Result<(), String> {
         let now_ms = app.started.elapsed().as_millis() as u64;
         let dt = last_frame.elapsed().as_millis() as u64;
         last_frame = Instant::now();
+        if app.guarded_resume_failed.swap(false, Ordering::SeqCst) {
+            let effect = app.machine.user_input(now_ms);
+            note_user_input(&mut app, effect);
+            app.pending = Some("pause");
+        }
         let (snap, epoch) = app.poller.snapshot();
+        app.machine.require_selection_approval(snap.explicit_selection);
+        app.selected_approval = if snap.explicit_selection {
+            app.poller.cancel_resume();
+            if app.pending == Some("resume") { app.pending = None; }
+            snap.session_id.clone().map(|id| (id, snap.control_epoch))
+        } else { None };
+
         let restarted = if snap.connected {
             app.machine.note_instance(snap.instance, snap.resume_seq)
         } else {
@@ -738,6 +754,20 @@ fn on_click(
             let effect = app.machine.continue_now(now_ms);
             note_effect(app, effect);
             if effect == Effect::Resume {
+                if let Some((session, epoch)) = app.selected_approval.clone() {
+                    // Keep Machine's pending-resume state so physical input
+                    // publishes a newer pause while this request is in flight.
+                    app.pending = None;
+                    app.poller.cancel_resume();
+                    let status = app.status.clone();
+                    let failed = app.guarded_resume_failed.clone();
+                    std::thread::spawn(move || {
+                        if let Err(error) = crate::visor::approve_selected_session(&session, epoch) {
+                            *status.lock().unwrap() = error;
+                            failed.store(true, Ordering::SeqCst);
+                        }
+                    });
+                }
                 if let Some((x, y, mask)) = app.fallback_sample {
                     app.fallback.rebaseline(x, y, mask);
                 }
@@ -824,12 +854,14 @@ fn on_click(
                 *app.status.lock().unwrap() = err;
             }
         }
-        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections => {
+        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections | Action::ChooseSession => {
             app.menu = false;
             let status = Arc::clone(&app.status);
             let action = hit.action;
             std::thread::spawn(move || {
-                let result = if action == Action::McpTrust {
+                let result = if action == Action::ChooseSession {
+                    crate::session_selection::run()
+                } else if action == Action::McpTrust {
                     crate::mcp_trust_gui::run()
                 } else if action == Action::McpConnections {
                     crate::mcp_connections::run()

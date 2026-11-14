@@ -111,6 +111,8 @@ impl ResponseUsage {
 pub struct Snapshot {
     pub connected: bool,
     pub session_id: Option<String>,
+    pub explicit_selection: bool,
+    pub control_epoch: u64,
     pub last_response_usage: Option<ResponseUsage>,
     pub upgrading: bool,
     pub pose: Pose,
@@ -160,6 +162,8 @@ impl Snapshot {
         Self {
             connected: false,
             session_id: None,
+            explicit_selection: false,
+            control_epoch: 0,
             last_response_usage: None,
             upgrading: false,
             pose: Pose::Idle,
@@ -244,6 +248,8 @@ pub fn snapshot_from_body(body: &str) -> Option<Snapshot> {
     Some(Snapshot {
         connected: true,
         session_id,
+        explicit_selection: value["explicit_selection"].as_bool().unwrap_or(false),
+        control_epoch: value.pointer("/automation/epoch").and_then(|v| v.as_u64()).unwrap_or(0),
         last_response_usage,
         upgrading,
         pose,

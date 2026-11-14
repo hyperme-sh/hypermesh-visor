@@ -160,6 +160,7 @@ pub struct Machine {
     last_input_ms: u64,
     resume_after_ms: u64,
     auto_resume: bool,
+    selection_requires_approval: bool,
     asking: bool,
     /// A local resume is waiting for the visor to leave `paused`. A poll that
     /// still says paused must not undo it.
@@ -186,6 +187,7 @@ impl Machine {
             last_input_ms: 0,
             resume_after_ms: resume_after_ms.max(1),
             auto_resume: true,
+            selection_requires_approval: false,
             asking: false,
             holding_resume: false,
             last_resume_seq: 0,
@@ -193,6 +195,10 @@ impl Machine {
             pause_epoch: 0,
             seen_instance: None,
         }
+    }
+
+    pub fn require_selection_approval(&mut self, required: bool) {
+        self.selection_requires_approval = required;
     }
 
     pub fn without_idle_resume(mut self) -> Self {
@@ -372,7 +378,7 @@ impl Machine {
 
     /// Resume when the wait has elapsed with no user input.
     pub fn poll(&mut self, now_ms: u64) -> Effect {
-        if self.phase != Phase::Paused || !self.auto_resume {
+        if self.phase != Phase::Paused || !self.auto_resume || self.selection_requires_approval {
             return Effect::None;
         }
         if now_ms.saturating_sub(self.last_input_ms) >= self.resume_after_ms {
@@ -1003,6 +1009,22 @@ mod tests {
             Phase::Paused,
             "a running snapshot with the same sequence does not undo the pause"
         );
+    }
+
+    #[test]
+    fn explicit_selection_never_resumes_from_the_idle_timer() {
+        let mut machine = Machine::new(120_000);
+        machine.require_selection_approval(true);
+        machine.see_visor(VisorPhase::Paused, 0, 1);
+        assert_eq!(machine.poll(240_000), Effect::None);
+        assert_eq!(machine.phase(), Phase::Paused);
+        machine.ask(240_001);
+        assert_eq!(machine.continue_now(240_002), Effect::Resume);
+        // A click is pending until the server confirms it. Physical input in
+        // that interval must emit Pause, invalidating the guarded request.
+        assert_eq!(machine.user_input(240_003), Effect::Pause);
+        assert_eq!(machine.phase(), Phase::Paused);
+        assert_eq!(machine.poll(480_000), Effect::None);
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub enum Action {
     McpDoctor,
     McpStatus,
     McpConnections,
+    ChooseSession,
     ContinueAutomation,
     DismissAutomation,
 }
@@ -205,6 +206,7 @@ pub fn render(
             ("Continue the automation?", None),
             ("Continue", Some(Action::ContinueAutomation)),
             ("Not now", Some(Action::DismissAutomation)),
+            ("Choose session", Some(Action::ChooseSession)),
         ];
         for (label, action) in rows {
             let row = text_card(
@@ -263,6 +265,7 @@ pub fn render(
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
             ("MCP servers", Action::McpServers),
+            ("Choose session", Action::ChooseSession),
             ("MCP connections", Action::McpConnections),
             ("MCP status", Action::McpStatus),
             ("MCP doctor", Action::McpDoctor),
@@ -1323,6 +1326,7 @@ mod tests {
             .hits
             .iter()
             .any(|hit| hit.action == Action::DismissAutomation));
+        assert!(scene.hits.iter().any(|hit| hit.action == Action::ChooseSession));
     }
 
     fn painted_body(scene: &Scene) -> bool {
