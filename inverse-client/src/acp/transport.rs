@@ -216,7 +216,7 @@ async fn serve_until(
 mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt, DuplexStream};
-    struct WaitingBackend(Arc<AtomicBool>);
+    struct WaitingBackend(Arc<AtomicBool>, Arc<tokio::sync::Notify>);
     struct Released(Arc<AtomicBool>);
     impl Drop for Released {
         fn drop(&mut self) {
@@ -230,6 +230,7 @@ mod tests {
         fn prompt<'a>(&'a self, _: &'a str, _: &'a AtomicBool) -> BackendFuture<'a, String> {
             Box::pin(async move {
                 let _guard = Released(self.0.clone());
+                self.1.notify_one();
                 std::future::pending().await
             })
         }
@@ -253,12 +254,13 @@ mod tests {
             let (output, server_output) = tokio::io::duplex(16);
             let mut output = BufReader::new(output);
             let released = Arc::new(AtomicBool::new(false));
-            let backend = Arc::new(WaitingBackend(released.clone()));
+            let started = Arc::new(tokio::sync::Notify::new());
+            let backend = Arc::new(WaitingBackend(released.clone(), started.clone()));
             let runner = tokio::spawn(serve_until(
                 server_input,
                 server_output,
                 backend,
-                Duration::from_millis(200),
+                Duration::from_secs(5),
             ));
             put(
                 &mut input,
@@ -283,7 +285,9 @@ mod tests {
                 serde_json::json!({"sessionId":session,"prompt":[{"type":"text","text":"hello"}]}),
             )
             .await;
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::timeout(Duration::from_secs(2), started.notified())
+                .await
+                .unwrap();
             if mode == 1 {
                 drop(input);
             } else {
@@ -302,7 +306,16 @@ mod tests {
                     drop(input);
                 }
             }
-            let result = tokio::time::timeout(Duration::from_secs(2), runner)
+            // Release must happen before the five-second output deadline, even
+            // when the peer never drains its response pipe.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !released.load(Ordering::SeqCst) {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(6), runner)
                 .await
                 .unwrap()
                 .unwrap();
@@ -314,7 +327,10 @@ mod tests {
     async fn stalled_output_deadline_drops_input_without_a_reader_thread() {
         let (mut input, server_input) = tokio::io::duplex(4096);
         let (_output, server_output) = tokio::io::duplex(1);
-        let backend = Arc::new(WaitingBackend(Arc::new(AtomicBool::new(false))));
+        let backend = Arc::new(WaitingBackend(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(tokio::sync::Notify::new()),
+        ));
         let runner = tokio::spawn(serve_until(
             server_input,
             server_output,
@@ -341,7 +357,10 @@ mod tests {
             let (_output, server_output) = tokio::io::duplex(16);
             input.write_all(&bytes).await.unwrap();
             input.shutdown().await.unwrap();
-            let backend = Arc::new(WaitingBackend(Arc::new(AtomicBool::new(false))));
+            let backend = Arc::new(WaitingBackend(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(tokio::sync::Notify::new()),
+            ));
             assert_eq!(
                 serve(server_input, server_output, backend)
                     .await
