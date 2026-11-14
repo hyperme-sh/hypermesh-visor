@@ -81,6 +81,13 @@ fn classify(data: &[u8]) -> io::Result<CrashCode> {
 /// Every normal parse/read outcome removes the raw file before returning.
 /// Unsafe/linked files are refused without following or deleting their targets.
 pub fn consume(directory: &Path, id: Uuid) -> io::Result<CrashCode> {
+    reduce(directory, id).map(|dump| dump.code)
+}
+pub(crate) struct ReducedDump {
+    pub code: CrashCode,
+    pub captured_at: std::time::SystemTime,
+}
+pub(crate) fn reduce(directory: &Path, id: Uuid) -> io::Result<ReducedDump> {
     if id.is_nil() {
         return Err(invalid());
     }
@@ -96,7 +103,10 @@ pub fn consume(directory: &Path, id: Uuid) -> io::Result<CrashCode> {
         }
         let mut data = Zeroizing::new(Vec::new());
         file.take(MAX_BYTES + 1).read_to_end(&mut data)?;
-        classify(&data)
+        let code = classify(&data)?;
+        let captured_at =
+            std::time::UNIX_EPOCH + std::time::Duration::from_secs(word(&data, 20)? as u64);
+        Ok(ReducedDump { code, captured_at })
     })();
     fs::remove_file(&path)?;
     storage::sync_dir(directory)?;
@@ -129,6 +139,14 @@ mod tests {
         put(&mut data, 4, 0xa793);
         put(&mut data, 8, 1);
         put(&mut data, 12, 32);
+        put(
+            &mut data,
+            20,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as u32,
+        );
         put(&mut data, 32, 6);
         put(&mut data, 36, 168);
         put(&mut data, 40, 44);
@@ -227,6 +245,43 @@ mod tests {
         assert!(path.exists());
     }
 
+    #[test]
+    fn recovered_dumps_do_not_receive_a_fresh_retention_window() {
+        use crate::{
+            crash_report::PendingCrash,
+            health_consent::{Category, Scope, Store},
+        };
+        let dir = Temp::new();
+        let consent = Temp::new();
+        let store = Store::open(
+            &consent.0,
+            Scope {
+                subject: Uuid::new_v4(),
+                tenant: Uuid::new_v4(),
+                device: Uuid::new_v4(),
+                notice_version: Uuid::new_v4(),
+                purpose_version: Uuid::new_v4(),
+            },
+        )
+        .unwrap();
+        store.decide(Category::Crashes, true).unwrap();
+        for timestamp in [0, u32::MAX] {
+            let ticket = store.capture(Category::Crashes).unwrap().unwrap();
+            let mut bytes = fixture(0xc0000005);
+            put(&mut bytes, 20, timestamp);
+            let id = Uuid::new_v4();
+            write(&dir.0, id, &bytes);
+            assert!(PendingCrash::from_dump(
+                &store,
+                ticket,
+                "https://crashes.example.invalid/api/1/store/",
+                &dir.0,
+                id
+            )
+            .is_err());
+            assert!(!dir.0.join(format!("{id}.dmp")).exists());
+        }
+    }
     #[test]
     fn dump_preview_preserves_original_consent_and_requires_approval() {
         use crate::{

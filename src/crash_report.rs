@@ -20,6 +20,7 @@ pub struct PendingCrash {
     ticket: Ticket,
     approved: Option<Instant>,
     captured: Instant,
+    age_at_capture: Duration,
 }
 pub struct Preview<'a> {
     pub id: Uuid,
@@ -64,33 +65,49 @@ impl PendingCrash {
         directory: &std::path::Path,
         id: Uuid,
     ) -> io::Result<Self> {
-        let code = crate::crash_dump::consume(directory, id)?;
+        let dump = crate::crash_dump::reduce(directory, id)?;
         store.validate_capture(&ticket)?;
         use crate::crash_dump::CrashCode;
-        Self::from_code(
+        Self::from_code_at(
             ticket,
             destination,
-            match code {
+            match dump.code {
                 CrashCode::InvalidMemoryAccess => "invalid_memory_access",
                 CrashCode::IllegalInstruction => "illegal_instruction",
                 CrashCode::ArithmeticFault => "arithmetic_fault",
                 CrashCode::NativeCrash => "native_crash",
             },
+            dump.captured_at,
         )
     }
     fn from_code(ticket: Ticket, destination: &str, code: &str) -> io::Result<Self> {
+        Self::from_code_at(ticket, destination, code, SystemTime::now())
+    }
+    fn from_code_at(
+        ticket: Ticket,
+        destination: &str,
+        code: &str,
+        captured_at: SystemTime,
+    ) -> io::Result<Self> {
+        let age = SystemTime::now()
+            .duration_since(captured_at)
+            .map_err(|_| denied())?;
+        if age >= REPORT_TTL {
+            return Err(denied());
+        }
         let destination = destination_url(destination)?;
         let id = Uuid::new_v4();
         let tenant = ticket.crash_tenant().ok_or_else(denied)?;
         let body = serde_json::to_vec(&json!({
             "event_id": id.simple().to_string(),
-            "timestamp": SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| denied())?.as_secs(),
+            "timestamp": captured_at.duration_since(UNIX_EPOCH).map_err(|_| denied())?.as_secs(),
             "platform": "native", "level": "fatal",
             "release": concat!("hypermesh-visor@", env!("CARGO_PKG_VERSION")),
             "message": "Visor terminated unexpectedly",
             "exception": {"values": [{"type": code}]},
             "tags": {"tenant_id": tenant.to_string()}
-        })).map_err(|_| denied())?;
+        }))
+        .map_err(|_| denied())?;
         let digest = format!("{:x}", Sha256::digest(&body));
         Ok(Self {
             id,
@@ -100,6 +117,7 @@ impl PendingCrash {
             ticket,
             approved: None,
             captured: Instant::now(),
+            age_at_capture: age,
         })
     }
     pub fn preview(&self) -> Preview<'_> {
@@ -117,7 +135,7 @@ impl PendingCrash {
         if id != self.id
             || sha256 != self.digest
             || destination != self.destination
-            || self.captured.elapsed() >= REPORT_TTL
+            || self.age_at_capture.saturating_add(self.captured.elapsed()) >= REPORT_TTL
         {
             return Err(denied());
         }
@@ -135,7 +153,7 @@ impl PendingCrash {
         store: &Store,
         send: impl FnOnce(&str, &[u8]) -> io::Result<()>,
     ) -> io::Result<()> {
-        if self.captured.elapsed() >= REPORT_TTL
+        if self.age_at_capture.saturating_add(self.captured.elapsed()) >= REPORT_TTL
             || self.approved.is_none_or(|at| at.elapsed() >= APPROVAL_TTL)
         {
             return Err(denied());

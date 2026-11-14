@@ -26,6 +26,12 @@ mod tests {
         assert!(store.capture(Category::Crashes).unwrap().is_none());
         store.decide(Category::Crashes, true).unwrap();
         assert!(store.capture(Category::Sensors).unwrap().is_none());
+        let capture = store.capture_lease().unwrap().unwrap();
+        assert!(store.decide(Category::Crashes, false).is_err());
+        assert!(Store::open(&directory, Scope { device: scope.subject, ..scope.clone() }).is_err());
+        capture.withdraw().unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
+        store.decide(Category::Crashes, true).unwrap();
         let ticket = store.capture(Category::Crashes).unwrap().unwrap();
         store.synchronized(&ticket).unwrap();
         store.upload(&ticket, || Ok(())).unwrap();
