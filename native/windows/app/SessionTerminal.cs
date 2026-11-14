@@ -33,6 +33,19 @@ internal static class SessionTerminal
             throw new InvalidOperationException("Session or instance unavailable");
     }
 
+    private static async Task<string> ReadBounded(StreamReader reader)
+    {
+        char[] buffer = new char[4097];
+        int count = 0;
+        while (count < buffer.Length)
+        {
+            int read = await reader.ReadAsync(buffer.AsMemory(count));
+            if (read == 0) return new string(buffer, 0, count);
+            count += read;
+        }
+        throw new InvalidOperationException("WSL response exceeds the path limit");
+    }
+
     internal static async Task<ProcessStartInfo> Plan(bool wsl, string session)
     {
         string instance = Environment.GetEnvironmentVariable("HYPERMESH_VISOR_INSTANCE") ?? "default";
@@ -47,8 +60,8 @@ internal static class SessionTerminal
         using Process process = Process.Start(convert) ?? throw new InvalidOperationException("WSL unavailable");
         try
         {
-            Task<string> output = process.StandardOutput.ReadToEndAsync();
-            Task<string> errors = process.StandardError.ReadToEndAsync();
+            Task<string> output = ReadBounded(process.StandardOutput);
+            Task<string> errors = ReadBounded(process.StandardError);
             await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
             string path = (await output).TrimEnd('\r', '\n');
             await errors;
