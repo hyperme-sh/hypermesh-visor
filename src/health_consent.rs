@@ -257,16 +257,21 @@ impl Store {
     }
     /// Restore only an exact original decision from private capture metadata.
     /// Parsing a record never grants consent or changes its revision.
-    pub(crate) fn restore_crash_ticket(&self, bytes: &[u8]) -> io::Result<Ticket> {
+    pub(crate) fn restore_crash_ticket(&self, bytes: &[u8]) -> io::Result<Option<Ticket>> {
         if bytes.len() > 4096 {
-            return Err(refused());
+            return Ok(None);
         }
-        let saved: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| refused())?;
-        let ticket = self.capture(Category::Crashes)?.ok_or_else(refused)?;
+        let Ok(saved) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return Ok(None);
+        };
+        // Failure to read or lock consent is not a negative consent decision.
+        let Some(ticket) = self.capture(Category::Crashes)? else {
+            return Ok(None);
+        };
         if serde_json::to_value(&ticket).map_err(|_| refused())? != saved {
-            return Err(refused());
+            return Ok(None);
         }
-        Ok(ticket)
+        Ok(Some(ticket))
     }
     /// Called only after the authenticated consent service confirms the exact
     /// subject/tenant/device/category/notice/purpose/revision. Not an HTTP route.
@@ -360,16 +365,17 @@ mod tests {
         store.decide(Category::Crashes, true).unwrap();
         let bytes =
             serde_json::to_vec(&store.capture(Category::Crashes).unwrap().unwrap()).unwrap();
-        assert!(store.restore_crash_ticket(&bytes).is_ok());
+        assert!(store.restore_crash_ticket(&bytes).unwrap().is_some());
         let mut changed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         changed["category"] = serde_json::json!("sensors");
         assert!(store
             .restore_crash_ticket(&serde_json::to_vec(&changed).unwrap())
-            .is_err());
+            .unwrap()
+            .is_none());
         store.decide(Category::Crashes, false).unwrap();
-        assert!(store.restore_crash_ticket(&bytes).is_err());
+        assert!(store.restore_crash_ticket(&bytes).unwrap().is_none());
         store.decide(Category::Crashes, true).unwrap();
-        assert!(store.restore_crash_ticket(&bytes).is_err());
+        assert!(store.restore_crash_ticket(&bytes).unwrap().is_none());
     }
     #[test]
     fn capture_lease_prevents_successful_withdrawal_until_writer_stops() {

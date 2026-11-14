@@ -64,9 +64,14 @@ pub fn recover(
             )?;
             let mut bytes = Vec::new();
             file.take(4097).read_to_end(&mut bytes)?;
-            store.restore_crash_ticket(&bytes)
+            Ok::<_, io::Error>(bytes)
         })();
-        if let Ok(ticket) = ticket {
+        let ticket = match ticket {
+            Ok(bytes) => store.restore_crash_ticket(&bytes)?,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error),
+        };
+        if let Some(ticket) = ticket {
             let database = run.join("database");
             if storage::check_dir(&database).is_ok() {
                 // These are the completed-report locations in the platform
@@ -189,6 +194,28 @@ mod tests {
         run
     }
     const DEST: &str = "https://glitchtip.example.invalid/api/42/envelope/";
+    #[test]
+    fn busy_consent_preserves_run_until_validation_can_complete() {
+        let consent = Temp::new();
+        let root = Temp::new();
+        let store = store(&consent.0);
+        store.decide(Category::Crashes, true).unwrap();
+        let pending = run(&root.0, &store, "pending");
+        let lock = storage::open(&consent.0.join("lock"), storage::Open::Lock).unwrap();
+        storage::lock(&lock).unwrap();
+        let unlock = storage::UnlockOnDrop(&lock);
+        assert!(recover(&store, DEST, &root.0).is_err());
+        assert!(pending.join("ticket.json").exists());
+        assert_eq!(
+            fs::read_dir(pending.join("database/pending"))
+                .unwrap()
+                .count(),
+            1
+        );
+        drop(unlock);
+        assert_eq!(recover(&store, DEST, &root.0).unwrap().len(), 1);
+        assert!(!pending.exists());
+    }
     #[test]
     fn completed_runs_are_removed_before_unapproved_previews_return() {
         let consent = Temp::new();
