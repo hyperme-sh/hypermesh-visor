@@ -232,6 +232,8 @@ internal sealed class Companion : Form
     private async Task Approve()
     {
         if (!started || selecting || approving || trustWindow is { IsDisposed: false } || connectionsWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
+        ulong? approvedEpoch = selectedEpoch;
+        string approvedAction = phase == "paused" ? "resume" : "start";
         approving = true;
         Revoke();
         long generation = consent.BeginApproval();
@@ -241,7 +243,7 @@ internal sealed class Companion : Form
             await Task.Run(desktop.Release).WaitAsync(TimeSpan.FromSeconds(1));
             if (closing || baseline != authority.Generation || !consent.PendingApproval(session, generation)) return;
             if (!desktop.Released || !desktop.ApproveLayout()) { Pause("Input cleanup is unavailable; restart after returning to your desktop"); return; }
-            JsonElement? response = await Engine.Control(phase == "paused" ? "resume" : "start", session, selectedEpoch);
+            JsonElement? response = await Engine.Control(approvedAction, session, approvedEpoch);
             if (!closing && Success(response) && desktop.LayoutMatches && baseline == authority.Generation && monitor.Healthy && Win32.Interactive() && !Win32.HeldInput() && consent.Approve(session, generation))
             {
                 authority.Grant(baseline, session); message = "Desktop access allowed for this session";

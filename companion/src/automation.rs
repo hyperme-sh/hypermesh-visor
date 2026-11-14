@@ -1020,6 +1020,11 @@ mod tests {
         assert_eq!(machine.phase(), Phase::Paused);
         machine.ask(240_001);
         assert_eq!(machine.continue_now(240_002), Effect::Resume);
+        // A click is pending until the server confirms it. Physical input in
+        // that interval must emit Pause, invalidating the guarded request.
+        assert_eq!(machine.user_input(240_003), Effect::Pause);
+        assert_eq!(machine.phase(), Phase::Paused);
+        assert_eq!(machine.poll(480_000), Effect::None);
     }
 
     #[test]
