@@ -70,6 +70,11 @@ pub struct Ticket {
     revision: Uuid,
     scope: Scope,
 }
+impl Ticket {
+    pub(crate) fn crash_tenant(&self) -> Option<Uuid> {
+        (self.category == Category::Crashes).then_some(self.scope.tenant)
+    }
+}
 
 pub struct Store {
     directory: PathBuf,

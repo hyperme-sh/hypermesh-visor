@@ -39,5 +39,26 @@ tickets; they must not keep an old identity active in a background sender.
 
 These primitives do not complete either delivery issue. Consent UI, authenticated
 synchronization, queue ownership, payload allowlists and transport wiring remain
-required. Crashpad capture stays disabled pending resolution of the no-memory-dump
-boundary in the approved privacy design.
+required. The owner approved private local-only minidumps for sanitization on
+November 14, 2026, with a separate request before each sanitized upload. Raw dumps
+must never be uploaded. This exception does not enable capture by itself: the
+native adapter still needs private capture storage, sanitization and immediate
+raw-dump cleanup on success, denial, withdrawal or failure.
+
+`crash_report::PendingCrash` implements the sanitized-event and approval boundary.
+It builds a fresh minimal event with a fixed error-code mapping, compiled release,
+event ID, time and tenant tag. SDK messages, stacks, contexts, attachments and
+breadcrumbs are excluded. Only sanitized JSON is exposed for a preview. The
+operator must explicitly approve its exact event ID, payload hash and destination;
+category opt-in is not report approval. Approval expires after five minutes and
+reports expire after 24 hours. A send consumes the report even on failure or an
+unknown outcome. Withdrawal and the current consent revision are checked at send.
+Approvals are not serializable or restored after restart.
+
+The endpoint must come from trusted machine configuration. The guard rejects
+hosted Sentry domains, credentials/query strings and public plaintext endpoints.
+The future authenticated transport must additionally enforce the configured
+first-party endpoint, actual WireGuard routing for HTTP, no redirects/proxies and
+a short send timeout. This module supplies no network client, native dialog or
+Crashpad adapter, and does not activate capture or upload. The existing Azure
+reporter remains separate and unchanged.

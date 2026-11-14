@@ -20,6 +20,20 @@ mod tests {
         let ticket = store.capture(Category::Crashes).unwrap().unwrap();
         store.synchronized(&ticket).unwrap();
         store.upload(&ticket, || Ok(())).unwrap();
+        let mut crash = hypermesh_visor::crash_report::PendingCrash::capture(
+            &store, "https://crashes.example.invalid/api/1/store/",
+            &serde_json::json!({"signal":11,"prompt":"excluded-private-text"})
+        ).unwrap().unwrap();
+        let preview = crash.preview();
+        assert!(!String::from_utf8_lossy(preview.sanitized_json).contains("excluded-private-text"));
+        let (id, hash, destination) = (preview.id, preview.sha256.to_owned(), preview.destination.to_owned());
+        crash.approve(id, &hash, &destination).unwrap();
+        store.synchronized(crash.consent_ticket()).unwrap();
+        crash.send_once(&store, |endpoint, body| {
+            assert_eq!(endpoint, destination);
+            assert!(!body.is_empty());
+            Ok(())
+        }).unwrap();
         let restarted = Store::open(&directory, scope).unwrap();
         assert!(restarted.upload(&ticket, || Ok(())).is_err());
         restarted.decide(Category::Crashes, false).unwrap();
