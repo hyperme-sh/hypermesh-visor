@@ -1,26 +1,28 @@
 name: native crash SDK build contracts
 on:
-  push:
-    branches: [main]
-    paths: ['native/crash/**', 'src/health_consent.rs', 'local-storage/**', 'Cargo.lock', '.github/workflows/crash-sdk.yml']
-  pull_request:
-    paths: ['native/crash/**', 'src/health_consent.rs', 'local-storage/**', 'Cargo.lock', '.github/workflows/crash-sdk.yml']
+  workflow_call:
+    inputs:
+      platforms:
+        type: string
+        required: true
 permissions:
   contents: read
 concurrency:
-  group: crash-sdk-${{ github.event.pull_request.number || github.ref }}
+  group: crash-sdk-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 jobs:
   sdk:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: ${{ fromJSON(inputs.platforms) }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Capture ownership unit contracts
         run: cargo test --locked -p hypermesh-crash-guard
+      - name: Runtime staging file contracts
+        run: python3 native/crash/test-stage-runtime.py
       - name: Install Linux Crashpad build dependencies
         if: runner.os == 'Linux'
         run: |

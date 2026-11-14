@@ -27,7 +27,7 @@ type Options = *mut c_void;
 type SetString = unsafe extern "C" fn(Options, *const c_char);
 type SetInt = unsafe extern "C" fn(Options, i32);
 struct Sdk {
-    _library: Library,
+    _library: Option<Library>,
     new: unsafe extern "C" fn() -> Options,
     init: unsafe extern "C" fn(Options) -> i32,
     close: unsafe extern "C" fn() -> i32,
@@ -56,7 +56,49 @@ unsafe fn symbol<T: Copy>(library: &Library, name: &[u8]) -> io::Result<T> {
         .map(|value| *value)
         .map_err(|_| refused())
 }
+#[cfg(all(target_os = "macos", feature = "native-crash-static"))]
+mod linked {
+    use super::{c_char, Options};
+    unsafe extern "C" {
+        pub fn sentry_visor_capture_policy_version() -> i32;
+        pub fn sentry_options_new() -> Options;
+        pub fn sentry_init(options: Options) -> i32;
+        pub fn sentry_close() -> i32;
+        pub fn sentry_options_set_dsn(options: Options, value: *const c_char);
+        pub fn sentry_options_set_proxy(options: Options, value: *const c_char);
+        pub fn sentry_options_set_require_user_consent(options: Options, value: i32);
+        pub fn sentry_options_set_auto_session_tracking(options: Options, value: i32);
+        pub fn sentry_options_set_debug(options: Options, value: i32);
+        pub fn sentry_options_set_cache_keep(options: Options, value: i32);
+        pub fn sentry_options_set_max_breadcrumbs(options: Options, value: usize);
+        pub fn sentry_options_set_database_path(options: Options, value: *const c_char);
+        pub fn sentry_options_set_handler_path(options: Options, value: *const c_char);
+    }
+}
 impl Sdk {
+    #[cfg(all(target_os = "macos", feature = "native-crash-static"))]
+    unsafe fn load(_path: &Path) -> io::Result<Self> {
+        use linked::*;
+        if sentry_visor_capture_policy_version() != 1 {
+            return Err(refused());
+        }
+        Ok(Self {
+            _library: None,
+            new: sentry_options_new,
+            init: sentry_init,
+            close: sentry_close,
+            dsn: sentry_options_set_dsn,
+            proxy: sentry_options_set_proxy,
+            consent: sentry_options_set_require_user_consent,
+            session: sentry_options_set_auto_session_tracking,
+            debug: sentry_options_set_debug,
+            cache: sentry_options_set_cache_keep,
+            breadcrumbs: sentry_options_set_max_breadcrumbs,
+            database: sentry_options_set_database_path,
+            handler: sentry_options_set_handler_path,
+        })
+    }
+    #[cfg(not(all(target_os = "macos", feature = "native-crash-static")))]
     unsafe fn load(path: &Path) -> io::Result<Self> {
         let library = Library::new(path).map_err(|_| refused())?;
         let policy: unsafe extern "C" fn() -> i32 =
@@ -83,7 +125,7 @@ impl Sdk {
             database: symbol(&library, b"sentry_options_set_database_pathw\0")?,
             #[cfg(windows)]
             handler: symbol(&library, b"sentry_options_set_handler_pathw\0")?,
-            _library: library,
+            _library: Some(library),
         })
     }
     unsafe fn initialize(&self, database: &Path, handler: &Path) -> io::Result<()> {
@@ -196,7 +238,19 @@ pub(crate) fn start(store: Store, directory: &Path) -> io::Result<()> {
         return Err(refused());
     }
     let executable = std::env::current_exe()?;
-    let sdk_root = executable.parent().ok_or_else(refused)?.join("crash-sdk");
+    let executable_directory = executable.parent().ok_or_else(refused)?;
+    #[cfg(target_os = "linux")]
+    let sdk_root =
+        if [Path::new("/usr/bin"), Path::new("/usr/local/bin")].contains(&executable_directory) {
+            executable_directory
+                .parent()
+                .ok_or_else(refused)?
+                .join("lib/hypermesh-visor/crash-sdk")
+        } else {
+            executable_directory.join("crash-sdk")
+        };
+    #[cfg(not(target_os = "linux"))]
+    let sdk_root = executable_directory.join("crash-sdk");
     #[cfg(target_os = "linux")]
     let library = sdk_root.join("lib/libsentry.so");
     #[cfg(target_os = "macos")]

@@ -20,6 +20,8 @@ python3 "$repo/native/crash/prepare-sdk.py" "$work/source"
 cargo build --locked --release --manifest-path "$repo/Cargo.toml" \
   -p hypermesh-crash-guard --target-dir "$work/guard-build"
 guard="$work/guard-build/release/libhypermesh_crash_guard.a"
+shared=ON
+if [[ $(uname -s) == Darwin ]]; then shared=OFF; fi
 if [[ "${RUNNER_OS:-}" == Windows || "${OS:-}" == Windows_NT ]]; then
   guard=$(cygpath -m "$work/guard-build/release/hypermesh_crash_guard.lib")
 fi
@@ -29,13 +31,24 @@ fi
 cmake -S "$work/source" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$output" \
   -DVISOR_CAPTURE_GUARD="$guard" \
-  -DSENTRY_BUILD_SHARED_LIBS=ON -DSENTRY_BACKEND=crashpad \
+  -DSENTRY_BUILD_SHARED_LIBS="$shared" -DSENTRY_BACKEND=crashpad \
   -DSENTRY_TRANSPORT=none -DSENTRY_BUILD_TESTS=OFF \
   -DSENTRY_BUILD_EXAMPLES=OFF -DSENTRY_BUILD_BENCHMARKS=OFF \
   -DSENTRY_ENABLE_INSTALL=ON -DSENTRY_INTEGRATION_PLATFORM=OFF \
   -DSENTRY_THREAD_STACK_GUARANTEE_AUTO_INIT=OFF
 cmake --build "$work/build" --config Release --parallel 2
 cmake --install "$work/build" --config Release
+if [[ $(uname -s) == Darwin ]]; then
+  python3 - "$output/lib" <<'PY'
+from pathlib import Path
+import subprocess, sys
+root = Path(sys.argv[1])
+archives = sorted(root.rglob('*.a'))
+if not archives:
+    raise SystemExit('No static SDK archives installed')
+subprocess.run(['libtool', '-static', '-o', str(root / 'libvisor_crash_sdk.a'), *map(str, archives)], check=True)
+PY
+fi
 printf '%s\n' "$revision" > "$output/source-revision"
 git -C "$repo" rev-parse HEAD > "$output/visor-source-revision"
 git -C "$work/source" submodule status --recursive > "$output/submodule-revisions"
@@ -48,3 +61,6 @@ while IFS= read -r file; do
       ;;
   esac
 done < <(git -C "$work/source" ls-files --recurse-submodules)
+
+mkdir -p "$output/licenses/visor"
+cp "$repo/LICENSE" "$output/licenses/visor/LICENSE"

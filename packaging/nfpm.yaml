@@ -17,6 +17,10 @@ homepage: https://github.com/FyberLabs/hypermesh-visor
 depends:
   - zenity
 contents:
+  - src: ${CRASH_SDK}/
+    dst: /usr/lib/hypermesh-visor/crash-sdk
+    type: tree
+    expand: true
   - src: ${CONDUCTOR_BIN}
     dst: /usr/lib/hypermesh-visor/conductor
     expand: true
@@ -60,3 +64,9 @@ contents:
     dst: /etc/xdg/autostart/hypermesh-companion.desktop
     file_info:
       mode: 0644
+
+overrides:
+  deb:
+    depends: [zenity, libcurl4t64]
+  rpm:
+    depends: [zenity, libcurl]

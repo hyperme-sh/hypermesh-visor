@@ -81,8 +81,17 @@ of the private JSON configuration. The containing private directory also owns
 `health-consent` (the shared consent store) and `crash-runs` (capture run roots).
 Missing configuration leaves this path disabled and creates no state. Startup
 purges completed raw runs before showing any preview. Review is synchronous; a
-dismissal or failure never produces a background retry. Capture setup remains
-separate; startup recovery does not itself install a native handler.
+dismissal or failure never produces a background retry. After recovery and
+review, startup initializes the packaged guarded handler only if the current
+local crash decision is enabled. The native SDK receives an empty DSN and no
+upload consent; only the separate sanitized sender can contact GlitchTip.
+
+The Linux daemon accepts the standalone local command `--crash-consent enable`
+or `--crash-consent disable`. Enable takes effect on the next startup and does
+not approve any upload. Disable requests that the guarded writer stop, waits
+for its capture lock, purges raw runs and then records withdrawal. A failed stop
+or cleanup returns an error rather than claiming withdrawal succeeded. Native
+desktop category controls remain part of #230.
 
 `crash_dump::consume` reduces a completed owner-private UUID-named minidump to
 one fixed crash-code classification. It bounds file size and stream-directory

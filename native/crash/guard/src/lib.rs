@@ -262,6 +262,33 @@ mod tests {
         assert!(store.capture(Category::Crashes).unwrap().is_some());
     }
     #[test]
+    fn canceled_capture_never_enters_the_writer() {
+        let (_root, store, run) = fixture();
+        storage::open(&run.join("stop-handler"), storage::Open::New)
+            .unwrap()
+            .write_all(b"stop")
+            .unwrap();
+        assert!(acquire(&run.join("database")).is_err());
+        store.decide(Category::Crashes, false).unwrap();
+    }
+    #[test]
+    fn purged_handoff_cannot_recreate_the_run() {
+        let (_root, store, run) = fixture();
+        let lease = store.capture_lease().unwrap().unwrap();
+        thread::scope(|scope| {
+            let waiting = scope.spawn(|| acquire(&run.join("database")));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !run.join("handler-ready").exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(5));
+            }
+            std::fs::remove_dir_all(&run).unwrap();
+            drop(lease);
+            assert!(waiting.join().unwrap().is_err());
+        });
+        assert!(!run.exists());
+    }
+    #[test]
     fn private_stop_request_invokes_only_the_injected_termination() {
         let (_root, _store, run) = fixture();
         storage::open(&run.join("stop-handler"), storage::Open::New)
