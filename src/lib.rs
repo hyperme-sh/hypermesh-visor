@@ -40,6 +40,7 @@ mod session;
 mod stream;
 pub mod telemetry;
 pub mod health_consent;
+pub mod crash_report;
 mod vault;
 mod usage;
 pub use usage::ResponseUsage;
