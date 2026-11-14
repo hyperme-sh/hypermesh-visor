@@ -257,8 +257,10 @@ pub(crate) fn start(store: Store, directory: &Path) -> io::Result<()> {
     let library = sdk_root.join("lib/libsentry.dylib");
     #[cfg(windows)]
     let library = sdk_root.join("bin/sentry.dll");
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     let handler = sdk_root.join("bin/crashpad_handler");
+    #[cfg(target_os = "macos")]
+    let handler = executable_directory.join("crashpad_handler");
     #[cfg(windows)]
     let handler = sdk_root.join("bin/crashpad_handler.exe");
     if !handler.is_file() {

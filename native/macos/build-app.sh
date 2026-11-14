@@ -34,8 +34,10 @@ cat > "$output/Contents/Info.plist" <<PLIST
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
-python3 native/crash/stage-runtime.py "$sdk" "$output/Contents/MacOS/crash-sdk" --platform macos --revision "$(git rev-parse HEAD)"
-codesign --force --sign - --options runtime --identifier sh.hyperme.visor.crash-handler "$output/Contents/MacOS/crash-sdk/bin/crashpad_handler"
+python3 native/crash/stage-runtime.py "$sdk" "$output/Contents/Resources/crash-sdk" --platform macos --revision "$(git rev-parse HEAD)"
+mv "$output/Contents/Resources/crash-sdk/bin/crashpad_handler" "$output/Contents/MacOS/crashpad_handler"
+rmdir "$output/Contents/Resources/crash-sdk/bin"
+codesign --force --sign - --options runtime --identifier sh.hyperme.visor.crash-handler "$output/Contents/MacOS/crashpad_handler"
 # Hardened local ad-hoc build. No debug, library-validation, or DYLD exceptions.
 codesign --force --sign - --options runtime --identifier sh.hyperme.visor.development "$output"
 codesign --verify --strict "$output"
