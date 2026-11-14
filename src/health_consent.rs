@@ -93,15 +93,20 @@ pub struct CrashCaptureLease<'a> {
     ticket: Ticket,
 }
 impl CrashCaptureLease<'_> {
-    pub fn ticket(&self) -> &Ticket { &self.ticket }
+    pub fn ticket(&self) -> &Ticket {
+        &self.ticket
+    }
     /// The caller must already have stopped its writer and purged raw files.
     pub fn withdraw(self) -> io::Result<()> {
-        self.store.decide_without_capture_guard(Category::Crashes, false)?;
+        self.store
+            .decide_without_capture_guard(Category::Crashes, false)?;
         Ok(())
     }
 }
 impl Drop for CrashCaptureLease<'_> {
-    fn drop(&mut self) { drop(storage::UnlockOnDrop(&self.file)); }
+    fn drop(&mut self) {
+        drop(storage::UnlockOnDrop(&self.file));
+    }
 }
 fn refused() -> io::Error {
     io::Error::new(
@@ -189,7 +194,11 @@ impl Store {
     /// Explicit local choice after displaying purpose, destination and retention.
     /// Switching identity or notice resets every category to off.
     pub fn decide(&self, category: Category, enabled: bool) -> io::Result<Uuid> {
-        let _capture = if category == Category::Crashes { Some(self.capture_lock()?) } else { None };
+        let _capture = if category == Category::Crashes {
+            Some(self.capture_lock()?)
+        } else {
+            None
+        };
         self.decide_without_capture_guard(category, enabled)
     }
     fn decide_without_capture_guard(&self, category: Category, enabled: bool) -> io::Result<Uuid> {
@@ -225,7 +234,10 @@ impl Store {
     }
     fn capture_lock(&self) -> io::Result<fs::File> {
         storage::check_dir(&self.directory)?;
-        let file = storage::open(&self.directory.join("crash-capture.lock"), storage::Open::Lock)?;
+        let file = storage::open(
+            &self.directory.join("crash-capture.lock"),
+            storage::Open::Lock,
+        )?;
         storage::lock(&file)?;
         Ok(file)
     }
@@ -234,8 +246,27 @@ impl Store {
     /// Other categories remain independently editable.
     pub fn capture_lease(&self) -> io::Result<Option<CrashCaptureLease<'_>>> {
         let file = self.capture_lock()?;
-        let Some(ticket) = self.capture(Category::Crashes)? else { return Ok(None); };
-        Ok(Some(CrashCaptureLease { store: self, file, ticket }))
+        let Some(ticket) = self.capture(Category::Crashes)? else {
+            return Ok(None);
+        };
+        Ok(Some(CrashCaptureLease {
+            store: self,
+            file,
+            ticket,
+        }))
+    }
+    /// Restore only an exact original decision from private capture metadata.
+    /// Parsing a record never grants consent or changes its revision.
+    pub(crate) fn restore_crash_ticket(&self, bytes: &[u8]) -> io::Result<Ticket> {
+        if bytes.len() > 4096 {
+            return Err(refused());
+        }
+        let saved: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| refused())?;
+        let ticket = self.capture(Category::Crashes)?.ok_or_else(refused)?;
+        if serde_json::to_value(&ticket).map_err(|_| refused())? != saved {
+            return Err(refused());
+        }
+        Ok(ticket)
     }
     /// Called only after the authenticated consent service confirms the exact
     /// subject/tenant/device/category/notice/purpose/revision. Not an HTTP route.
@@ -321,6 +352,24 @@ mod tests {
             notice_version: Uuid::new_v4(),
             purpose_version: Uuid::new_v4(),
         }
+    }
+    #[test]
+    fn private_capture_metadata_cannot_restore_an_old_or_changed_decision() {
+        let dir = Temp::new();
+        let store = Store::open(&dir.0, scope()).unwrap();
+        store.decide(Category::Crashes, true).unwrap();
+        let bytes =
+            serde_json::to_vec(&store.capture(Category::Crashes).unwrap().unwrap()).unwrap();
+        assert!(store.restore_crash_ticket(&bytes).is_ok());
+        let mut changed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        changed["category"] = serde_json::json!("sensors");
+        assert!(store
+            .restore_crash_ticket(&serde_json::to_vec(&changed).unwrap())
+            .is_err());
+        store.decide(Category::Crashes, false).unwrap();
+        assert!(store.restore_crash_ticket(&bytes).is_err());
+        store.decide(Category::Crashes, true).unwrap();
+        assert!(store.restore_crash_ticket(&bytes).is_err());
     }
     #[test]
     fn capture_lease_prevents_successful_withdrawal_until_writer_stops() {

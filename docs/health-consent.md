@@ -87,3 +87,13 @@ new decision for an old dump. Invalidated consent rejects the preview after raw
 cleanup. The capture adapter must stop its writer before reduction and handle
 startup cleanup and withdrawal. This reader does not install a crash handler or
 implement a persistent crash queue.
+
+The native writer must own a `Store::capture_lease` for its entire lifetime.
+The lease requires current crash consent and prevents another writer, crash
+decision changes or identity resets until the writer stops. Other categories
+remain editable. The owner must stop and reap the writer and purge raw files
+before completing lease withdrawal; releasing this lock is not itself a way to
+stop a native handler. Startup recovery can restore only the exact original
+ticket from private capture metadata, never a newly granted revision. Recovered
+reports retain the minidump's capture time: stale or future-dated captures are
+deleted and refused instead of receiving a fresh 24-hour window.
