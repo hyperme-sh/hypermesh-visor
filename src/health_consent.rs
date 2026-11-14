@@ -277,6 +277,37 @@ impl Store {
             Ok(revision)
         })
     }
+    /// Include disabled revisions when binding a local settings preview.
+    pub(crate) fn crash_choice(&self) -> io::Result<(bool, Uuid)> {
+        self.locked(|| {
+            let record = self
+                .read()?
+                .filter(|r| r.scope == self.scope)
+                .ok_or_else(refused)?;
+            let choice = &record.categories[Category::Crashes.index()];
+            Ok((choice.enabled, choice.revision))
+        })
+    }
+    pub(crate) fn enable_crash_if_revision(&self, expected: Uuid) -> io::Result<()> {
+        let _capture = self.capture_lock()?;
+        let mut synced = self.synchronized.lock().map_err(|_| refused())?;
+        self.locked(|| {
+            let mut record = self
+                .read()?
+                .filter(|r| r.scope == self.scope)
+                .ok_or_else(refused)?;
+            let choice = &mut record.categories[Category::Crashes.index()];
+            if choice.enabled || choice.revision != expected {
+                return Err(refused());
+            }
+            *choice = Decision {
+                enabled: true,
+                revision: Uuid::new_v4(),
+            };
+            *synced = [None; 5];
+            self.write_locked(&record)
+        })
+    }
     pub fn capture(&self, category: Category) -> io::Result<Option<Ticket>> {
         self.locked(|| {
             Ok(self

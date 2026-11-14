@@ -40,7 +40,6 @@ fn consent_ui_at(
     action: &str,
     decision: &serde_json::Value,
 ) -> io::Result<serde_json::Value> {
-    use crate::health_consent::Category;
     use sha2::{Digest, Sha256};
     if !path.is_absolute() {
         return Err(io::Error::other("private crash configuration required"));
@@ -51,11 +50,11 @@ fn consent_ui_at(
         .parent()
         .ok_or_else(|| io::Error::other("invalid crash directory"))?;
     let store = Store::open(&directory.join("health-consent"), config.scope.clone())?;
-    let ticket = store.capture(Category::Crashes)?;
+    let (enabled, revision) = store.crash_choice()?;
     let binding = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&serde_json::json!({
-            "scope":config.scope, "destination":config.destination(), "ticket":ticket,
+            "scope":config.scope, "destination":config.destination(), "enabled":enabled, "revision":revision,
         }))?)
     );
     if action == "crash-consent-set" {
@@ -65,8 +64,8 @@ fn consent_ui_at(
             ));
         }
         match decision["choice"].as_str() {
-            Some("enable") if ticket.is_none() => {
-                store.decide(Category::Crashes, true)?;
+            Some("enable") if !enabled => {
+                store.enable_crash_if_revision(revision)?;
             }
             Some("disable") => {
                 crate::crash_capture::withdraw_configured(&store, directory)?;
@@ -78,10 +77,8 @@ fn consent_ui_at(
     if action != "crash-consent-status" {
         return Err(io::Error::other("invalid crash consent action"));
     }
-    Ok(
-        serde_json::json!({"enabled":ticket.is_some(), "binding":binding,
-        "notice":format!("Crash diagnostics help diagnose Visor failures. Capture is off unless you enable it. Private local minidumps may contain process memory. On the next startup, Visor reduces them to a fixed crash code, version, event ID, time and tenant tag, then deletes raw files before review. Raw dumps are never uploaded. Each sanitized upload to {} requires a separate approval. Reports expire after 24 hours; raw runs are cleaned on startup or successful withdrawal. Enable takes effect after restarting Visor. Disable stops capture and purges local raw runs before it succeeds.", config.destination())}),
-    )
+    Ok(serde_json::json!({"enabled":enabled, "binding":binding,
+        "notice":format!("Crash diagnostics help diagnose Visor failures. Capture is off unless you enable it. Private local minidumps may contain process memory. On the next startup, Visor reduces them to a fixed crash code, version, event ID, time and tenant tag, then deletes raw files before review. Raw dumps are never uploaded. Each sanitized upload to {} requires a separate approval. Reports expire after 24 hours; raw runs are cleaned on startup or successful withdrawal. Enable takes effect after restarting Visor. Disable stops capture and purges local raw runs before it succeeds.", config.destination())}))
 }
 
 fn set_consent_at(path: &Path, enabled: bool) -> io::Result<()> {

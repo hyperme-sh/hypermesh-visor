@@ -90,8 +90,10 @@ The Linux daemon accepts the standalone local command `--crash-consent enable`
 or `--crash-consent disable`. Enable takes effect on the next startup and does
 not approve any upload. Disable requests that the guarded writer stop, waits
 for its capture lock, purges raw runs and then records withdrawal. A failed stop
-or cleanup returns an error rather than claiming withdrawal succeeded. Native
-desktop category controls remain part of #230.
+or cleanup returns an error rather than claiming withdrawal succeeded. Windows and macOS expose Crash diagnostics in their local menus. The preview
+shows the current choice and destination, and defaults to keeping that choice.
+A changed configuration or consent revision invalidates the preview. These
+controls are in-process only and add no remote approval route.
 
 `crash_dump::consume` reduces a completed owner-private UUID-named minidump to
 one fixed crash-code classification. It bounds file size and stream-directory
