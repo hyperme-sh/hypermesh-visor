@@ -34,6 +34,9 @@ Name: "startup"; Description: "Start Visor when I sign in (requires configured C
 [Files]
 Source: "{#BundlePath}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+[InstallDelete]
+Type: files; Name: "{userstartup}\Hypermesh Visor Development.lnk"; Tasks: not startup
+
 [Icons]
 Name: "{group}\Hypermesh Visor"; Filename: "{app}\hypermesh-visor.exe"; WorkingDir: "{app}"
 Name: "{group}\Setup and limitations"; Filename: "{app}\README.md"

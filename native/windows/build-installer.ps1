@@ -11,6 +11,11 @@ if (Test-Path -LiteralPath $outputPath) { throw 'Installer output already exists
 foreach ($file in @('hypermesh-visor.exe', 'hypermesh-native-desktop.exe', 'hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-desktop-mcp.exe', 'SHA256SUMS', 'UNSIGNED.txt')) {
     if (!(Test-Path -LiteralPath (Join-Path $bundlePath $file) -PathType Leaf)) { throw "Incomplete bundle: $file" }
 }
+# Inno's recursive wildcard follows directory links; never let it see one.
+$entries = @((Get-Item -LiteralPath $bundlePath -Force)) + @(Get-ChildItem -LiteralPath $bundlePath -Recurse -Force)
+foreach ($entry in $entries) {
+    if ($entry.Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { throw 'Bundle contains a reparse point' }
+}
 $listed = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
 foreach ($line in Get-Content -LiteralPath (Join-Path $bundlePath 'SHA256SUMS')) {
     $entry = [regex]::Match($line, '^([0-9a-fA-F]{64}) \*(.+)$')
@@ -21,7 +26,7 @@ foreach ($line in Get-Content -LiteralPath (Join-Path $bundlePath 'SHA256SUMS'))
     if (!(Test-Path -LiteralPath $file -PathType Leaf) -or (Get-Item -LiteralPath $file).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)) { throw 'Bundle checksum path is not a regular file' }
     if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -ne $entry.Groups[1].Value) { throw 'Bundle checksum mismatch' }
 }
-foreach ($file in Get-ChildItem -LiteralPath $bundlePath -Recurse -File) {
+foreach ($file in Get-ChildItem -LiteralPath $bundlePath -Recurse -File -Force) {
     $relative = [IO.Path]::GetRelativePath($bundlePath, $file.FullName)
     if ($relative -ne 'SHA256SUMS' -and !$listed.Contains($relative)) { throw 'Bundle contains an unlisted file' }
 }

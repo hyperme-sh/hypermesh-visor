@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Path $data -Force | Out-Null
 'preserve user state' | Set-Content -LiteralPath $sentinel
 function Install-Candidate([string]$Tasks) {
     $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=`"$install`"")
-    if ($Tasks) { $arguments += "/TASKS=$Tasks" }
+    $arguments += "/TASKS=$Tasks"
     $process = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw "Installer returned $($process.ExitCode)" }
 }
@@ -36,6 +36,10 @@ try {
     $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut($startup)
     if ($shortcut.TargetPath -ne (Join-Path $install 'hypermesh-visor.exe')) { throw 'Startup points outside the installed launcher' }
     if ((Get-Content -LiteralPath $sentinel -Raw).Trim() -ne 'preserve user state') { throw 'Reinstall changed user data' }
+    Install-Candidate ''
+    if (Test-Path -LiteralPath $startup) { throw 'Deselected startup remains enabled' }
+    Install-Candidate 'startup'
+    if (!(Test-Path -LiteralPath $startup)) { throw 'Startup could not be re-enabled' }
     $process = Start-Process -FilePath (Join-Path $install 'unins000.exe') -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait -PassThru
     if ($process.ExitCode -ne 0) { throw 'Uninstall failed' }
     if ((Test-Path -LiteralPath $uninstallKey) -or (Test-Path -LiteralPath $startup) -or (Test-Path -LiteralPath (Join-Path $install 'hypermesh-visor.exe'))) { throw 'Uninstall left registered application files or startup' }
