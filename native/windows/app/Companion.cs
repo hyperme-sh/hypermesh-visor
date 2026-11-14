@@ -41,6 +41,8 @@ internal sealed class Companion : Form
         menu.Items.Add("Open controls", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
         menu.Items.Add("Open session forum", null, async (_, _) => await OpenDestination(false));
         menu.Items.Add("Open workspace in VS Code", null, async (_, _) => await OpenDestination(true));
+        menu.Items.Add("Session CLI in PowerShell", null, async (_, _) => await OpenTerminal(false));
+        menu.Items.Add("Session CLI in WSL", null, async (_, _) => await OpenTerminal(true));
         menu.Items.Add("Allow desktop access", null, async (_, _) => await Approve());
         menu.Items.Add("Pause", null, (_, _) => Pause("Paused by you"));
         menu.Items.Add("Stop", null, (_, _) => Stop());
@@ -78,6 +80,23 @@ internal sealed class Companion : Form
             if (!closing && consent.Selected == selected)
             {
                 message = "Configure this session's destination in companion.toml. Install VS Code to open a workspace.";
+                UpdateStatus();
+            }
+        }
+    }
+    private async Task OpenTerminal(bool wsl)
+    {
+        if (!started || closing || consent.Selected is not { } selected) return;
+        try
+        {
+            ProcessStartInfo plan = await SessionTerminal.Plan(wsl, selected);
+            if (!closing && consent.Selected == selected) Process.Start(plan);
+        }
+        catch
+        {
+            if (!closing && consent.Selected == selected)
+            {
+                message = "Could not open the session terminal. Check the bundled CLI and your PowerShell or WSL installation.";
                 UpdateStatus();
             }
         }
