@@ -108,6 +108,37 @@ impl Drop for CrashCaptureLease<'_> {
         drop(storage::UnlockOnDrop(&self.file));
     }
 }
+/// Keeps the writer stopped and crash decisions unchanged during recovery.
+pub(crate) struct CrashRecoveryGuard<'a> {
+    store: &'a Store,
+    file: fs::File,
+}
+#[derive(Clone)]
+pub(crate) struct RecoveryTicket<'a> {
+    ticket: Ticket,
+    _guard: &'a CrashRecoveryGuard<'a>,
+}
+impl RecoveryTicket<'_> {
+    pub(crate) fn into_ticket(self) -> Ticket {
+        self.ticket
+    }
+}
+impl CrashRecoveryGuard<'_> {
+    pub(crate) fn restore(&self, bytes: &[u8]) -> io::Result<Option<RecoveryTicket<'_>>> {
+        Ok(self
+            .store
+            .restore_crash_ticket(bytes)?
+            .map(|ticket| RecoveryTicket {
+                ticket,
+                _guard: self,
+            }))
+    }
+}
+impl Drop for CrashRecoveryGuard<'_> {
+    fn drop(&mut self) {
+        drop(storage::UnlockOnDrop(&self.file));
+    }
+}
 fn refused() -> io::Error {
     io::Error::new(
         io::ErrorKind::PermissionDenied,
@@ -240,6 +271,12 @@ impl Store {
         )?;
         storage::lock(&file)?;
         Ok(file)
+    }
+    pub(crate) fn recovery_guard(&self) -> io::Result<CrashRecoveryGuard<'_>> {
+        Ok(CrashRecoveryGuard {
+            store: self,
+            file: self.capture_lock()?,
+        })
     }
     /// No native writer may start without this enabled, original decision.
     /// A second writer, crash decision change or scope reset fails while held.

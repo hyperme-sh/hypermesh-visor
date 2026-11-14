@@ -39,8 +39,7 @@ pub fn recover(
     destination: &str,
     directory: &Path,
 ) -> io::Result<Vec<PendingCrash>> {
-    let lock = store.capture_lock()?;
-    let _unlock = storage::UnlockOnDrop(&lock);
+    let guard = store.recovery_guard()?;
     match fs::symlink_metadata(directory) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err(refused()),
@@ -70,7 +69,7 @@ pub fn recover(
             Ok::<_, io::Error>(bytes)
         })();
         let ticket = match ticket {
-            Ok(bytes) => store.restore_crash_ticket(&bytes)?,
+            Ok(bytes) => guard.restore(&bytes)?,
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
@@ -110,7 +109,7 @@ pub fn recover(
     // report is consumed. The capture lock keeps crash decisions stable here.
     let mut reports = Vec::new();
     for (ticket, folder, id) in candidates {
-        if let Ok(report) = PendingCrash::from_dump(store, ticket, destination, &folder, id) {
+        if let Ok(report) = PendingCrash::from_recovery_dump(ticket, destination, &folder, id) {
             reports.push(report);
         }
     }
@@ -203,6 +202,29 @@ mod tests {
         run
     }
     const DEST: &str = "https://glitchtip.example.invalid/api/42/envelope/";
+    #[test]
+    fn validated_recovery_survives_later_consent_lock_contention() {
+        let consent = Temp::new();
+        let root = Temp::new();
+        let store = store(&consent.0);
+        store.decide(Category::Crashes, true).unwrap();
+        let pending = run(&root.0, &store, "pending");
+        let guard = store.recovery_guard().unwrap();
+        let ticket = guard
+            .restore(&fs::read(pending.join("ticket.json")).unwrap())
+            .unwrap()
+            .unwrap();
+        let folder = pending.join("database/pending");
+        let path = entries(&folder).unwrap().pop().unwrap();
+        let id = uuid_name(&path.with_extension("")).unwrap();
+        let lock = storage::open(&consent.0.join("lock"), storage::Open::Lock).unwrap();
+        storage::lock(&lock).unwrap();
+        let _unlock = storage::UnlockOnDrop(&lock);
+        let report = PendingCrash::from_recovery_dump(ticket, DEST, &folder, id).unwrap();
+        assert!(!path.exists());
+        assert!(!report.preview().sanitized_json.is_empty());
+        assert!(store.decide(Category::Crashes, false).is_err());
+    }
     #[cfg(unix)]
     #[test]
     fn unsafe_later_ticket_preserves_earlier_runs() {
