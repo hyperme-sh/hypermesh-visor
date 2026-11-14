@@ -7,3 +7,5 @@ __pycache__/
 /native/windows/app/obj/
 /native/windows/contracts/bin/
 /native/windows/contracts/obj/
+/mobile/android/library/.gradle/
+/mobile/android/library/build/

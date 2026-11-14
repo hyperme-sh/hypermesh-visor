@@ -121,3 +121,19 @@ fixture keys. CI also compiles the real Android factory against SDK 35. These
 checks do not claim Android Keystore, device backup or lock-screen validation on
 an installed app. Native app delivery still needs those platform checks; APK
 packaging, UI and signing remain unfinished/deferred.
+
+## Android library artifact
+
+The Linux session-unit CI job also builds an ARM64 development AAR containing
+the generated bindings, native Rust core and Keystore adapter. Its bundle
+includes source/binary hashes, checksums and dependency notices. Archive contracts
+verify the exact native bytes, expected API classes, API 28 minimum, 16 KiB ELF
+load alignment, and absence of injected manifest permissions/components. See
+[Android library consumption](android/LIBRARY.md). It is a library artifact;
+native apps, device enrollment, VPN, agent access and store signing remain open.
+
+For a local build with Android SDK 35, NDK, Java 17 and Gradle 8.11.1 already
+available, follow the CI job's binding-generation and ARM64 release-build steps,
+then set `VISOR_MOBILE_BINDINGS` and `VISOR_MOBILE_ANDROID_LIB` to those exact
+outputs before running `gradle -p mobile/android/library assembleRelease`.
+The package script validates and bundles that AAR; it does not sign or publish.
