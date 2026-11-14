@@ -38,7 +38,7 @@ func plan(environment map[string]string, sid, nonce string) (launchPlan, error) 
 		}
 	}
 	p.pipe = `\\.\pipe\hypermesh-conductor-` + sid + "-visor-" + nonce
-	for _, key := range []string{"SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "USERNAME", "USERDOMAIN", "HYPERMESH_DEFAULT_MODEL", "HYPERMESH_CONDUCTOR_LEASE_ID", "HYPERMESH_CONFIG_DIR", "HYPERMESH_RUNTIME_DIR"} {
+	for _, key := range []string{"SYSTEMROOT", "WINDIR", "SYSTEMDRIVE", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "TEMP", "TMP", "USERNAME", "USERDOMAIN", "HYPERMESH_DEFAULT_MODEL", "HYPERMESH_CONDUCTOR_LEASE_ID", "HYPERMESH_CONFIG_DIR", "HYPERMESH_RUNTIME_DIR", "HYPERMESH_MCP_PROJECT", "HYPERMESH_BOT_CONFIG", "HYPERMESH_COMPANION_POLL_MS", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"} {
 		if value, ok := env[key]; ok {
 			p.app[key] = value
 		}

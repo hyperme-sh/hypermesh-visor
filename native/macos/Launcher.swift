@@ -29,7 +29,8 @@ struct LaunchPlan {
         // Explicit allowlist: service credentials and provider environment stay in Conductor.
         let appKeys = Set(["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG", "LC_ALL",
                            "HYPERMESH_DEFAULT_MODEL", "HYPERMESH_CONDUCTOR_LEASE_ID",
-                           "HYPERMESH_CONFIG_DIR", "HYPERMESH_RUNTIME_DIR"])
+                           "HYPERMESH_CONFIG_DIR", "HYPERMESH_RUNTIME_DIR",
+                           "HYPERMESH_MCP_PROJECT", "HYPERMESH_BOT_CONFIG", "HYPERMESH_COMPANION_POLL_MS", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"])
         var app = environment.filter { appKeys.contains($0.key) }
         app["HYPERMESH_CONDUCTOR_SOCKET"] = socket
         appEnvironment = app
@@ -303,6 +304,9 @@ private func contracts() throws {
                        "HYPERMESH_CONDUCTOR_JOURNAL": "/journal", "CONDUCTOR_AIUDITOR_TOKEN": "secret",
                        "HYPERMESH_DEFAULT_MODEL": "model", "HYPERMESH_CONDUCTOR_LEASE_ID": "lease",
                        "HYPERMESH_CONFIG_DIR": "/custom config", "HYPERMESH_RUNTIME_DIR": "/custom runtime",
+                       "HYPERMESH_MCP_PROJECT": "/project", "HYPERMESH_BOT_CONFIG": "/bot.json",
+                       "HYPERMESH_COMPANION_POLL_MS": "500", "XDG_CONFIG_HOME": "/xdg-config",
+                       "XDG_STATE_HOME": "/xdg-state", "XDG_RUNTIME_DIR": "/xdg-run",
                        "HYPERMESH_CONDUCTOR_ADDR": "old", "HYPERMESH_SUPERVISOR_URL": "old",
                        "DYLD_INSERT_LIBRARIES": "/bad"]
     let plan = try LaunchPlan(environment: environment, socket: "/tmp/private/c.sock")
@@ -311,6 +315,9 @@ private func contracts() throws {
     precondition(plan.appEnvironment["HYPERMESH_CONDUCTOR_CONFIG"] == nil)
     precondition(plan.appEnvironment["HYPERMESH_CONDUCTOR_ADDR"] == nil)
     precondition(plan.appEnvironment["HYPERMESH_SUPERVISOR_URL"] == nil)
+    for key in ["HYPERMESH_MCP_PROJECT", "HYPERMESH_BOT_CONFIG", "HYPERMESH_COMPANION_POLL_MS", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR"] {
+        precondition(plan.appEnvironment[key] == environment[key])
+    }
     precondition(plan.appEnvironment["HYPERMESH_CONFIG_DIR"] == "/custom config")
     precondition(plan.appEnvironment["HYPERMESH_RUNTIME_DIR"] == "/custom runtime")
     precondition(plan.appEnvironment["HYPERMESH_DEFAULT_MODEL"] == "model")

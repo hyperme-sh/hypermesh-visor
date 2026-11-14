@@ -7,9 +7,18 @@ import (
 
 func TestPlanKeepsServiceCredentialsOutOfDesktop(t *testing.T) {
 	env := map[string]string{"HYPERMESH_CONDUCTOR_CONFIG": `C:\config with quotes'\endpoints.json`, "HYPERMESH_CONDUCTOR_JOURNAL": `C:\data\journal.jsonl`, "SystemRoot": `C:\Windows`, "CONDUCTOR_AIUDITOR_TOKEN": "secret", "HYPERMESH_CONDUCTOR_SOCKET": "old", "DOTNET_STARTUP_HOOKS": "inject", "PATH": "unsafe", "HYPERMESH_DEFAULT_MODEL": "model", "HYPERMESH_CONFIG_DIR": `C:\custom config`, "HYPERMESH_RUNTIME_DIR": `C:\custom runtime`}
+	selectors := map[string]string{"HYPERMESH_MCP_PROJECT": `C:\project`, "HYPERMESH_BOT_CONFIG": `C:\bot.json`, "HYPERMESH_COMPANION_POLL_MS": "500", "XDG_CONFIG_HOME": `C:\xdg-config`, "XDG_STATE_HOME": `C:\xdg-state`, "XDG_RUNTIME_DIR": `C:\xdg-run`}
+	for key, value := range selectors {
+		env[key] = value
+	}
 	p, err := plan(env, "S-1-5-21-1", "abc")
 	if err != nil {
 		t.Fatal(err)
+	}
+	for key, value := range selectors {
+		if p.app[key] != value {
+			t.Fatalf("lost explicit application selector %s", key)
+		}
 	}
 	if p.app["CONDUCTOR_AIUDITOR_TOKEN"] != "" || p.app["HYPERMESH_CONDUCTOR_CONFIG"] != "" || p.app["DOTNET_STARTUP_HOOKS"] != "" || p.app["PATH"] == "unsafe" {
 		t.Fatal("desktop inherited service or loading configuration")
