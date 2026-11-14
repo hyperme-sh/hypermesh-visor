@@ -137,13 +137,33 @@ and build version as resource attributes. Infra #1435 assigns tenant identity
 from the authenticated machine; the client does not supply it.
 
 A sample remains in memory for at most 30 seconds before send and is consumed on
-every send attempt. No persistent queue or background retry is added. Unlike the
-v0 crash exception, this foundation preserves the existing health-consent
-confirmation requirement before upload. Unit tests use a fake confirmation and
-in-memory transport; no ingress or consent API is invented here. The actual
+every send attempt. No persistent queue or background retry is added. The owner
+approved device-local consent for Visor health metrics on November 14, 2026. Collection
+and send both check the current category revision; no server confirmation is
+required. Withdrawal followed by a new grant cannot revive an old sample. The
+decision lock spans the bounded send, so withdrawal cannot report success while
+it is active. This does not change per-crash approval or human-report handling.
+Unit tests use an in-memory transport. The actual
 collector credentials, endpoints, accepted attributes and refusal contract belong
-to Infra #1435. OS samplers, the runtime controller, non-crash category UI and
+to Infra #1435. Additional OS samplers, the runtime controller, non-crash category UI and
 human-report handling remain #171 work; this module alone does not finish it.
+
+This local opt-in policy applies to Visor, not host monitoring. Host health
+monitoring runs without interactive requests under the leaser agreement. #217
+must connect that policy to the enrolled host's agreement context while sharing
+the typed metric implementation. A Visor installation must not infer host
+authorization from the presence of the shared code or a collector credential.
+
+`health_os::collect` supplies a Linux Visor sampler for aggregate memory use and
+whole-hour uptime. It opens only `/proc/meminfo` and `/proc/uptime`, after the
+local OS-health decision is checked. Reads have fixed byte limits; projection
+retains only numeric values. Memory use is `(MemTotal - MemAvailable) / MemTotal`,
+rounded down to an integer percent. Missing or invalid values are omitted;
+no usable values reports unavailable, not zero. Non-Linux sampling currently
+reports unavailable. CPU, disks, platform-specific sources and periodic runtime
+scheduling remain follow-ups. These are system aggregates, not container quota
+measurements. Field meanings follow the
+[Linux proc documentation](https://docs.kernel.org/filesystems/proc.html).
 
 Encoding follows the [OTLP JSON protobuf rules](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding),
 including decimal strings for 64-bit metric values and timestamps.

@@ -112,7 +112,7 @@ impl PendingMetrics {
             created,
         }))
     }
-    /// The consent owner must confirm this exact revision before transport.
+    /// Transport configuration must match this sample's trusted scope.
     pub fn consent_ticket(&self) -> &Ticket {
         &self.ticket
     }
@@ -126,7 +126,7 @@ impl PendingMetrics {
         if self.created.elapsed() >= Duration::from_secs(30) {
             return Err(refused());
         }
-        store.upload(&self.ticket, || send(&self.body))
+        store.upload_local_metrics(&self.ticket, || send(&self.body))
     }
 }
 
@@ -185,8 +185,8 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        f.store.synchronized(sample.consent_ticket()).unwrap();
         f.store.decide(Category::OsHealth, false).unwrap();
+        f.store.decide(Category::OsHealth, true).unwrap();
         assert!(sample.send_once(&f.store, |_| panic!("withdrawn")).is_err());
     }
     #[test]
@@ -198,7 +198,6 @@ mod tests {
         })
         .unwrap()
         .unwrap();
-        f.store.synchronized(sample.consent_ticket()).unwrap();
         sample
             .send_once(&f.store, |body| {
                 let value: Value = serde_json::from_slice(body).unwrap();
@@ -232,7 +231,7 @@ mod tests {
         }
     }
     #[test]
-    fn no_consent_ack_or_expired_sample_cannot_reach_transport() {
+    fn local_consent_is_sufficient_but_expired_sample_cannot_reach_transport() {
         let f = Fixture::new();
         f.store.decide(Category::OsHealth, true).unwrap();
         let make = || {
@@ -242,11 +241,13 @@ mod tests {
             .unwrap()
             .unwrap()
         };
-        assert!(make()
-            .send_once(&f.store, |_| panic!("not confirmed"))
-            .is_err());
+        make()
+            .send_once(&f.store, |_| {
+                assert!(f.store.decide(Category::OsHealth, false).is_err());
+                Ok(())
+            })
+            .unwrap();
         let mut expired = make();
-        f.store.synchronized(expired.consent_ticket()).unwrap();
         expired.created = Instant::now() - Duration::from_secs(31);
         assert!(expired.send_once(&f.store, |_| panic!("expired")).is_err());
     }
