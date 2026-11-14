@@ -146,6 +146,30 @@ fn refused() -> io::Error {
     )
 }
 impl Store {
+    /// Open an already provisioned scope without resetting or creating decisions.
+    /// Native handlers use this to reject stale capture metadata after a reset.
+    pub fn open_existing(directory: &Path, scope: Scope) -> io::Result<Self> {
+        if !scope.valid() {
+            return Err(refused());
+        }
+        storage::check_dir(directory)?;
+        let store = Self {
+            directory: directory.into(),
+            scope,
+            synchronized: Mutex::new([None; 5]),
+        };
+        store.locked(|| {
+            if store
+                .read()?
+                .is_some_and(|record| record.scope == store.scope)
+            {
+                Ok(())
+            } else {
+                Err(refused())
+            }
+        })?;
+        Ok(store)
+    }
     /// The caller supplies an owner-controlled, dedicated directory and a scope
     /// obtained from trusted enrollment and the displayed notice, never an event.
     pub fn open(directory: &Path, scope: Scope) -> io::Result<Self> {

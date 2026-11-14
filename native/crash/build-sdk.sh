@@ -3,6 +3,7 @@ set -euo pipefail
 
 # Source-only dependency pin; this script never creates a tag or release.
 revision=af9e9367913edf07f54e4f2f9655ce96af0c1681
+repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 output=${1:?Usage: build-sdk.sh OUTPUT_DIRECTORY}
 [[ ! -e "$output" ]] || { echo 'SDK output already exists' >&2; exit 1; }
 mkdir -p "$output"
@@ -15,11 +16,19 @@ git -C "$work/source" fetch --no-tags --depth=1 origin "$revision"
 git -C "$work/source" checkout -q --detach FETCH_HEAD
 [[ $(git -C "$work/source" rev-parse HEAD) == "$revision" ]]
 git -C "$work/source" submodule update --init --recursive --depth=1
+python3 "$repo/native/crash/prepare-sdk.py" "$work/source"
+cargo build --locked --release --manifest-path "$repo/Cargo.toml" \
+  -p hypermesh-crash-guard --target-dir "$work/guard-build"
+guard="$work/guard-build/release/libhypermesh_crash_guard.a"
+if [[ "${RUNNER_OS:-}" == Windows || "${OS:-}" == Windows_NT ]]; then
+  guard=$(cygpath -m "$work/guard-build/release/hypermesh_crash_guard.lib")
+fi
 
 # Crashpad has its own sender. Runtime must also use an empty native DSN and
 # permanently deny native SDK upload consent; only sanitized JSON uses GlitchTip.
 cmake -S "$work/source" -B "$work/build" \
   -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$output" \
+  -DVISOR_CAPTURE_GUARD="$guard" \
   -DSENTRY_BUILD_SHARED_LIBS=ON -DSENTRY_BACKEND=crashpad \
   -DSENTRY_TRANSPORT=none -DSENTRY_BUILD_TESTS=OFF \
   -DSENTRY_BUILD_EXAMPLES=OFF -DSENTRY_BUILD_BENCHMARKS=OFF \
@@ -28,6 +37,7 @@ cmake -S "$work/source" -B "$work/build" \
 cmake --build "$work/build" --config Release --parallel 2
 cmake --install "$work/build" --config Release
 printf '%s\n' "$revision" > "$output/source-revision"
+git -C "$repo" rev-parse HEAD > "$output/visor-source-revision"
 git -C "$work/source" submodule status --recursive > "$output/submodule-revisions"
 while IFS= read -r file; do
   case "${file##*/}" in

@@ -14,6 +14,7 @@ COPY src src
 COPY session session
 COPY local-storage local-storage
 COPY local-transport local-transport
+COPY native/crash/guard native/crash/guard
 COPY inverse-client inverse-client
 COPY companion companion
 COPY shared shared

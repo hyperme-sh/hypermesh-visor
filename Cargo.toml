@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "companion", "session", "inverse-client", "local-storage", "local-transport"]
+members = [".", "companion", "session", "inverse-client", "local-storage", "local-transport", "native/crash/guard"]
 resolver = "2"
 
 [package]

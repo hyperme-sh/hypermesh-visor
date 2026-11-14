@@ -961,6 +961,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hypermesh-crash-guard"
+version = "0.1.0"
+dependencies = [
+ "hypermesh-local-storage",
+ "libc",
+ "serde",
+ "serde_json",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "hypermesh-local-storage"
 version = "0.1.0"
 dependencies = [
