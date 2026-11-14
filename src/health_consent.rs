@@ -232,7 +232,7 @@ impl Store {
                 }))
         })
     }
-    fn capture_lock(&self) -> io::Result<fs::File> {
+    pub(crate) fn capture_lock(&self) -> io::Result<fs::File> {
         storage::check_dir(&self.directory)?;
         let file = storage::open(
             &self.directory.join("crash-capture.lock"),

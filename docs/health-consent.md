@@ -97,3 +97,14 @@ stop a native handler. Startup recovery can restore only the exact original
 ticket from private capture metadata, never a newly granted revision. Recovered
 reports retain the minidump's capture time: stale or future-dated captures are
 deleted and refused instead of receiving a fresh 24-hour window.
+
+`crash_recovery::recover` reads stopped capture runs under an exclusive capture
+lock. Each run is a private UUID directory with the original serialized ticket
+in `ticket.json` and the SDK database in `database`. Completed dump locations
+are `pending`, `completed` and Windows `reports`; in-progress `new` files are
+never parsed. Invalidated consent discards the run without reading its dumps.
+Recovery returns at most five unapproved sanitized reports, removes each entire
+raw run before returning any preview, and never follows directory links into
+other data. Unknown run names or cleanup failures refuse recovery. The native
+adapter must still create these runs, stop its writer and call recovery before
+the dialogs; no handler is enabled by this helper alone.
