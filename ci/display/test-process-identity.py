@@ -58,3 +58,42 @@ result = subprocess.run(['bash', '-eu', '-c', 'pid=999999999\n'+read],
                         text=True, capture_output=True)
 assert result.returncode == 0 and not result.stderr
 print('startup diagnostics and exited-process cleanup checks passed')
+
+# A live sudo launcher can deny the runner's signal permission. Use a real
+# owned child and delayed display publication, but no sudo or X server.
+import tempfile
+launcher = '\n'.join(
+    re.search(r'^' + name + r'\(\) \{\n.*?^\}', source, re.M | re.S).group()
+    for name in ('xorg_failure', 'launch_xorg')
+)
+for exits in (False, True):
+    with tempfile.TemporaryDirectory() as directory:
+        script = r'''
+set -euo pipefail
+allow_write() { :; }
+write_state() { printf '%s\n' "$2" > "$PROC/$1"; }
+note_started() { :; }
+proc_executable() { printf '%s\n' /usr/lib/xorg/Xorg; }
+exe_is_xorg() { return 0; }
+resolve_xorg_pid() { printf '%s\n' "$1"; }
+# Signal refusal is not process absence.
+kill() { return 1; }
+sudo() {
+  if [[ $EXIT_EARLY == 1 ]]; then return 1; fi
+  sleep 0.2
+  printf '99\n' > "$PROC/xorg.display.num"
+  sleep 0.5
+}
+finish() { if [[ -f $PROC/xorg.launcher ]]; then wait "$(cat "$PROC/xorg.launcher")" || true; fi; }
+trap finish EXIT
+'''
+        result = subprocess.run(['bash', '-c', script + launcher + '\nlaunch_xorg fixture.conf "$PROC/server.log" root\n'],
+                                env={'PATH':'/usr/bin:/bin', 'PROC':directory, 'EXIT_EARLY':str(int(exits))},
+                                capture_output=True, text=True, timeout=5)
+        if exits:
+            assert result.returncode == 1, result.stderr
+            assert 'launcher-exited' in result.stderr
+        else:
+            assert result.returncode == 0, result.stderr
+            assert pathlib.Path(directory,'xorg.display').read_text().strip() == '99'
+print('launcher presence and exited-process checks passed')

@@ -1524,7 +1524,9 @@ launch_xorg() {
     if [[ $number =~ ^[0-9]+$ ]]; then
       break
     fi
-    kill -0 "$launcher" 2>/dev/null || { xorg_failure launcher-exited; return 1; }
+    # sudo may deny signal permission while its root-owned launcher is alive.
+    # Presence is sufficient here; executable/ownership checks still guard cleanup.
+    [[ -d /proc/$launcher ]] || { xorg_failure launcher-exited; return 1; }
     sleep 0.15
   done
   [[ $number =~ ^[0-9]+$ ]] || { xorg_failure display-number-unavailable; return 1; }
