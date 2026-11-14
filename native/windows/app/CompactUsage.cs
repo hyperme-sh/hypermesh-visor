@@ -4,6 +4,7 @@ namespace Hypermesh.Visor;
 
 internal readonly record struct CompactUsage(ulong Input, ulong Output)
 {
+    internal static string DisplayPhase(string phase, bool allowed) => phase == "running" && !allowed ? "paused" : phase;
     internal string Summary => $"Last response: {Input} in / {Output} out";
     internal static CompactUsage? Read(JsonElement session)
     {

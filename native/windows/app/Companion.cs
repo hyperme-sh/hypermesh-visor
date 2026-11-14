@@ -246,11 +246,12 @@ internal sealed class Companion : Form
     {
         status.Text = $"{message}\nTask: {purpose}\nScreen capture and mouse/keyboard input require your approval.\n\nSession: {consent.Selected ?? "none"}\n{usage}";
         allow.Enabled = started && !approving && trustWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
-        tray.Text = $"Visor: {phase}\n{usage}"[..Math.Min(63, $"Visor: {phase}\n{usage}".Length)];
-        string nextIcon = $"{phase}:{responseUsage}";
+        string shownPhase = CompactUsage.DisplayPhase(phase, consent.Allowed);
+        tray.Text = $"Visor: {shownPhase}\n{usage}"[..Math.Min(63, $"Visor: {shownPhase}\n{usage}".Length)];
+        string nextIcon = $"{shownPhase}:{responseUsage}";
         if (nextIcon != iconKey)
         {
-            Icon next = CompactUsage.Draw(companionIcon, phase, responseUsage);
+            Icon next = CompactUsage.Draw(companionIcon, shownPhase, responseUsage);
             Icon? previous = statusIcon;
             tray.Icon = next; statusIcon = next; iconKey = nextIcon;
             previous?.Dispose();

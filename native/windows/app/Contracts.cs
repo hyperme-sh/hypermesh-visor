@@ -22,6 +22,10 @@ internal static class Contracts
             string description = McpTrustWindow.Describe(review);
             Require(description.Contains("KEY") && description.Contains("Authorization") && !description.Contains("hidden-secret"));
             Require(McpTrustWindow.Safe("name\n\u202e") == "name\\u000a\\u202e");
+            Require(CompactUsage.DisplayPhase("running", false) == "paused");
+            Require(CompactUsage.DisplayPhase("running", true) == "running");
+            Require(CompactUsage.DisplayPhase("off", false) == "off");
+            Require(CompactUsage.DisplayPhase("paused", true) == "paused");
             Require(new CompactUsage(100, 50).Widths() == (28, 14));
             Require(new CompactUsage(0, 0).Widths() == (0, 0));
             Require(new CompactUsage(ulong.MaxValue, 1).Widths() == (28, 1));
