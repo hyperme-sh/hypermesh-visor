@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 /native/windows/app/bin/
 /native/windows/app/obj/
+/native/windows/contracts/bin/
+/native/windows/contracts/obj/
