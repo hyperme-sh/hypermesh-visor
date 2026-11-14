@@ -19,6 +19,31 @@ pub fn startup() {
     }
 }
 
+/// A local, explicit category setting; enabling never approves an upload.
+/// Native capture starts on the next application startup.
+pub fn set_crash_consent(enabled: bool) -> io::Result<()> {
+    let path = std::env::var_os("HYPERMESH_CRASH_CONFIG")
+        .ok_or_else(|| io::Error::other("crash reporting is not configured"))?;
+    set_consent_at(Path::new(&path), enabled)
+}
+fn set_consent_at(path: &Path, enabled: bool) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(io::Error::other("private crash configuration required"));
+    }
+    let config =
+        Config::read(path)?.ok_or_else(|| io::Error::other("crash reporting is not configured"))?;
+    let directory = path
+        .parent()
+        .ok_or_else(|| io::Error::other("invalid crash directory"))?;
+    let store = Store::open(&directory.join("health-consent"), config.scope)?;
+    if enabled {
+        store.decide(crate::health_consent::Category::Crashes, true)?;
+        Ok(())
+    } else {
+        crate::crash_capture::withdraw_configured(&store, directory)
+    }
+}
+
 fn recover_and_review(
     path: &Path,
     mut review: impl FnMut(&Config, &Store, PendingCrash) -> io::Result<bool>,
@@ -133,6 +158,16 @@ mod tests {
         dump.extend_from_slice(b"excluded-private-prompt");
         write(&pending.join(format!("{}.dmp", Uuid::new_v4())), &dump);
         (config, store, run)
+    }
+    #[test]
+    fn explicit_local_setting_purges_on_withdrawal_without_review() {
+        let dir = Temp::new();
+        let (config, store, run) = fixture(&dir.0);
+        set_consent_at(&config, false).unwrap();
+        assert!(!run.exists());
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
+        set_consent_at(&config, true).unwrap();
+        assert!(store.capture(Category::Crashes).unwrap().is_some());
     }
     #[test]
     fn recovery_precedes_review_and_supplies_only_sanitized_unapproved_report() {
