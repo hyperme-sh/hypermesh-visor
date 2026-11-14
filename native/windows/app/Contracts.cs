@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text.Json;
 
 namespace Hypermesh.Visor;
 
@@ -10,6 +11,15 @@ internal static class Contracts
     {
         try
         {
+            const string selected = "00000000-0000-4000-8000-000000000001";
+            JsonElement DestinationResponse(string? forum) => JsonSerializer.SerializeToElement(new { status = 200, body = new { session = selected, forum } });
+            Require(Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, selected, false) == "https://forum.example.test/t/1");
+            Refuses(() => Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, "00000000-0000-4000-8000-000000000002", false));
+            Refuses(() => Destinations.Resolve(null, selected, selected, false));
+            foreach (string? url in new string?[] { null, "file:///C:/Windows", "http://example.test", "https://user:secret@example.test", "https://example.test/?token=x", "https://example.test/#x", "https://example.test/\n" })
+                Refuses(() => Destinations.Resolve(DestinationResponse(url), selected, selected, false));
+            var editorPlan = Destinations.EditorPlan(@"C:\Program Files\Microsoft VS Code\Code.exe", @"C:\workspace with spaces\$(not a command)");
+            Require(!editorPlan.UseShellExecute && editorPlan.ArgumentList.SequenceEqual(new[] { "--new-window", "--", @"C:\workspace with spaces\$(not a command)" }));
             InputAuthority authority = new(); Require(!authority.AllowedFor("first"));
             long inputGeneration = authority.Generation;
             authority.Grant(inputGeneration, "first"); Require(authority.AllowedFor("first"));

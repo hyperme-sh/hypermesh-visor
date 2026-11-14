@@ -40,6 +40,8 @@ internal sealed class Companion : Form
         Controls.Add(status); Controls.Add(buttons);
         ContextMenuStrip menu = new();
         menu.Items.Add("Open controls", null, (_, _) => { Show(); WindowState = FormWindowState.Normal; Activate(); });
+        menu.Items.Add("Open session forum", null, async (_, _) => await OpenDestination(false));
+        menu.Items.Add("Open workspace in VS Code", null, async (_, _) => await OpenDestination(true));
         menu.Items.Add("Allow desktop access", null, async (_, _) => await Approve());
         menu.Items.Add("Pause", null, (_, _) => Pause("Paused by you"));
         menu.Items.Add("Stop", null, (_, _) => Stop());
@@ -61,6 +63,25 @@ internal sealed class Companion : Form
         nint handle = bitmap.GetHicon();
         try { return (Icon)Icon.FromHandle(handle).Clone(); }
         finally { Win32.DestroyIcon(handle); }
+    }
+    private async Task OpenDestination(bool editor)
+    {
+        if (!started || closing || consent.Selected is not { } selected) return;
+        try
+        {
+            JsonElement? response = await Engine.Control("destinations", selected);
+            if (closing) return;
+            string destination = Destinations.Resolve(response, selected, consent.Selected, editor);
+            Destinations.Open(destination, editor);
+        }
+        catch
+        {
+            if (!closing && consent.Selected == selected)
+            {
+                message = "Configure this session's destination in companion.toml. Install VS Code to open a workspace.";
+                UpdateStatus();
+            }
+        }
     }
     private void Post(Action action)
     {
