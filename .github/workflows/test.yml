@@ -67,6 +67,18 @@ jobs:
           foreach ($file in @('hypermesh_visor.dll', 'conductor.exe', 'hypermesh.exe', 'hypermesh-visor.exe', 'hypermesh-desktop-mcp.exe', 'companion/idle_0_128.png', 'companion/automation_0_128.png', 'SHA256SUMS', 'UNSIGNED.txt')) {
             if (!(Test-Path -LiteralPath (Join-Path 'dist/windows-development' $file))) { throw "Missing bundle file: $file" }
           }
+      - name: Reject installer directory junction inputs
+        run: ./native/windows/test-installer-input.ps1
+      - name: Build unsigned per-user installer
+        run: ./native/windows/build-installer.ps1
+      - name: Installer replacement and uninstall contracts
+        run: ./native/windows/test-installer.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-unsigned-installer-development
+          retention-days: 1
+          if-no-files-found: error
+          path: dist/windows-installer/
       - uses: actions/upload-artifact@v4
         with:
           name: windows-native-companion-development
