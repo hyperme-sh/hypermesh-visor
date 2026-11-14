@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Win32;
 
@@ -16,7 +15,7 @@ internal sealed class Companion : Form
     private readonly Icon companionIcon = LoadIcon();
     private readonly PointerOverlay overlay = new();
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
-    private readonly nuint marker = (nuint)(BitConverter.ToUInt64(RandomNumberGenerator.GetBytes(8)) | 1UL);
+    private readonly nuint marker = InputMonitor.CreateMarker();
     private readonly InputAuthority authority = new();
     private int inputPending;
     private long lastInput, approvalBaseline = -1;
