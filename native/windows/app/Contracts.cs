@@ -11,6 +11,13 @@ internal static class Contracts
     {
         try
         {
+            string[] unicodeProfiles = ["caf\u00e9", "cafe\u0301"];
+            Require(McpTrustWindow.ProfileNames(null, unicodeProfiles).Length == 2);
+            Require(McpTrustWindow.ProfileNames(null, ["approved-profile"]).SequenceEqual(["approved-profile"]));
+            var partial = McpTrustWindow.LoadData(action => Task.FromResult<JsonElement?>(action == "mcp-trusted"
+                ? JsonSerializer.SerializeToElement(new { status = 200, body = new[] { new { profile = "approved-profile", status = "approved" } } })
+                : JsonSerializer.SerializeToElement(new { status = 500 }))).GetAwaiter().GetResult();
+            Require(partial.Profiles == null && partial.Sources == null && partial.Trusted.GetArrayLength() == 1);
             JsonElement review = JsonSerializer.SerializeToElement(new {
                 profile = "default", review_id = "00000000-0000-4000-8000-000000000001", profiles_path = "profiles.json",
                 servers = new[] { new { name = "example", status = "selected", transport = "http", enabled = true, argument_count = 1,

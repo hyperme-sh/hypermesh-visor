@@ -18,7 +18,7 @@ internal sealed class McpTrustWindow : Form
     private readonly Label message = new() { AutoSize = false, Dock = DockStyle.Top, Height = 75, Padding = new Padding(8) };
     private readonly Dictionary<string, string> grants = new(StringComparer.Ordinal);
     private string? pending;
-    private bool busy, closing;
+    private bool busy, closing, configurationUnavailable;
 
     internal McpTrustWindow()
     {
@@ -57,6 +57,7 @@ internal sealed class McpTrustWindow : Form
         confirmation.Clear(); details.Clear();
         string state = profiles.SelectedItem is Profile profile && grants.TryGetValue(profile.Name, out string? status) ? Safe(status) : "not approved";
         message.Text = $"Current trust: {state}. Preview reads source metadata without starting servers.\nApproval applies to future sessions. Existing sessions retain their attachments; close them to stop those servers.";
+        if (configurationUnavailable) message.Text += " Profile configuration or sources are unavailable; existing approvals can still be revoked.";
         UpdateButtons();
     }
     private async Task Run(Func<Task> operation)
@@ -98,21 +99,36 @@ internal sealed class McpTrustWindow : Form
         text.AppendLine("\r\nRead the complete source files privately before approving. Argument/environment/header values and URL paths/credentials are hidden here. TRUST permits these commands and connections as you, but starts nothing now. Native stdio workers remain unavailable.");
         return text.ToString();
     }
+    internal static string[] ProfileNames(JsonElement? configuration, IEnumerable<string> trusted)
+    {
+        var configured = configuration is { ValueKind: JsonValueKind.Object } data && data.TryGetProperty("profiles", out var entries) && entries.ValueKind == JsonValueKind.Array
+            ? entries.EnumerateArray().Select(item => item.GetProperty("name").GetString()!).ToArray() : Array.Empty<string>();
+        string[] names = configured.Concat(trusted).Distinct(StringComparer.Ordinal).ToArray();
+        if (names.Length != 0) return names;
+        string active = configuration is { ValueKind: JsonValueKind.Object } value && value.TryGetProperty("active", out var field) && field.ValueKind == JsonValueKind.String ? field.GetString()! : "default";
+        return [active];
+    }
+    internal static async Task<(JsonElement Trusted, JsonElement? Profiles, JsonElement? Sources)> LoadData(Func<string, Task<JsonElement?>> request)
+    {
+        JsonElement trusted = Body(await request("mcp-trusted"));
+        JsonElement? profiles = null, sources = null;
+        try { profiles = Body(await request("mcp-profiles")); } catch { }
+        try { sources = Body(await request("mcp-sources")); } catch { }
+        return (trusted, profiles, sources);
+    }
     private async Task Reload()
     {
         InvalidateReview();
-        JsonElement profileData = Body(await Engine.Control("mcp-profiles"));
-        JsonElement sourceData = Body(await Engine.Control("mcp-sources"));
-        JsonElement trusted = Body(await Engine.Control("mcp-trusted"));
-        if (closing) return;
         grants.Clear();
+        var (trusted, profileData, sourceData) = await LoadData(action => Engine.Control(action));
+        if (closing) return;
+        configurationUnavailable = profileData == null || sourceData == null;
         foreach (var grant in trusted.EnumerateArray()) grants[grant.GetProperty("profile").GetString()!] = grant.GetProperty("status").GetString()!;
-        var names = profileData.GetProperty("profiles").EnumerateArray().Select(value => value.GetProperty("name").GetString()!).Concat(grants.Keys).Distinct(StringComparer.Ordinal).ToArray();
-        if (names.Length == 0) names = [profileData.GetProperty("active").GetString() ?? "default"];
+        var names = ProfileNames(profileData, grants.Keys);
         profiles.Items.Clear(); profiles.Items.AddRange(names.Select(name => (object)new Profile(name)).ToArray()); profiles.SelectedIndex = 0;
         sources.Items.Clear(); sources.Items.Add(new Source("Daemon configuration: user plus explicitly selected project"));
         sources.Items.Add(new Source("Choose an MCP configuration file…", File: true));
-        foreach (var source in sourceData.EnumerateArray())
+        foreach (var source in sourceData is { ValueKind: JsonValueKind.Array } available ? available.EnumerateArray().ToArray() : Array.Empty<JsonElement>())
             if (source.GetProperty("status").GetString() == "available_for_review")
                 sources.Items.Add(new Source($"{source.GetProperty("label").GetString()} — {source.GetProperty("path").GetString()}", source.GetProperty("id").GetString()));
         sources.SelectedIndex = 0;
