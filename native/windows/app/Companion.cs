@@ -47,9 +47,15 @@ internal sealed class Companion : Form
         menu.Items.Add("MCP discovery and trust", null, (_, _) =>
         {
             if (!started || closing) return;
-            if (trustWindow == null || trustWindow.IsDisposed) trustWindow = new McpTrustWindow();
+            Pause("Paused for MCP trust review. Close the review before allowing desktop access again.");
+            if (trustWindow == null || trustWindow.IsDisposed)
+            {
+                trustWindow = new McpTrustWindow();
+                trustWindow.FormClosed += (_, _) => { if (!closing) UpdateStatus(); };
+            }
             if (!trustWindow.Visible) trustWindow.Show(this);
             trustWindow.Activate();
+            UpdateStatus();
         });
         menu.Items.Add("Allow desktop access", null, async (_, _) => await Approve());
         menu.Items.Add("Pause", null, (_, _) => Pause("Paused by you"));
@@ -173,7 +179,7 @@ internal sealed class Companion : Form
     }
     private async Task Approve()
     {
-        if (!started || approving || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
+        if (!started || approving || trustWindow is { IsDisposed: false } || consent.Selected is not { } session || monitor?.Healthy != true || !Win32.Interactive() || Win32.HeldInput()) return;
         approving = true;
         Revoke();
         long generation = consent.BeginApproval();
@@ -235,7 +241,7 @@ internal sealed class Companion : Form
     private void UpdateStatus()
     {
         status.Text = $"{message}\nTask: {purpose}\nScreen capture and mouse/keyboard input require your approval.\n\nSession: {consent.Selected ?? "none"}\n{usage}";
-        allow.Enabled = started && !approving && !consent.MonitorLost && consent.Selected != null;
+        allow.Enabled = started && !approving && trustWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
         tray.Text = $"Visor: {phase}\n{usage}"[..Math.Min(63, $"Visor: {phase}\n{usage}".Length)];
     }
     private void SessionChanged(object? sender, SessionSwitchEventArgs args) { authority.Revoke(); Post(() => Pause("Desktop session changed; allow access again")); }
