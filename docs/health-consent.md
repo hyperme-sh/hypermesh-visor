@@ -125,3 +125,25 @@ raw run before returning any preview, and never follows directory links into
 other data. Unknown run names or cleanup failures refuse recovery. The native
 adapter must still create these runs and stop its writer; the startup caller
 now connects recovery to the per-crash dialogs and sanitized sender.
+
+## Health metric emitter foundation (#171)
+
+`health_metrics::PendingMetrics` invokes a bounded sampler only while that
+category's local decision is enabled. The decision lock spans sampling, so
+withdrawal cannot report success during collection. Samples have fixed metric
+names, numeric ranges and units; duplicate names, cross-category samples and
+oversized batches are rejected. OTLP JSON includes only the fixed service name
+and build version as resource attributes. Infra #1435 assigns tenant identity
+from the authenticated machine; the client does not supply it.
+
+A sample remains in memory for at most 30 seconds before send and is consumed on
+every send attempt. No persistent queue or background retry is added. Unlike the
+v0 crash exception, this foundation preserves the existing health-consent
+confirmation requirement before upload. Unit tests use a fake confirmation and
+in-memory transport; no ingress or consent API is invented here. The actual
+collector credentials, endpoints, accepted attributes and refusal contract belong
+to Infra #1435. OS samplers, the runtime controller, non-crash category UI and
+human-report handling remain #171 work; this module alone does not finish it.
+
+Encoding follows the [OTLP JSON protobuf rules](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding),
+including decimal strings for 64-bit metric values and timestamps.
