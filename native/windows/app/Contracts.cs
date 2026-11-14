@@ -20,6 +20,15 @@ internal static class Contracts
                 Refuses(() => Destinations.Resolve(DestinationResponse(url), selected, selected, false));
             var editorPlan = Destinations.EditorPlan(@"C:\Program Files\Microsoft VS Code\Code.exe", @"C:\workspace with spaces\$(not a command)");
             Require(!editorPlan.UseShellExecute && editorPlan.ArgumentList.SequenceEqual(new[] { "--new-window", "--", @"C:\workspace with spaces\$(not a command)" }));
+            var terminalPlan = SessionTerminal.PowerShellPlan("powershell.exe", @"C:\bundle with spaces\$(literal)\hypermesh.exe", selected, "second-instance");
+            Require(!terminalPlan.UseShellExecute && terminalPlan.Environment["HYPERMESH_SESSION_ID"] == selected);
+            Require(terminalPlan.Environment["HYPERMESH_SESSION_CLI"] == @"C:\bundle with spaces\$(literal)\hypermesh.exe");
+            Require(!terminalPlan.ArgumentList.Last().Contains("$(literal)") && !terminalPlan.ArgumentList.Last().Contains(selected));
+            var wslPlan = SessionTerminal.WslPlan("wsl.exe", "/mnt/c/bundle with spaces/hypermesh.exe", selected, "second-instance");
+            Require(wslPlan.ArgumentList.SequenceEqual(new[] { "--exec", "/mnt/c/bundle with spaces/hypermesh.exe", "session-terminal", "--session", selected, "--instance", "second-instance" }));
+            Refuses(() => SessionTerminal.WslPlan("wsl.exe", "--help", selected, "default"));
+            Refuses(() => SessionTerminal.PowerShellPlan("powershell.exe", "hypermesh.exe", "bad", "default"));
+            Refuses(() => SessionTerminal.PowerShellPlan("powershell.exe", "hypermesh.exe", selected, "bad; command"));
             InputAuthority authority = new(); Require(!authority.AllowedFor("first"));
             long inputGeneration = authority.Generation;
             authority.Grant(inputGeneration, "first"); Require(authority.AllowedFor("first"));

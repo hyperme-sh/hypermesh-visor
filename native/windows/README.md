@@ -94,6 +94,13 @@ absolute path. VS Code is opened directly from its standard per-user or system
 installation; workspace paths are passed as literal arguments. A session change
 while resolving a destination cancels the action.
 
+The tray can also open the selected session CLI in PowerShell or the default WSL
+distribution. Both run the bundled Windows CLI against the same private pipe
+instance, with one prompt per line and `/quit` to close. WSL requires Windows
+interoperability and `wslpath`; it does not start a second Linux Visor instance.
+CLI credentials remain in the user's existing CLI configuration. Opening a
+terminal does not grant desktop access or create a session.
+
 The control window shows the selected session and purpose. **Allow desktop
 access** grants that session screen capture and mouse/keyboard input. **Pause**
 and **Stop** revoke local input immediately. Minimize to the bug in the notification
