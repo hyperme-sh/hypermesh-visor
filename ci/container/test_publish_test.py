@@ -3,10 +3,12 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import io
 from unittest import mock
 import unittest
 
-from publish_test import publish, index_digest, main
+from publish_test import publish, index_digest, main, push_platform, run
 from test_image_manifest import IMAGE, REVISION
 
 REPOSITORY = 'ghcr.io/hyperme-sh/hypermesh-visor'
@@ -18,6 +20,38 @@ INDEX = {'schemaVersion': 2, 'mediaType': 'application/vnd.oci.image.index.v1+js
 
 
 class PublicationContracts(unittest.TestCase):
+    def test_blob_retry_keeps_platform_and_target(self):
+        command = mock.Mock(side_effect=[subprocess.CalledProcessError(
+            1, ['docker'], stderr='unknown blob\n'), 'ok'])
+        sleep = mock.Mock()
+        push_platform(command, 'fixture:source-amd64', 'amd64', sleep)
+        expected = mock.call('image', 'push', '--platform', 'linux/amd64', 'fixture:source-amd64')
+        self.assertEqual(command.call_args_list, [expected, expected])
+        sleep.assert_called_once_with(5)
+
+    def test_retries_are_bounded_and_other_errors_fail_immediately(self):
+        for message, count in [('unknown blob\n', 3), ('unauthorized', 1),
+                               ('denied: unknown blob scope', 1)]:
+            with self.subTest(message=message):
+                command = mock.Mock(side_effect=subprocess.CalledProcessError(
+                    1, ['docker'], stderr=message))
+                sleep = mock.Mock()
+                with self.assertRaises(subprocess.CalledProcessError):
+                    push_platform(command, 'fixture:source-arm64', 'arm64', sleep)
+                self.assertEqual(command.call_count, count)
+                self.assertEqual(sleep.call_count, count - 1)
+
+    def test_command_failure_reports_bounded_output_and_preserves_error(self):
+        error = subprocess.CalledProcessError(1, ['docker'],
+                                             output='x' * 20000, stderr='unknown blob\n')
+        with mock.patch('publish_test.subprocess.check_output', side_effect=error), \
+                mock.patch('sys.stderr', new_callable=io.StringIO) as output:
+            with self.assertRaises(subprocess.CalledProcessError) as caught:
+                run('image', 'push', 'fixture:tag')
+            self.assertIs(caught.exception, error)
+            self.assertIn('docker: unknown blob', output.getvalue())
+            self.assertLess(len(output.getvalue()), 8300)
+
     def fixture(self, root):
         images = {}
         for number, arch in enumerate(DIGESTS):
@@ -65,6 +99,9 @@ class PublicationContracts(unittest.TestCase):
             promotion = ('buildx', 'imagetools', 'create', '--tag', REPOSITORY + ':test', REPOSITORY + '@' + INDEX['digest'])
             self.assertEqual(calls[-2], promotion)
             self.assertFalse(any('run' in call for call in calls))
+            self.assertEqual([call for call in calls if call[:2] == ('image', 'push')],
+                             [('image', 'push', '--platform', f'linux/{arch}',
+                               f'{REPOSITORY}:test-{REVISION}-{arch}') for arch in DIGESTS])
 
     def test_corrupt_second_archive_causes_no_registry_or_docker_calls(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -73,6 +110,25 @@ class PublicationContracts(unittest.TestCase):
             (root/'visor-container-arm64/visor-container-arm64.tar.gz').write_bytes(b'wrong')
             with self.assertRaises(ValueError): publish(root, REPOSITORY, REVISION, self.command(images, calls))
             self.assertEqual(calls, [])
+
+    def test_exhausted_blob_failure_never_moves_test(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            images, calls = self.fixture(root), []
+            base = self.command(images, calls)
+
+            def command(*args):
+                result = base(*args)
+                if args[:2] == ('image', 'push'):
+                    raise subprocess.CalledProcessError(1, ['docker'], stderr='unknown blob\n')
+                return result
+
+            with mock.patch('publish_test.push_platform', wraps=lambda command, tag, arch:
+                            push_platform(command, tag, arch, mock.Mock())):
+                with self.assertRaises(subprocess.CalledProcessError):
+                    publish(root, REPOSITORY, REVISION, command)
+            self.assertEqual(sum(call[:2] == ('image', 'push') for call in calls), 3)
+            self.assertFalse(any(REPOSITORY + ':test' in call for call in calls))
 
     def test_partial_push_or_bad_index_never_moves_test(self):
         for options in ({'bad_index': True}, {'fail_arm': True}, {'bad_config': True}):
