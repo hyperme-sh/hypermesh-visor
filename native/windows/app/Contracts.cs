@@ -22,6 +22,12 @@ internal static class Contracts
             string description = McpTrustWindow.Describe(review);
             Require(description.Contains("KEY") && description.Contains("Authorization") && !description.Contains("hidden-secret"));
             Require(McpTrustWindow.Safe("name\n\u202e") == "name\\u000a\\u202e");
+            Require(new CompactUsage(100, 50).Widths() == (28, 14));
+            Require(new CompactUsage(0, 0).Widths() == (0, 0));
+            Require(new CompactUsage(ulong.MaxValue, 1).Widths() == (28, 1));
+            Require(CompactUsage.Read(JsonSerializer.SerializeToElement(new { last_response_usage = new { input_tokens = 100, output_tokens = 50 } })) == new CompactUsage(100, 50));
+            foreach (string missing in new[] { "null", "{}", "{\"last_response_usage\":null}", "{\"last_response_usage\":{\"input_tokens\":-1,\"output_tokens\":2}}" })
+                Require(CompactUsage.Read(JsonSerializer.Deserialize<JsonElement>(missing)) == null);
             const string selected = "00000000-0000-4000-8000-000000000001";
             JsonElement DestinationResponse(string? forum) => JsonSerializer.SerializeToElement(new { status = 200, body = new { session = selected, forum } });
             Require(Destinations.Resolve(DestinationResponse("https://forum.example.test/t/1"), selected, selected, false) == "https://forum.example.test/t/1");

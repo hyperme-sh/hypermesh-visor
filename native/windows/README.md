@@ -115,6 +115,12 @@ input buffering. It does not start a second Linux Visor instance.
 CLI credentials remain in the user's existing CLI configuration. Opening a
 terminal does not grant desktop access or create a session.
 
+The compact tray icon shows a green running, orange paused, or gray inactive
+dot. Blue input-token and green output-token bars compare the latest response's
+counts against each other; they do not represent a budget limit. Hover shows the
+counts, and controls show the full values. A session without response usage shows
+no bars, rather than retaining another session's statistics.
+
 The control window shows the selected session and purpose. **Allow desktop
 access** grants that session screen capture and mouse/keyboard input. **Pause**
 and **Stop** revoke local input immediately. Minimize to the bug in the notification
