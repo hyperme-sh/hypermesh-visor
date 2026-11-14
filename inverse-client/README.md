@@ -1,5 +1,10 @@
 # Native inverse MCP client
 
+The separate `acp` library module contains bounded ACP v1 admission and transport
+contracts for #188. It has no production backend or executable yet; see
+[ACP boundary and remaining wiring](../docs/acp.md). The inverse MCP executable
+does not switch protocols or enable an ACP listener.
+
 `hypermesh-desktop-mcp-client` exposes the existing Visor MCP tools, resources,
 queued-task controls and cancellation protocol over stdio. It builds independently
 of the desktop daemon on Linux, macOS and Windows. Existing Linux/macOS packages
