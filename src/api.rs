@@ -2277,7 +2277,7 @@ impl<'a> InjectGuard<'a> {
         let mut held = lock(gate);
         if consent.is_some_and(|value| !value.matches(&held)) { return Err(ApiError::conflict("local consent changed")); }
         held.begin_inject(session, epoch)
-            .map_err(|_| ApiError::conflict("automation paused"))?;
+            .map_err(|_| ApiError::conflict("automation paused or another session owns desktop input"))?;
         Ok(Self { gate })
     }
 }
@@ -7685,6 +7685,30 @@ while True:
         assert!(state.control_automation(Control::Pause, true, None).is_ok());
         assert!(state.control_automation(Control::Resume, true, None).is_ok());
         drop(original);
+    }
+
+    #[tokio::test]
+    async fn another_session_cannot_take_over_running_mouse_or_keyboard_input() {
+        let (mut state, desktop, first) = task_fixture();
+        Arc::get_mut(&mut state).unwrap().companion_poll_timeout = Duration::from_secs(30);
+        let (other, _, second) = task_fixture();
+        let second_session = lock(&other.sessions).remove(&second).unwrap();
+        lock(&state.sessions).insert(second, second_session);
+        let mouse = serde_json::json!({"action":"move","x":0,"y":0});
+        let (status, _) = task_request(state.clone(), "POST", &format!("/session/{first}/mouse"), mouse.clone()).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        for (verb, body) in [("mouse", mouse), ("type", serde_json::json!({"text":"blocked"}))] {
+            let (status, _) = task_request(state.clone(), "POST", &format!("/session/{second}/{verb}"), body).await;
+            assert_eq!(status, StatusCode::CONFLICT, "{verb} took over another session");
+        }
+        assert_eq!(lock(&desktop.mice).len(), 1);
+        assert!(lock(&desktop.typed).is_empty());
+        assert_eq!(lock(&state.automation).session(), Some(first));
+        assert!(state.control_automation(Control::Stop, true, None).is_ok());
+        let (status, _) = task_request(state.clone(), "POST", &format!("/session/{second}/type"), serde_json::json!({"text":"allowed"})).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(lock(&state.automation).session(), Some(second));
+        assert!(!lock(&desktop.typed).is_empty());
     }
 
     fn task_fixture() -> (Arc<AppState>, Arc<FakeDesktop>, Uuid) {
