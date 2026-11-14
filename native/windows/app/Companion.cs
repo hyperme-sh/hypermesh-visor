@@ -13,6 +13,9 @@ internal sealed class Companion : Form
     private readonly Button allow = new() { Text = "Allow desktop access", AutoSize = true, Enabled = false };
     private readonly NotifyIcon tray = new() { Icon = SystemIcons.Application, Text = "Hypermesh Visor", Visible = true };
     private readonly Icon companionIcon = LoadIcon();
+    private Icon? statusIcon;
+    private string iconKey = "";
+    private CompactUsage? responseUsage;
     private readonly PointerOverlay overlay = new();
     private McpTrustWindow? trustWindow;
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 250 };
@@ -208,6 +211,7 @@ internal sealed class Companion : Form
             if (monitor?.Healthy != true && !consent.MonitorLost) MonitorLost();
             if (!Win32.Interactive() && consent.Allowed) Pause("Desktop session inactive; allow access again after returning");
             JsonElement? response = await Engine.Control("poll");
+            responseUsage = null; usage = "No response usage yet";
             if (!Success(response)) { Pause("Engine unavailable. Restart Visor."); return; }
             JsonElement body = Body(response);
             string? session = null;
@@ -217,8 +221,8 @@ internal sealed class Companion : Form
             if (purpose.Length > 160) purpose = purpose[..160] + "…";
             phase = body.GetProperty("automation").GetProperty("phase").GetString() ?? "off";
             if (consent.Allowed && phase != "running") Pause("Automation paused; allow access to continue");
-            if (selected.ValueKind == JsonValueKind.Object && selected.TryGetProperty("last_response_usage", out JsonElement counts) && counts.ValueKind == JsonValueKind.Object)
-                usage = $"Last response: {counts.GetProperty("input_tokens").GetUInt64()} in / {counts.GetProperty("output_tokens").GetUInt64()} out";
+            responseUsage = session == null ? null : CompactUsage.Read(selected);
+            usage = responseUsage?.Summary ?? "No response usage yet";
             if (consent.Allowed && phase == "running" && Win32.GetCursorPos(out Win32.Point point)) overlay.Follow(point.X, point.Y);
             else overlay.Hide();
             if (!resuming && consent.CanResume(Now, Win32.HeldInput()) && Win32.Interactive() && desktop.LayoutMatches && monitor?.Healthy == true && consent.Idle is { } ticket)
@@ -233,7 +237,7 @@ internal sealed class Companion : Form
             }
             UpdateStatus();
         }
-        catch { Pause("Engine response unavailable. Restart Visor."); }
+        catch { responseUsage = null; usage = "No response usage yet"; Pause("Engine response unavailable. Restart Visor."); }
         finally { polling = false; resuming = false; }
     }
     private static bool Success(JsonElement? response) => response is { } value && value.TryGetProperty("status", out JsonElement status) && status.GetInt32() is >= 200 and < 300;
@@ -242,7 +246,16 @@ internal sealed class Companion : Form
     {
         status.Text = $"{message}\nTask: {purpose}\nScreen capture and mouse/keyboard input require your approval.\n\nSession: {consent.Selected ?? "none"}\n{usage}";
         allow.Enabled = started && !approving && trustWindow is not { IsDisposed: false } && !consent.MonitorLost && consent.Selected != null;
-        tray.Text = $"Visor: {phase}\n{usage}"[..Math.Min(63, $"Visor: {phase}\n{usage}".Length)];
+        string shownPhase = CompactUsage.DisplayPhase(phase, consent.Allowed);
+        tray.Text = $"Visor: {shownPhase}\n{usage}"[..Math.Min(63, $"Visor: {shownPhase}\n{usage}".Length)];
+        string nextIcon = $"{shownPhase}:{responseUsage}";
+        if (nextIcon != iconKey)
+        {
+            Icon next = CompactUsage.Draw(companionIcon, shownPhase, responseUsage);
+            Icon? previous = statusIcon;
+            tray.Icon = next; statusIcon = next; iconKey = nextIcon;
+            previous?.Dispose();
+        }
     }
     private void SessionChanged(object? sender, SessionSwitchEventArgs args) { authority.Revoke(); Post(() => Pause("Desktop session changed; allow access again")); }
     private void DisplayChanged(object? sender, EventArgs args) { authority.Revoke(); Post(() => Pause("Display layout changed; allow access again")); }
@@ -257,7 +270,7 @@ internal sealed class Companion : Form
         SystemEvents.SessionSwitch -= SessionChanged;
         SystemEvents.DisplaySettingsChanged -= DisplayChanged;
         if (started) await Engine.Control("stop");
-        overlay.Dispose(); tray.Dispose(); companionIcon.Dispose(); timer.Dispose();
+        overlay.Dispose(); tray.Dispose(); statusIcon?.Dispose(); companionIcon.Dispose(); timer.Dispose();
         Close();
     }
 }
