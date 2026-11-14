@@ -66,8 +66,17 @@ enrichment or attachments. It authenticates with the DSN via `X-Sentry-Auth`,
 rejects hosted Sentry domains, disables redirects and environment proxies, and
 uses a five-second timeout. TLS is required outside numeric loopback; a private
 IP alone does not establish WireGuard routing. The SDK version retains the
-existing Rust compiler floor. No native dialog or capture adapter is installed
-by this module. The existing Azure reporter remains separate and unchanged.
+existing Rust compiler floor. The existing Azure reporter remains separate and unchanged.
+
+`crash_dialog::review_and_send` displays the exact sanitized JSON and destination,
+then sends only on an explicit affirmative choice. Linux uses the packaged Zenity
+text viewer with an initially unchecked send checkbox. Windows and macOS use
+native dialogs whose default choice declines. Report text is data, never script
+source or a shell argument. Dismissal or dialog failure consumes the report
+without sending or retrying. Local consent is checked again after the dialog;
+withdrawal while the dialog is open refuses the send. This entry point adds no
+remote approval route. Native capture setup and startup processing still need
+to call it; adding these modules alone does not start a collector.
 
 `crash_dump::consume` reduces a completed owner-private UUID-named minidump to
 one fixed crash-code classification. It bounds file size and stream-directory
