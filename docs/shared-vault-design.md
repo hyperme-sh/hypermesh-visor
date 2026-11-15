@@ -1,13 +1,13 @@
 # Shared vault design for #37
 
 Status: implementation proposal. Cross-bot credential sharing is not enabled.
-The wallet signer choice is pending owner input. This document defines the
-credential/file boundary independently of that choice; it does not authorize
+The owner selected provider-managed wallet signing on 2026-11-15. This document
+defines the credential/file and provider-signing boundaries; it does not authorize
 wallet transactions, custody, export, a release, or a service deployment.
 
 The owning roadmap is [SociACL #155](https://github.com/FyberLabs/SociACL/issues/155)
 and its proposed [multi-slot design](https://github.com/FyberLabs/SociACL/blob/811f887a705112b4b7d9a7c856e3fed22f171e72/docs/design/secret-store-vault-design.md).
-That design is still under review in SociACL #181, not implemented by this PR.
+That design merged in SociACL #181; this PR does not implement its contracts.
 SociACL owns file/slot formats, sync, sharing, recovery, and lease contracts;
 Visor supplies the consuming use/execute/sign broker. v1 agents receive brokered
 use only. Plaintext release to agents is deferred to its slice H. The full #37
@@ -155,12 +155,60 @@ Destroying a file cannot retract bytes already copied by an authorized workload.
 
 ## Wallet boundary
 
-The wallet object identifies a signer, not a seed phrase or private key. The
-provider/OS/hardware choice is pending; there is no generic raw-key backend.
-The eventual request contract must bind account, chain, operation, destination,
-value ceiling, nonce, deadline, and an exact displayed operation. User approval
-must cover those bytes, not a mutable summary. An address-read grant never
-authorizes signing or spending. Recovery stays with the provider/user.
+The wallet object identifies a provider-managed signer, not a seed phrase or
+private key. Visor stores an opaque provider/account reference. The provider owns
+wallet key custody and recovery with the user; neither the shared vault, broker,
+agent nor container receives exportable wallet key material. OS/hardware and raw-key
+backends are outside this selected implementation. A concrete provider and SDK
+are implementation inputs, not implied by this architecture choice.
+
+The broker must bind provider identity, account, chain, operation, destination,
+asset, value ceiling, fee ceiling, nonce, deadline and the canonical operation
+bytes. For contract calls this includes calldata and any allowance/delegation
+change; generic message signing must use a separately allowed typed schema and
+audience. Uninterpretable requests deny. The trusted user confirmation surface
+shows the exact operation and its hash; the model's summary is never approval.
+An address-read grant never authorizes signing or spending. An unattended secret-use
+lease does not authorize wallet signing: each wallet operation requires explicit
+user confirmation in this first implementation.
+
+Before submitting, recheck current identity, grant, account binding and operation
+hash. Persist a bounded operation ID and payload hash before sending. After a
+timeout or restart, reconcile that same request through the provider's authenticated
+status API; never create a new signing request to resolve an ambiguous result.
+Provider responses must bind the requested account, chain and payload; verify the
+returned signature locally when the protocol supports it. Broadcasting is a
+separate explicitly approved operation. Provider sessions/tokens stay within the
+broker adapter, scoped to the selected account and never exposed to agent tools.
+Revocation stops new submissions and requests cancellation where supported; an
+already produced signature or broadcast transaction cannot be recalled.
+
+### Provider-signing threat boundaries
+
+These are required controls for the proposed adapter, not claims about current
+`Vault` or `fetch_secret_bytes` behavior. Assets are spending authority, provider
+sessions, private operation metadata, grant state and operation integrity. The
+attacker may control a bot, forum content, local workload or relay and may replay
+old signed data; it cannot be assumed to control the trusted confirmation UI or
+provider. Root access to an unlocked broker and compromise of provider custody
+remain explicit residual risks.
+
+| Boundary and abuse path | Risk and reason | Required control and contract case |
+|---|---|---|
+| Bot/forum to broker: substitute a recipient, chain, calldata or allowance after approval | High: routine untrusted inputs can redirect funds | Bind canonical bytes and policy to the confirmation hash; mutation of any field denies before submission. |
+| Workload to local broker: reuse another bot/session's provider account | High: shared-host callers must not inherit spending authority | Authenticate the local peer plus enrolled identity/session; check owner/account mapping and current grant on every request; cross-user/session cases deny. |
+| Relay/cache to grant verifier: replay an expired or revoked permission | High: stale state can authorize irreversible spending | Independent current authority and persisted revision floor; missing history, clock rollback, offline access and same-revision cancellation deny. |
+| Broker to provider: steal a session token, change an endpoint or replay an uncertain submission | High: tokens and duplicate signing cross the custody boundary | Fixed authenticated provider endpoint, bounded scoped sessions, no credential-forwarding redirects, stable operation ID and authenticated reconciliation; timeout/restart never silently resubmits. |
+| Provider response to broker/UI: swap account, payload or success status | High impact; requires a compromised or misbound provider path | Match request/account/chain and verify signatures where supported; never treat a webhook alone as authorization or finality. Unknown results remain unresolved. |
+| Broker outputs to logs/models: expose tokens or private transaction contents | High: multiple output sinks are routinely captured | Fixed outcome categories and opaque operation IDs; test that tokens, private metadata and signing payloads never enter transcripts, artifacts or generic MCP results. |
+| Provider outage or throttling: repeated requests exhaust quotas or strand work | Medium: availability loss is plausible but must not weaken policy | Bounded queues/timeouts, per-principal limits and explicit unresolved state; no fallback signer or relaxed authorization. |
+
+Provider selection must demonstrate account-scoped authorization, exact-payload
+confirmation, authenticated status reconciliation and the required signature
+checks. A missing capability blocks that adapter, not permission to weaken this
+contract. Scheduled cases cover one approved operation, every substitution above,
+revocation during a pending request and recovery after an ambiguous response.
+No real transaction is sent by this design PR or by manual validation.
 
 ## User controls and output handling
 
@@ -187,14 +235,15 @@ revokes that device, advances the appropriate key state, and reconciles pending
 operations. Root/admin control of a live endpoint remains outside this encrypted
 storage boundary.
 
-1. Finalize the threat model and signer choice; publish canonical operation-policy
+1. Use the provider-managed boundary above; publish canonical operation-policy
    vectors in SociACL. No sharing is enabled by this design document.
 2. Implement durable encrypted objects/history, atomic revisions, quotas, and
    grant/revoke UI in s3r.ch/ACL. Preserve complete independent authority.
 3. Add the authenticated Visor broker, isolated use adapters, owner-defined
    unattended leases, cancellation, and restart recovery. Agent plaintext
    materialization remains in deferred slice H.
-4. Add signer-specific handling after the owner-selected boundary is known.
+4. Select a provider that satisfies the signing contract and add its adapter,
+   confirmation UI, reconciliation and negative contract cases before activation.
 5. Run unit/contract tests in PR CI and the authorized central nightly batch.
 
 Required contracts cover one user/two allowed bots plus a denied bot; each
