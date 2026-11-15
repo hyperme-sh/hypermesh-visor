@@ -154,16 +154,33 @@ must connect that policy to the enrolled host's agreement context while sharing
 the typed metric implementation. A Visor installation must not infer host
 authorization from the presence of the shared code or a collector credential.
 
-`health_os::collect` supplies a Linux Visor sampler for aggregate memory use and
-whole-hour uptime. It opens only `/proc/meminfo` and `/proc/uptime`, after the
-local OS-health decision is checked. Reads have fixed byte limits; projection
+`health_os::collect` supplies Linux Visor samplers for aggregate CPU and memory
+use, root-filesystem use and whole-hour uptime. All source access begins after
+the local OS-health decision is checked. Reads have fixed byte limits; projection
 retains only numeric values. Memory use is `(MemTotal - MemAvailable) / MemTotal`,
 rounded down to an integer percent. Missing or invalid values are omitted;
 no usable values reports unavailable, not zero. Non-Linux sampling currently
-reports unavailable. CPU, disks, platform-specific sources and periodic runtime
+reports unavailable. Additional platform sources and periodic runtime
 scheduling remain follow-ups. These are system aggregates, not container quota
 measurements. Field meanings follow the
 [Linux proc documentation](https://docs.kernel.org/filesystems/proc.html).
 
 Encoding follows the [OTLP JSON protobuf rules](https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding),
 including decimal strings for 64-bit metric values and timestamps.
+
+Linux CPU utilization uses two aggregate `/proc/stat` snapshots separated by a
+100 ms delay under the same local consent lock. Only its first line is read,
+with a 1 KiB limit. The percentage uses changes in the first eight counters;
+idle and iowait are idle time, while guest counters are not counted again.
+Counter decreases or a window with no ticks omit the metric. No baseline is
+retained across calls or consent changes, and no per-process data is read.
+
+Root-filesystem utilization uses `statvfs("/")` block counts: allocated blocks
+as a percentage of total blocks, including reserved free blocks as free. It
+reports only a number; mount paths, filesystem IDs, device names and serials
+never enter the payload. Zero capacity or inconsistent counts omit the metric.
+This is filesystem space use, not SMART health or a survey of all attached disks.
+See the [statvfs field definitions](https://pubs.opengroup.org/onlinepubs/9799919799/functions/statvfs.html).
+Both new samplers are part of the existing consent-gated `health_os::collect`
+entry point. This adds no collector transport or periodic task and does not
+change the separate host agreement policy required by #217.
