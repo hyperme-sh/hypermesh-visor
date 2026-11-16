@@ -1,8 +1,9 @@
 # Visor mobile shell
 
 React/TypeScript UI in a Capacitor application. This directory is in development:
-the UI build and controller unit tests work; native `Visor` plugin registration,
-service provisioning and packaged application qualification are not complete.
+the UI build and controller unit tests work; the Android `Visor` plugin now wires enrollment through the native core, while
+Apple plugin wiring, service provisioning and packaged application qualification
+are not complete.
 Do not interpret a successful web build as a working enrolled phone.
 
 `npm ci`, `npm test`, and `npm run build` qualify the UI. `npm run sync` copies the
@@ -27,3 +28,21 @@ interfaces; machine enrollment must not substitute for the person's SEA identity
 account or workspace authorization. No shared package API is final until the owner
 confirms its existing contracts. Application service calls use Conductor; this
 shell must not introduce a direct Gateway client.
+
+## Native enrollment configuration
+
+Capacitor reads the five public build-time inputs `VISOR_MOBILE_ISSUER`,
+`VISOR_MOBILE_AUTH_ORIGIN`, `VISOR_MOBILE_PLANE_ORIGIN`,
+`VISOR_MOBILE_WORKSPACE_ID` and `VISOR_MOBILE_WORKSPACE_NAME`. Supply all five or
+none. Unconfigured builds refuse enrollment; they never invent service origins.
+These inputs must not contain credentials. The configured workspace is a candidate,
+not a membership grant: native owner-session switching and Plane enrollment verify
+current membership. Do not query the administrator-only tenant listing endpoint.
+
+Android uses one process-owned native identity/store pair across activity recreation.
+Device authorization opens the validated issuer URL in the system browser; only the
+short user code returns to React. Cancellation bypasses the polling worker.
+Expired-owner revocation stays locally denied, and signing in again can retry remote
+revocation before generating a replacement identity. `VISOR_MOBILE_AAR` selects the
+locally built, verified library artifact for SDK compilation, not a running service.
+Phone mesh provisioning is tracked in Infra #1747; connect remains unavailable.
