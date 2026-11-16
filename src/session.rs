@@ -112,6 +112,13 @@ impl Session {
         self.id
     }
 
+    pub fn set_instructions(&mut self, instructions: String) -> Result<(), String> {
+        if !crate::companion_sets::valid_instructions(&instructions) {
+            return Err("Invalid companion instructions".into());
+        }
+        self.harness.agent.instructions = instructions;
+        Ok(())
+    }
     pub fn harness(&self) -> &Harness {
         &self.harness
     }
