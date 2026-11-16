@@ -891,8 +891,9 @@ async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Ext
 async fn managed_admission(State(state): State<Arc<AppState>>, request: Request<Body>, next: Next) -> Response {
     if state.managed_guest.is_some() {
         let path = request.uri().path();
-        let fixed = format!("/session/{}", state.managed_guest.as_ref().unwrap().session());
-        if path == "/session" || (path == fixed && request.method() == axum::http::Method::DELETE)
+        let closes_session = request.method() == axum::http::Method::DELETE
+            && path.strip_prefix("/session/").is_some_and(|id| !id.contains('/'));
+        if path == "/session" || closes_session
             || path == "/companion/sessions" && request.method() != axum::http::Method::GET {
             return (StatusCode::FORBIDDEN, "Managed desktop has one fixed session").into_response();
         }
@@ -7943,8 +7944,10 @@ while True:
         assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", missing_epoch).await.0, StatusCode::CONFLICT);
         let approval = serde_json::json!({"action":"resume","expected_session":id,"expected_epoch":status["epoch"]});
         assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", approval.clone()).await.0, StatusCode::NO_CONTENT);
-        assert_eq!(trust_test_request(app.clone(), "DELETE", &format!("/session/{id}"), serde_json::json!({})).await.0, StatusCode::FORBIDDEN);
-        assert!(state.has_session(id));
+        for encoded in [id.to_string(), id.to_string().to_uppercase(), id.to_string().replace('-', "%2d")] {
+            assert_eq!(trust_test_request(app.clone(), "DELETE", &format!("/session/{encoded}"), serde_json::json!({})).await.0, StatusCode::FORBIDDEN);
+            assert!(state.has_session(id));
+        }
         lock(&state.automation).pause();
         assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", approval).await.0, StatusCode::CONFLICT);
         let prior_prompt = state.prompt_cancellation(Some(id));
