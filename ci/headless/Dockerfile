@@ -28,6 +28,7 @@ COPY tests tests
 COPY ci ci
 COPY packaging packaging
 COPY docs/headless.md docs/headless.md
+COPY docs/host-health.md docs/host-health.md
 COPY --from=conductor /conductor /bundle/conductor
 COPY --from=conductor /source/LICENSE /bundle/conductor-LICENSE
 COPY --from=nfpm /usr/bin/nfpm /usr/local/bin/nfpm

@@ -91,3 +91,6 @@ mod session_key {
         assert!(!shown.contains("refresh-1"));
     }
 }
+
+#[cfg(target_os = "linux")]
+pub mod host_health;

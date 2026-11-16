@@ -130,3 +130,6 @@ AIuditor capability-review client (Conductor PR55 and PR56). Its public source
 archive is verified by SHA256 in both package builders, and `build.txt` records
 the source revision. This makes the command available; it does not enable host
 capabilities or configure an authority, listener, machine signer or controller.
+
+The package also contains the separate [host health worker](host-health.md).
+It requires the enrolled host agreement check; installing Visor does not enable it.

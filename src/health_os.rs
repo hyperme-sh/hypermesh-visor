@@ -27,41 +27,50 @@ fn unavailable() -> io::Error {
 pub fn collect(store: &Store) -> io::Result<Option<PendingMetrics>> {
     collect_with(store, read_source, read_cpu, read_disk)
 }
+/// The caller must establish its policy before entering the shared sampler.
+pub(crate) fn sample() -> io::Result<Vec<Metric>> {
+    sample_with(read_source, read_cpu, read_disk)
+}
+fn sample_with(
+    read: impl Fn(Source) -> io::Result<Vec<u8>>,
+    cpu: impl FnOnce() -> io::Result<u8>,
+    disk: impl FnOnce() -> io::Result<u8>,
+) -> io::Result<Vec<Metric>> {
+    let mut metrics = Vec::new();
+    for source in [Source::Memory, Source::Uptime] {
+        if let Ok(bytes) = read(source) {
+            if bytes.len() <= source.limit() {
+                if let Ok(text) = std::str::from_utf8(&bytes) {
+                    let metric = match source {
+                        Source::Memory => memory(text).map(Metric::MemoryPercent),
+                        Source::Uptime => uptime(text).map(Metric::UptimeHours),
+                    };
+                    if let Some(metric) = metric {
+                        metrics.push(metric);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(percent) = cpu() {
+        metrics.push(Metric::CpuPercent(percent));
+    }
+    if let Ok(percent) = disk() {
+        metrics.push(Metric::DiskPercent(percent));
+    }
+    if metrics.is_empty() {
+        Err(unavailable())
+    } else {
+        Ok(metrics)
+    }
+}
 fn collect_with(
     store: &Store,
     read: impl Fn(Source) -> io::Result<Vec<u8>>,
     cpu: impl FnOnce() -> io::Result<u8>,
     disk: impl FnOnce() -> io::Result<u8>,
 ) -> io::Result<Option<PendingMetrics>> {
-    PendingMetrics::collect(store, Category::OsHealth, || {
-        let mut metrics = Vec::new();
-        for source in [Source::Memory, Source::Uptime] {
-            if let Ok(bytes) = read(source) {
-                if bytes.len() <= source.limit() {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        let metric = match source {
-                            Source::Memory => memory(text).map(Metric::MemoryPercent),
-                            Source::Uptime => uptime(text).map(Metric::UptimeHours),
-                        };
-                        if let Some(metric) = metric {
-                            metrics.push(metric);
-                        }
-                    }
-                }
-            }
-        }
-        if let Ok(percent) = cpu() {
-            metrics.push(Metric::CpuPercent(percent));
-        }
-        if let Ok(percent) = disk() {
-            metrics.push(Metric::DiskPercent(percent));
-        }
-        if metrics.is_empty() {
-            Err(unavailable())
-        } else {
-            Ok(metrics)
-        }
-    })
+    PendingMetrics::collect(store, Category::OsHealth, || sample_with(read, cpu, disk))
 }
 #[cfg(target_os = "linux")]
 fn read_source(source: Source) -> io::Result<Vec<u8>> {

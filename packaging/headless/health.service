@@ -1,0 +1,18 @@
+[Unit]
+Description=Hypermesh host health agent
+After=network-online.target hypermesh-agent.service
+ConditionPathExists=/etc/hypermesh/health.json
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/hypermesh-host-health /etc/hypermesh/health.json
+Restart=on-failure
+RestartSec=60
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
