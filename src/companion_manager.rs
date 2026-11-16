@@ -413,6 +413,18 @@ impl<B: Backend> Manager<B> {
         self.slot(scope)?.snapshot.phase = Phase::Running;
         Ok(permit)
     }
+    pub fn pause(&mut self, scope: Scope) -> Result<(), Error> {
+        let slot = self.slot(scope)?;
+        slot.revoke();
+        slot.snapshot.phase = Phase::Paused;
+        let paused = self.backend.pause(scope).is_ok();
+        let cancelled = self.backend.cancel(scope).is_ok();
+        if !paused || !cancelled {
+            self.slot(scope)?.snapshot.phase = Phase::Quarantined;
+            return Err(Error::Backend);
+        }
+        Ok(())
+    }
     fn pause_all(&mut self) -> Result<(), Error> {
         let scopes: Vec<_> = self
             .slots

@@ -950,6 +950,7 @@ name = "hypermesh-companion"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "hypermesh-local-storage",
  "hypermesh-session",
  "libc",
  "png",

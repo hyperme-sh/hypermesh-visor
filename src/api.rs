@@ -874,7 +874,7 @@ async fn managed_status(State(state): State<Arc<AppState>>, Extension(link): Ext
     state.managed_active();
     let lease = guest.read().map_err(|_| ApiError::conflict("Host control unavailable"))?;
     let epoch = lock(&state.automation).epoch();
-    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch})))
+    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch,"resume_seq":lock(&state.automation).resume_seq()})))
 }
 async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {
     if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }

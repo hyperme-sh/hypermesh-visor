@@ -13,6 +13,22 @@ fn scoped(entry: &Value, action: &str) -> Result<Value, String> {
     }
     Ok(value)
 }
+fn owner_request(mut body: Value) -> Result<Value, String> {
+    let tokens = hypermesh_session::refresh_session(
+        &hypermesh_session::KeyringStore,
+        &hypermesh_session::Endpoints::panopticon(),
+    )
+    .map_err(|_| "Sign in again before managing an enrolled companion")?;
+    body["owner_token"] = tokens.access_token.into();
+    crate::visor::manager_request(body)
+}
+fn send(entry: &Value, body: Value) -> Result<Value, String> {
+    if entry["enrolled"] == true {
+        owner_request(body)
+    } else {
+        crate::visor::manager_request(body)
+    }
+}
 pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
     loop {
         let snapshot = crate::visor::manager_request(json!({"action":"list"}))?;
@@ -62,7 +78,7 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
             let entry = &retained[index - companions.len() - 1];
             let Some(action) = choose(&mut dialog, "Stopped companion", "The saved home stays isolated. Restoring configuration creates an empty, paused desktop with a fresh identity; it does not recover files or credentials.", &["Restore configuration to a new desktop".into(), "Delete retained home".into()])? else { continue; };
             let (title, message, operation) = if action == 0 {
-                ("Restore companion configuration", "Create a fresh paused desktop using the saved resource limits? No files, secrets, assignments or grants are copied.", "restore")
+                ("Restore companion configuration", "Create a fresh paused desktop using the saved resource limits? No files or secrets are copied. Enrolled bots require a fresh owner-authorized assignment.", "restore")
             } else {
                 (
                     "Delete retained home",
@@ -71,7 +87,7 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
                 )
             };
             if dialog(&args("question", title, message), None)?.is_some() {
-                crate::visor::manager_request(scoped(entry, operation)?)?;
+                send(entry, scoped(entry, operation)?)?;
             }
             continue;
         }
@@ -90,6 +106,7 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
                 "Stop and retain private home".into(),
                 "Stop and delete private home".into(),
                 "Clone configuration to a new desktop".into(),
+                "Enroll this desktop for assigned bot tasks".into(),
             ],
         )?
         else {
@@ -107,16 +124,43 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
             // click. Any later host activity still invalidates it server-side.
             confirmation.wait()?;
             let offer = crate::visor::manager_request(scoped(entry, "offer")?)?;
-            crate::visor::manager_request(json!({"action":"resume","offer":offer["offer"]}))?;
+            send(entry, json!({"action":"resume","offer":offer["offer"]}))?;
         } else if action == 4 {
-            if dialog(&args("question", "Clone companion configuration", "Create an empty, paused desktop with the same resource limits and a fresh identity? No files, credentials, assignments or grants are copied."), None)?.is_some() {
-                crate::visor::manager_request(scoped(entry, "clone")?)?;
+            if dialog(&args("question", "Clone companion configuration", "Create an empty, paused desktop with the same resource limits and a fresh identity? No files or credentials are copied. Enrolled bots require a fresh owner-authorized assignment."), None)?.is_some() {
+                send(entry, scoped(entry, "clone")?)?;
             }
+        } else if action == 5 {
+            if entry["enrolled"] == true {
+                return Err("This companion is already enrolled".into());
+            }
+            if dialog(&args("question", "Enroll companion", "Create a fresh paused bot for this desktop? Credentials stay on this host and the guest keeps network isolation. Resuming still needs local approval."), None)?.is_none() { continue; }
+            use std::io::Read;
+            let path = crate::credentials::config_path(&crate::credentials::config_dir());
+            let file = hypermesh_local_storage::open(
+                &path,
+                hypermesh_local_storage::Open::Read { private: false },
+            )
+            .map_err(|_| "Sign in to select a tenant")?;
+            let mut text = String::new();
+            file.take(16385)
+                .read_to_string(&mut text)
+                .map_err(|_| "Invalid profile")?;
+            if text.len() > 16384 {
+                return Err("Invalid profile".into());
+            }
+            let profile: toml::Value = toml::from_str(&text).map_err(|_| "Invalid profile")?;
+            let mut request = scoped(entry, "enroll")?;
+            request["tenant"] = profile["tenant_id"]
+                .as_str()
+                .ok_or("Missing tenant")?
+                .into();
+            request["origin"] = crate::pages::API_BASE.into();
+            owner_request(request)?;
         } else {
             if dialog(&args("question", "Stop companion", if action == 3 { "Stop this desktop and permanently delete its private home?" } else { "Stop this desktop and retain its private home? Retained homes are never automatically attached to another identity." }), None)?.is_none() { continue; }
             let mut request = scoped(entry, "stop")?;
             request["retain_home"] = (action == 2).into();
-            crate::visor::manager_request(request)?;
+            send(entry, request)?;
         }
     }
 }

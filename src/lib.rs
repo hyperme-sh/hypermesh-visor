@@ -21,6 +21,7 @@ pub mod companion_recovery;
 pub mod companion_docker;
 pub mod companion_lease;
 pub mod companion_runtime;
+pub mod companion_broker;
 mod conductor_socket;
 mod desktop;
 mod harness;
