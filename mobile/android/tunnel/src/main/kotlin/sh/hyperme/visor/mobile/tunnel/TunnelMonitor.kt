@@ -9,8 +9,7 @@ internal class TunnelMonitor {
     private var startedMono = 0L
     private var previousWall = 0L
     private var previousMono = 0L
-    private var handshake = 0L
-    private var observedMono = 0L
+    private var clockAnchor = 0L
     private var reached = false
     private var clockFailed = false
 
@@ -21,8 +20,7 @@ internal class TunnelMonitor {
         startedMono = mono
         previousWall = wall
         previousMono = mono
-        handshake = 0
-        observedMono = mono
+        clockAnchor = wall
         reached = false
         clockFailed = wall <= 0 || mono < 0
     }
@@ -39,14 +37,12 @@ internal class TunnelMonitor {
         if (!up) {
             // A previous native tunnel must not supply authority after a new start.
             startedWall = wall
-            handshake = 0
             return TunnelStatus.UNREACHABLE
         }
-        if (latestHandshake > handshake && latestHandshake >= startedWall && latestHandshake <= wall) {
-            handshake = latestHandshake
-            observedMono = mono
-        }
-        if (handshake >= startedWall && handshake > 0 && wall - handshake <= 180_000 && mono - observedMono <= 180_000) {
+        if (latestHandshake > wall) return TunnelStatus.UNREACHABLE
+        // A frozen or slowed wall clock cannot renew a handshake on later polls.
+        val effectiveWall = maxOf(wall, clockAnchor + (mono - startedMono))
+        if (latestHandshake >= startedWall && latestHandshake > 0 && effectiveWall - latestHandshake <= 180_000) {
             reached = true
             return TunnelStatus.CONNECTED
         }

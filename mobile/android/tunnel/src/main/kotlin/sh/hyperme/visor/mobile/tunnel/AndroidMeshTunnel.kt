@@ -59,13 +59,11 @@ class AndroidMeshTunnel(context: Context) {
 
     /** CONNECTED means a fresh handshake with the configured peer, not merely an installed VPN. */
     @Synchronized fun status(): TunnelStatus {
-        val wall = System.currentTimeMillis()
-        val mono = SystemClock.elapsedRealtime()
         return try {
             val selected = peer
             val up = selected != null && backend.getState(tunnel) == Tunnel.State.UP
             val handshake = if (up) backend.getStatistics(tunnel).peer(selected!!)?.latestHandshakeEpochMillis() ?: 0L else 0L
-            monitor.sample(up, handshake, wall, mono)
-        } catch (_: Exception) { monitor.sample(false, 0, wall, mono) }
+            monitor.sample(up, handshake, System.currentTimeMillis(), SystemClock.elapsedRealtime())
+        } catch (_: Exception) { monitor.sample(false, 0, System.currentTimeMillis(), SystemClock.elapsedRealtime()) }
     }
 }
