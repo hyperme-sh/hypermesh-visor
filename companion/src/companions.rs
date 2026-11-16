@@ -150,8 +150,9 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
             }
             let profile: toml::Value = toml::from_str(&text).map_err(|_| "Invalid profile")?;
             let mut request = scoped(entry, "enroll")?;
-            request["tenant"] = profile["tenant_id"]
-                .as_str()
+            request["tenant"] = profile
+                .get("tenant_id")
+                .and_then(toml::Value::as_str)
                 .ok_or("Missing tenant")?
                 .into();
             request["origin"] = crate::pages::API_BASE.into();
