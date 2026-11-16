@@ -113,11 +113,19 @@ pub struct Permit {
 }
 impl Permit {
     pub fn check(&self, target: Scope) -> Result<(), Error> {
+        self.check_with_lease(target, || fresh(&self.monitor))
+    }
+    // The lease read can wait behind an observer update. Its completion must
+    // never revive a route that was revoked while that read was pending.
+    fn check_with_lease(&self, target: Scope, lease: impl FnOnce() -> bool) -> Result<(), Error> {
         if self.scope != target || !self.enabled.load(Ordering::Acquire) {
             return Err(Error::Stale);
         }
-        if !fresh(&self.monitor) {
+        if !lease() {
             return Err(Error::MonitorUnavailable);
+        }
+        if !self.enabled.load(Ordering::Acquire) {
+            return Err(Error::Stale);
         }
         Ok(())
     }
@@ -209,14 +217,16 @@ impl<B: Backend> Manager<B> {
     /// input and remote task traffic must never call it. A restored observer
     /// cannot resume a paused companion or revive an old permit.
     pub fn observer_poll(&mut self, available: bool) -> Result<(), Error> {
+        self.observer_poll_at(available, Instant::now())
+    }
+    fn observer_poll_at(&mut self, available: bool, sampled: Instant) -> Result<(), Error> {
         // Check age and refresh atomically with permit readers. If the lease
         // expired, leave it unavailable until every old route is revoked.
         let must_pause = {
             let mut last = self.monitor.lock().map_err(|_| Error::MonitorUnavailable)?;
-            let now = Instant::now();
-            let timely = last.is_some_and(|last| now.duration_since(last) < MONITOR_TIMEOUT);
+            let timely = last.is_some_and(|last| sampled.duration_since(last) < MONITOR_TIMEOUT);
             if available && timely {
-                *last = Some(now);
+                *last = Some(sampled);
                 false
             } else {
                 *last = None;
@@ -226,8 +236,12 @@ impl<B: Backend> Manager<B> {
         if must_pause {
             self.pause_all()?;
             if available {
-                *self.monitor.lock().map_err(|_| Error::MonitorUnavailable)? = Some(Instant::now());
+                *self.monitor.lock().map_err(|_| Error::MonitorUnavailable)? = Some(sampled);
             }
+        }
+        // Backend callbacks cannot extend the age of an observer sample.
+        if available && !fresh(&self.monitor) {
+            return Err(Error::MonitorUnavailable);
         }
         Ok(())
     }
@@ -725,6 +739,47 @@ mod tests {
         assert!(matches!(manager.resume(duplicate), Err(Error::NotPaused)));
         manager.physical_input().unwrap();
         assert_eq!(permit.check(native), Err(Error::Stale));
+    }
+    #[test]
+    fn delayed_lease_check_cannot_authorize_a_revoked_route_after_renewal() {
+        let (mut manager, _, native) = fixture();
+        let old = resume(&mut manager, native).unwrap();
+        expire(&manager);
+        // Deterministically interleave observer renewal between the worker's
+        // first revocation read and its shared lease read.
+        assert_eq!(
+            old.check_with_lease(native, || {
+                manager.observer_poll(true).unwrap();
+                fresh(&old.monitor)
+            }),
+            Err(Error::Stale)
+        );
+    }
+    #[test]
+    fn observer_callbacks_cannot_restamp_an_expired_sample() {
+        let (mut manager, calls, native) = fixture();
+        let old = resume(&mut manager, native).unwrap();
+        // Model a poll delayed by callbacks without a wall-clock sleep.
+        let sampled = Instant::now() - MONITOR_TIMEOUT * 2;
+        *manager.monitor.lock().unwrap() = Some(sampled - MONITOR_TIMEOUT);
+        assert_eq!(
+            manager.observer_poll_at(true, sampled),
+            Err(Error::MonitorUnavailable)
+        );
+        assert_eq!(*manager.monitor.lock().unwrap(), Some(sampled));
+        assert_eq!(old.check(native), Err(Error::Stale));
+        assert!(calls
+            .lock()
+            .unwrap()
+            .calls
+            .iter()
+            .any(|(op, _)| *op == Op::Cancel));
+        assert!(matches!(
+            resume(&mut manager, native),
+            Err(Error::MonitorUnavailable)
+        ));
+        manager.observer_poll(true).unwrap();
+        assert!(resume(&mut manager, native).unwrap().check(native).is_ok());
     }
     #[test]
     fn dropping_manager_revokes_all_cloned_routes() {
