@@ -19,7 +19,9 @@ active request ID, reaches the backend, and suppresses a late response body.
 EOF, invalid or oversized framing, queue overflow, timeout and output failure
 close the connection and signal cancellation. Input frames are limited to
 512 KiB, the output queue to 16 messages, text/output to 64 KiB and backend work
-and stalled output to 30 seconds. Transport and backend futures own cancellable
+and stalled output to 30 seconds in fixture mode. Assigned machine operations use
+the five-minute owner bound with brief admission overhead; stalled output remains
+bounded to 30 seconds. Transport and backend futures own cancellable
 I/O; dropping them releases their handles without detached threads. Embedding callers must supply cancellable I/O handles. The standalone
 executable owns its portable stdio workers and exits the whole process after
 the transport drops active work, rather than waiting for blocked stdio workers.

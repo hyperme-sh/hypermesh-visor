@@ -133,7 +133,12 @@ fn run() -> i32 {
     };
     let runtime = std::mem::ManuallyDrop::new(runtime);
     let code = runtime.block_on(async {
-        match transport::serve(tokio::io::stdin(), tokio::io::stdout(), backend).await {
+        let result = if args[0] == "--visor-socket" {
+            transport::serve_machine(tokio::io::stdin(), tokio::io::stdout(), backend).await
+        } else {
+            transport::serve(tokio::io::stdin(), tokio::io::stdout(), backend).await
+        };
+        match result {
             Ok(()) => 0,
             Err(_) => {
                 eprintln!("ACP connection closed");

@@ -37,7 +37,7 @@ impl Machine {
         Err(())
     }
     async fn request(&self, path: &str, body: Option<Value>) -> Result<Value, ()> {
-        tokio::time::timeout(Duration::from_secs(29), async {
+        tokio::time::timeout(Duration::from_secs(350), async {
             let stream = hypermesh_local_transport::connect(&self.endpoint)
                 .await
                 .map_err(|_| ())?;
@@ -70,7 +70,7 @@ impl Machine {
             if response.status() != StatusCode::OK {
                 return Err(());
             }
-            let bytes = Limited::new(response.into_body(), 262144)
+            let bytes = Limited::new(response.into_body(), 524288)
                 .collect()
                 .await
                 .map_err(|_| ())?

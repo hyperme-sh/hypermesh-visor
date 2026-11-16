@@ -84,12 +84,22 @@ pub async fn serve(
 ) -> io::Result<()> {
     serve_until(input, output, backend, Duration::from_secs(30)).await
 }
+/// Machine operations have a five-minute owner bound plus admission overhead.
+/// Output backpressure remains capped at thirty seconds.
+pub async fn serve_machine(
+    input: impl AsyncRead + Unpin,
+    output: impl AsyncWrite + Unpin,
+    backend: Arc<dyn Backend>,
+) -> io::Result<()> {
+    serve_until(input, output, backend, Duration::from_secs(360)).await
+}
 async fn serve_until(
     input: impl AsyncRead + Unpin,
     mut output: impl AsyncWrite + Unpin,
     backend: Arc<dyn Backend>,
     timeout: Duration,
 ) -> io::Result<()> {
+    let output_timeout = timeout.min(Duration::from_secs(30));
     let mut input = BufReader::new(input);
     let mut protocol = Protocol::default();
     let mut active: Option<Active> = None;
@@ -134,12 +144,12 @@ async fn serve_until(
                             Err(()) => protocol.open_failed(id),
                         };
                         if let Action::Reply(v) = action {
-                            enqueue(&mut queue, v, timeout)?;
+                            enqueue(&mut queue, v, output_timeout)?;
                         }
                     }
                     Completion::Prompt(result) => {
                         for v in protocol.finish(result.as_deref().map_err(|_| ()), false) {
-                            enqueue(&mut queue, v, timeout)?;
+                            enqueue(&mut queue, v, output_timeout)?;
                         }
                     }
                 }
@@ -164,18 +174,18 @@ async fn serve_until(
                 frame.clear();
                 match action {
                     Action::Ignore => {}
-                    Action::Reply(v) => enqueue(&mut queue, v, timeout)?,
+                    Action::Reply(v) => enqueue(&mut queue, v, output_timeout)?,
                     Action::Cancel => {
                         if let Some(job) = active.take() {
                             let id = job.open_id.clone();
                             drop(job);
                             if let Some(id) = id {
                                 if let Action::Reply(v) = protocol.open_failed(id) {
-                                    enqueue(&mut queue, v, timeout)?;
+                                    enqueue(&mut queue, v, output_timeout)?;
                                 }
                             } else {
                                 for v in protocol.finish(Err(()), true) {
-                                    enqueue(&mut queue, v, timeout)?;
+                                    enqueue(&mut queue, v, output_timeout)?;
                                 }
                             }
                         }

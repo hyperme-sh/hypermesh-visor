@@ -51,7 +51,7 @@ impl Bridge {
     #[cfg(unix)]
     async fn request(&self, method: &str, path: &str, body: Vec<u8>) -> Result<Value, ()> {
         let _permit = self.slots.try_acquire().map_err(|_| ())?;
-        tokio::time::timeout(Duration::from_secs(40), async {
+        tokio::time::timeout(Duration::from_secs(if path == "/machine-prompt" { 320 } else { 40 }), async {
             let stream = UnixStream::connect(&self.socket).await.map_err(|_| ())?;
             if crate::local_peer::uid(&stream).map_err(|_| ())? != self.uid {
                 return Err(());
@@ -98,7 +98,7 @@ impl Bridge {
         self.request("GET", "/machine-context", vec![]).await
     }
     pub async fn machine_prompt(&self, raw: Vec<u8>) -> Result<Value, ()> {
-        if raw.len() > 96*1024 { return Err(()); }
+        if raw.len() > 512*1024 { return Err(()); }
         self.request("POST", "/machine-prompt", raw).await
     }
     pub async fn permission_context(&self) -> Result<Value, ()> {
