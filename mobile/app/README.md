@@ -2,7 +2,7 @@
 
 React/TypeScript UI in a Capacitor application. This directory is in development:
 the UI build and controller unit tests work; the Android and Apple `Visor` plugins wire enrollment through the native core.
-Native SDK qualification is in progress; mesh provisioning, service-call wiring
+Native SDK qualification runs in PR CI; mesh provisioning, service-call wiring
 and native nightly application acceptance are not complete.
 Do not interpret a successful web build as a working enrolled phone.
 
