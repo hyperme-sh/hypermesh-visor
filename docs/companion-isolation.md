@@ -192,3 +192,19 @@ Unit contracts use an in-memory Docker command runner and temporary local
 journals, not a running Docker engine. Native display scenarios are owned by
 the central scheduled batch. Clone, resurrect, preprompt sets and squad forum
 embedding retain their separate issue ownership.
+
+### Configuration-only recreation
+
+The Linux manager can clone an active container's resource limits or restore
+those limits from a stopped companion's retained record. Both operations create
+a new companion, session, generation and empty home, initially paused. The source
+home is never mounted or read, and its record remains available for explicit
+deletion. The installed channel image is used, rather than reviving an old image.
+The normal count, resource and observer checks apply before starting the desktop.
+
+These controls deliberately restore only the numeric configuration supported by
+the local manager. They do not restore remote bot enrollment, assignment, squad
+membership, grants, prompts, browser profiles or tokens. Remote configuration
+restoration with current authorization remains part of #221; saved preprompt
+sets remain #222. Starting automation still requires a separate current resume
+confirmation. Deleting a retained home does not modify a squad or another home.
