@@ -210,10 +210,10 @@ jobs:
       - name: Compile optional Apple WireGuard adapter and run unit contracts
         if: matrix.os == 'macos-latest'
         run: |
-          swift build -Xcc -include -Xcc sys/types.h --package-path mobile/apple/tunnel --target VisorMeshTunnel
-          swift build -Xcc -include -Xcc sys/types.h --package-path mobile/apple/tunnel --scratch-path "$RUNNER_TEMP/apple-tunnel-ios" \
+          swift build --package-path mobile/apple/tunnel --target VisorMeshTunnel
+          swift build --package-path mobile/apple/tunnel --scratch-path "$RUNNER_TEMP/apple-tunnel-ios" \
             --triple arm64-apple-ios15.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --target VisorMeshTunnel
-          swift build -Xcc -include -Xcc sys/types.h --package-path mobile/apple/tunnel --scratch-path "$RUNNER_TEMP/apple-tunnel-simulator" \
+          swift build --package-path mobile/apple/tunnel --scratch-path "$RUNNER_TEMP/apple-tunnel-simulator" \
             --triple arm64-apple-ios15.0-simulator --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --target VisorMeshTunnel
           swiftc mobile/apple/tunnel/Sources/VisorMeshTunnel/TunnelMonitor.swift \
             mobile/apple/tunnel/Contracts/main.swift -o "$RUNNER_TEMP/apple-tunnel-contract"

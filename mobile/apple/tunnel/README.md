@@ -36,13 +36,5 @@ callback-ordering contracts; those checks do not link
 or start a device VPN. A packaged extension, guarded Conductor/AIuditor requests,
 app cancellation wiring and native nightly scenarios remain in #226/#228.
 
-The dependency uses the last official revision before the upstream minimum-OS
-manifest change, which used platform constants unavailable under its declared
-Swift tools version. The later tunnel-source changes only update copyright years.
-Visor still requires iOS 15 and macOS 12.
-
-On current Apple SDKs, pass `-Xcc -include -Xcc sys/types.h` to `swift build`
-(as CI does for all three Apple targets). Upstream WireGuardKitC declares Darwin
-control structures without including that system header. App build settings must
-provide the same forced include to the dependency C compiler and Swift Clang
-importer; compiling this package without it is not supported on those SDKs.
+The vendored official source and its two SDK compatibility changes are recorded
+in `Vendor/wireguard-apple/UPSTREAM.md`. No special compiler flags are required.
