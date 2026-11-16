@@ -1,0 +1,8 @@
+#!/sbin/openrc-run
+name="Hypermesh host health agent"
+command="/usr/bin/hypermesh-host-health"
+command_args="/etc/hypermesh/health.json"
+command_background=true
+pidfile="/run/hypermesh-host-health.pid"
+depend() { need net; }
+start_pre() { test -f /etc/hypermesh/health.json; }

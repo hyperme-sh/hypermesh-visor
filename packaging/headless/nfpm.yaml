@@ -10,6 +10,23 @@ description: Headless Hypermesh daemon with bundled Conductor; no desktop depend
 homepage: https://github.com/hyperme-sh/hypermesh-visor
 license: MIT
 contents:
+  - src: docs/host-health.md
+    dst: /usr/share/doc/hypermesh-visor-headless/host-health.md
+    file_info:
+      mode: 0644
+  - src: target/release/hypermesh-host-health
+    dst: /usr/bin/hypermesh-host-health
+    file_info:
+      mode: 0755
+  - src: packaging/headless/health.service
+    dst: /usr/lib/systemd/system/hypermesh-host-health.service
+    file_info:
+      mode: 0644
+  - src: packaging/headless/health.openrc
+    dst: /etc/init.d/hypermesh-host-health
+    packager: apk
+    file_info:
+      mode: 0755
   - src: target/release/hypermesh-visor
     dst: /usr/bin/hypermesh-visor-headless
     file_info:

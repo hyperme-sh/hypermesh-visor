@@ -15,6 +15,11 @@ name = "hypermesh-desktop-mcp"
 path = "src/bin/hypermesh-desktop-mcp.rs"
 required-features = ["desktop"]
 
+[[bin]]
+name = "hypermesh-host-health"
+path = "src/bin/hypermesh-host-health.rs"
+required-features = ["headless"]
+
 [[test]]
 name = "inverse_mcp"
 path = "tests/inverse_mcp.rs"

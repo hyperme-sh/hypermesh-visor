@@ -13,10 +13,12 @@ VERSION=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"
 export NFPM_ARCH VERSION
 mkdir -p /output /bundle/root/usr/bin /bundle/root/usr/lib/hypermesh-visor-headless /bundle/root/usr/share/doc/hypermesh-visor-headless
 cp target/release/hypermesh-visor /bundle/root/usr/bin/hypermesh-visor-headless
+cp target/release/hypermesh-host-health /bundle/root/usr/bin/hypermesh-host-health
 cp /bundle/conductor /bundle/root/usr/lib/hypermesh-visor-headless/conductor
 cp /bundle/conductor-LICENSE /bundle/root/usr/share/doc/hypermesh-visor-headless/
 cp LICENSE /bundle/root/usr/share/doc/hypermesh-visor-headless/
 cp docs/headless.md /bundle/root/usr/share/doc/hypermesh-visor-headless/README.md
+cp docs/host-health.md /bundle/root/usr/share/doc/hypermesh-visor-headless/host-health.md
 for format in apk deb rpm; do
   nfpm package --config packaging/headless/nfpm.yaml --packager "$format" --target "/output/hypermesh-visor-headless-${EXPECTED_ARCH}.${format}"
 done

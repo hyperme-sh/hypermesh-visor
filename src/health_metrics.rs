@@ -84,28 +84,11 @@ impl PendingMetrics {
             return Err(refused());
         }
         let created = Instant::now();
-        let Some((ticket, body)) = store.collect(category, || {
-            let samples = sample()?;
-            if samples.is_empty() || samples.len() > 16 { return Err(refused()); }
-            let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| refused())?.as_nanos().to_string();
-            let mut metrics = Vec::new();
-            let mut names = std::collections::HashSet::new();
-            for metric in samples {
-                let (actual, name, unit, value) = metric.fields()?;
-                if actual != category || !names.insert(name) { return Err(refused()); }
-                metrics.push(json!({"name":name, "unit":unit, "gauge":{"dataPoints":[{"timeUnixNano":timestamp, "asInt":value.to_string()}]}}));
-            }
-            // Tenant/device identity is assigned by Infra's authenticated ingress.
-            // No client-supplied tenant, host, machine, path or process attributes.
-            let body: Value = json!({"resourceMetrics":[{
-                "resource":{"attributes":[
-                    {"key":"service.name", "value":{"stringValue":"hypermesh-visor"}},
-                    {"key":"service.version", "value":{"stringValue":env!("CARGO_PKG_VERSION")}}
-                ]},
-                "scopeMetrics":[{"scope":{"name":"hypermesh.health"}, "metrics":metrics}]
-            }]});
-            serde_json::to_vec(&body).map_err(|_| refused())
-        })? else { return Ok(None); };
+        let Some((ticket, body)) =
+            store.collect(category, || encode(category, sample()?, "hypermesh-visor"))?
+        else {
+            return Ok(None);
+        };
         Ok(Some(Self {
             ticket,
             body,
@@ -128,6 +111,41 @@ impl PendingMetrics {
         }
         store.upload_local_metrics(&self.ticket, || send(&self.body))
     }
+}
+
+/// Shared bounded projection for Visor and the separately authorized host agent.
+pub(crate) fn encode(
+    category: Category,
+    samples: Vec<Metric>,
+    service: &str,
+) -> io::Result<Vec<u8>> {
+    if samples.is_empty() || samples.len() > 16 {
+        return Err(refused());
+    }
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| refused())?
+        .as_nanos()
+        .to_string();
+    let mut metrics = Vec::new();
+    let mut names = std::collections::HashSet::new();
+    for metric in samples {
+        let (actual, name, unit, value) = metric.fields()?;
+        if actual != category || !names.insert(name) {
+            return Err(refused());
+        }
+        metrics.push(json!({"name":name, "unit":unit, "gauge":{"dataPoints":[{"timeUnixNano":timestamp, "asInt":value.to_string()}]}}));
+    }
+    // Tenant/device identity is assigned by Infra's authenticated ingress.
+    // No client-supplied tenant, host, machine, path or process attributes.
+    let body: Value = json!({"resourceMetrics":[{
+        "resource":{"attributes":[
+            {"key":"service.name", "value":{"stringValue":service}},
+            {"key":"service.version", "value":{"stringValue":env!("CARGO_PKG_VERSION")}}
+        ]},
+        "scopeMetrics":[{"scope":{"name":"hypermesh.health"}, "metrics":metrics}]
+    }]});
+    serde_json::to_vec(&body).map_err(|_| refused())
 }
 
 #[cfg(test)]
