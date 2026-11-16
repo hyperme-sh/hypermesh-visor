@@ -319,6 +319,41 @@ jobs:
           if-no-files-found: error
           path: ${{ runner.temp }}/mobile-android/*
 
+      - uses: actions/setup-node@v6
+        if: matrix.os != 'windows-latest'
+        with:
+          node-version: '24'
+      - uses: actions/setup-java@v5
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build unsigned Capacitor Apple enrollment app
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          python3 mobile/app/stage-apple.py "$RUNNER_TEMP/mobile-apple/hypermesh-visor-mobile-ios-arm64.zip"
+          cd mobile/app
+          npm ci
+          npm test
+          npm run build
+          npx cap sync ios
+          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple" \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
+      - name: Build unsigned Capacitor Android enrollment app
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          export VISOR_MOBILE_AAR="$PWD/mobile/android/library/build/outputs/aar/hypermesh-visor-mobile-release.aar"
+          cd mobile/app
+          npm ci
+          npm test
+          npm run build
+          npx cap sync android
+          cd android
+          ./gradlew --no-daemon assembleRelease
       - uses: actions/setup-go@v6
         if: matrix.os == 'windows-latest'
         with:
