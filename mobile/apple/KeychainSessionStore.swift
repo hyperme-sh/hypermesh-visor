@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import LocalAuthentication
 import Security
 
@@ -104,4 +105,26 @@ final class KeychainSessionStore: NativeSessionStore, @unchecked Sendable {
             throw StoreError.Unavailable
         }
     }
+}
+
+/// Keep this app-owned instance separate from the owner's OAuth refresh-token store.
+func appleMachineIdentity(service: String, ownerAccount: String, planeOrigin: String) throws -> MobileMachine {
+    // Origin remains part of the account binding; the core verifies it before any request.
+    let account = try machineAccount("machine-v1", [ownerAccount, planeOrigin])
+    let store = try KeychainSessionStore(service: service + ".machine.v1", account: account)
+    return try MobileMachine(store: store, planeOrigin: planeOrigin)
+}
+
+func appleOwnerSignIn(service: String, ownerAccount: String, issuer: String, authOrigin: String) throws -> MobileOwnerSignIn {
+    let account = try machineAccount("owner-v1", [ownerAccount, issuer, authOrigin])
+    return try MobileOwnerSignIn(store: KeychainSessionStore(service: service + ".owner.v1", account: account),
+                                 issuer: issuer, authOrigin: authOrigin)
+}
+
+private func machineAccount(_ prefix: String, _ fields: [String]) throws -> String {
+    guard fields.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 2048 && !$0.utf8.contains(where: { $0 < 32 || $0 == 127 }) }) else {
+        throw StoreError.Unavailable
+    }
+    return prefix + ":" + SHA256.hash(data: Data(fields.joined(separator: "\0").utf8))
+        .map { String(format: "%02x", $0) }.joined()
 }

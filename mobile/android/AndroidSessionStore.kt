@@ -53,3 +53,27 @@ private class AndroidSessionKeys(private val alias: String, private val manager:
     }
     override fun delete() { store().deleteEntry(alias) }
 }
+
+/** One app-owned instance per signed-in owner; separate from the owner's OAuth store. */
+fun androidMachineIdentity(context: Context, ownerAccount: String, planeOrigin: String): uniffi.hypermesh_visor_mobile.MobileMachine {
+    if (ownerAccount.isBlank() || ownerAccount.length > 256 || ownerAccount.any { it.code < 32 || it.code == 127 }) {
+        throw StoreException.Unavailable()
+    }
+    val namespace = MessageDigest.getInstance("SHA-256")
+        .digest((ownerAccount + "\u0000" + planeOrigin.trimEnd('/')).toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 255) }
+    return uniffi.hypermesh_visor_mobile.MobileMachine(
+        androidSessionStore(context, "machine-v1:$namespace"), planeOrigin)
+}
+
+/** Browser authorization uses its own secure entry; credentials stay in the Rust core. */
+fun androidOwnerSignIn(context: Context, ownerAccount: String, issuer: String, authOrigin: String): uniffi.hypermesh_visor_mobile.MobileOwnerSignIn {
+    if (ownerAccount.isBlank() || ownerAccount.length > 256 || ownerAccount.any { it.code < 32 || it.code == 127 }) {
+        throw StoreException.Unavailable()
+    }
+    val namespace = MessageDigest.getInstance("SHA-256")
+        .digest((ownerAccount + "\u0000" + issuer + "\u0000" + authOrigin).toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it.toInt() and 255) }
+    return uniffi.hypermesh_visor_mobile.MobileOwnerSignIn(
+        androidSessionStore(context, "owner-v1:$namespace"), issuer, authOrigin)
+}

@@ -23,6 +23,12 @@ private class FixtureStore(private val unavailable: Boolean = false, private val
 
 fun main() {
     sh.hyperme.visor.mobile.androidStoreContract()
+    uniffi.hypermesh_visor_mobile.MobileMachine(FixtureStore(), "https://plane.test").use { machine ->
+        check(machine.status() == null)
+    }
+    uniffi.hypermesh_visor_mobile.MobileOwnerSignIn(FixtureStore(), "https://issuer.test/realm", "https://api.test").use { login ->
+        login.cancel()
+    }
     val store = FixtureStore()
     MobileSession(store).use { session ->
         check(!session.hasStoredSession())
