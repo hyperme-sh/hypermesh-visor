@@ -122,9 +122,7 @@ impl Backend for DesktopBackend {
                 {
                     return Err(Error::Backend);
                 }
-                if !instructions.is_empty()
-                    && status["profile_hash"] != companion_sets::digest(&instructions)
-                {
+                if !profile_matches(&status, &instructions) {
                     return Err(Error::Backend);
                 }
                 return Ok(());
@@ -143,10 +141,7 @@ impl Backend for DesktopBackend {
             .lock()
             .map_err(|_| Error::Backend)?
             .instructions(scope)?;
-        if !instructions.is_empty()
-            && self.docker.guest(a, "status")?["profile_hash"]
-                != companion_sets::digest(&instructions)
-        {
+        if !profile_matches(&self.docker.guest(a, "status")?, &instructions) {
             return Err(Error::Stale);
         }
         {
@@ -740,6 +735,14 @@ impl Drop for Runtime {
     }
 }
 
+fn profile_matches(status: &Value, instructions: &str) -> bool {
+    match status.get("profile_hash") {
+        // Compatibility with guests created before instruction support.
+        None => instructions.is_empty(),
+        Some(value) => value.as_str() == Some(companion_sets::digest(instructions).as_str()),
+    }
+}
+
 fn available_memory(memory_mib: u32) -> Result<(), Error> {
     let memory = std::fs::read_to_string("/proc/meminfo").map_err(|_| Error::Capacity)?;
     let available = memory
@@ -807,6 +810,24 @@ fn recreation_resources(
 
 #[cfg(test)]
 mod recreation_tests {
+    #[test]
+    fn clearing_instructions_cannot_resume_a_guest_with_stale_text() {
+        assert!(super::profile_matches(&serde_json::json!({}), ""));
+        assert!(!super::profile_matches(&serde_json::json!({}), "new text"));
+        assert!(!super::profile_matches(
+            &serde_json::json!({"profile_hash":crate::companion_sets::digest("old text")}),
+            ""
+        ));
+        assert!(super::profile_matches(
+            &serde_json::json!({"profile_hash":crate::companion_sets::digest("")}),
+            ""
+        ));
+        assert!(!super::profile_matches(
+            &serde_json::json!({"profile_hash":null}),
+            ""
+        ));
+    }
+
     use super::*;
     use crate::companion_manager::{Phase, Snapshot};
     struct EmptyBackend;
