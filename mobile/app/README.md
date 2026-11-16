@@ -1,9 +1,9 @@
 # Visor mobile shell
 
 React/TypeScript UI in a Capacitor application. This directory is in development:
-the UI build and controller unit tests work; the Android `Visor` plugin now wires enrollment through the native core, while
-Apple plugin wiring, service provisioning and packaged application qualification
-are not complete.
+the UI build and controller unit tests work; the Android and Apple `Visor` plugins wire enrollment through the native core.
+Native SDK qualification is in progress; mesh provisioning, service-call wiring
+and native nightly application acceptance are not complete.
 Do not interpret a successful web build as a working enrolled phone.
 
 `npm ci`, `npm test`, and `npm run build` qualify the UI. `npm run sync` copies the
@@ -39,10 +39,15 @@ These inputs must not contain credentials. The configured workspace is a candida
 not a membership grant: native owner-session switching and Plane enrollment verify
 current membership. Do not query the administrator-only tenant listing endpoint.
 
-Android uses one process-owned native identity/store pair across activity recreation.
+Both platforms use one process-owned native identity/store pair across activity/view recreation.
 Device authorization opens the validated issuer URL in the system browser; only the
 short user code returns to React. Cancellation bypasses the polling worker.
 Expired-owner revocation stays locally denied, and signing in again can retry remote
 revocation before generating a replacement identity. `VISOR_MOBILE_AAR` selects the
 locally built, verified library artifact for SDK compilation, not a running service.
 Phone mesh provisioning is tracked in Infra #1747; connect remains unavailable.
+
+Apple SDK CI stages the checksum-verified XCFramework and Swift wrappers from the
+same source revision, then compiles the unsigned simulator app without launching a
+simulator. Android SDK CI builds an unsigned ARM64 release APK against the same
+job's native AAR. Neither compile job provisions a peer or performs live sign-in.

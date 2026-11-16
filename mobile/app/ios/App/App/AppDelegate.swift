@@ -42,3 +42,127 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return config
     }
 }
+
+final class VisorBridgeViewController: CAPBridgeViewController {
+    override func capacitorDidLoad() { bridge?.registerPluginInstance(VisorPlugin()) }
+}
+
+private enum PhoneFailure: Error { case unavailable }
+private final class PhoneNativeState {
+    let binding: [String]
+    let owner: MobileOwnerSignIn
+    let machine: MobileMachine
+    let workspaceId: String
+    let workspaceName: String
+    init(issuer: String, auth: String, plane: String, workspace: String, name: String) throws {
+        guard UUID(uuidString: workspace)?.uuidString.lowercased() == workspace,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 128 else {
+            throw PhoneFailure.unavailable
+        }
+        binding = [issuer, auth, plane, workspace, name]
+        workspaceId = workspace; workspaceName = name
+        machine = try appleMachineIdentity(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", planeOrigin: plane)
+        owner = try appleOwnerSignIn(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", issuer: issuer, authOrigin: auth)
+    }
+}
+
+@objc(VisorPlugin)
+final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
+    let identifier = "VisorPlugin"
+    let jsName = "Visor"
+    let pluginMethods = ["status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
+        CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)
+    }
+    private static var shared: PhoneNativeState?
+    private static let stateLock = NSLock()
+    private var native: PhoneNativeState?
+    private let worker = DispatchQueue(label: "sh.hyperme.visor.enrollment")
+    private let busyLock = NSLock()
+    private var busy = false
+
+    override func load() {
+        let config = getConfig()
+        guard let issuer = config.getString("issuer"), let auth = config.getString("authOrigin"),
+              let plane = config.getString("planeOrigin"), let workspace = config.getString("workspaceId"),
+              let name = config.getString("workspaceName") else { return }
+        Self.stateLock.lock(); defer { Self.stateLock.unlock() }
+        do {
+            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name) }
+            guard Self.shared?.binding == [issuer, auth, plane, workspace, name] else { return }
+            native = Self.shared
+        } catch { /* Missing native storage/configuration never falls back to JS storage. */ }
+    }
+    private func run(_ call: CAPPluginCall, _ action: @escaping (PhoneNativeState) throws -> JSObject) {
+        guard let state = native else { call.reject("Phone configuration is unavailable."); return }
+        busyLock.lock()
+        if busy { busyLock.unlock(); call.reject("Another action is in progress."); return }
+        busy = true; busyLock.unlock()
+        worker.async {
+            defer { self.busyLock.lock(); self.busy = false; self.busyLock.unlock() }
+            do { call.resolve(try action(state)) }
+            catch { call.reject("That action could not be completed.") }
+        }
+    }
+    private func publicState(_ state: PhoneNativeState) throws -> JSObject {
+        let current = try state.machine.status()
+        return ["enrolled": current?.enrolled == true && current?.revoked != true,
+                "revoked": current?.revoked == true,
+                "connection": "disconnected", "canConnect": false]
+    }
+    @objc func status(_ call: CAPPluginCall) { run(call, publicState) }
+    @objc func beginSignIn(_ call: CAPPluginCall) {
+        run(call) { state in
+            let prompt = try state.owner.begin()
+            guard let url = URL(string: prompt.verificationUrl) else { throw PhoneFailure.unavailable }
+            let completed = DispatchSemaphore(value: 0)
+            let resultLock = NSLock()
+            var opened = false
+            DispatchQueue.main.async {
+                UIApplication.shared.open(url, options: [:]) { success in
+                    resultLock.lock(); opened = success; resultLock.unlock()
+                    completed.signal()
+                }
+            }
+            let timely = completed.wait(timeout: .now() + 10) == .success
+            resultLock.lock(); let success = opened; resultLock.unlock()
+            if !timely || !success { try state.owner.cancel(); throw PhoneFailure.unavailable }
+            return ["userCode": prompt.userCode]
+        }
+    }
+    @objc func finishSignIn(_ call: CAPPluginCall) {
+        run(call) { state in
+            try state.owner.finish()
+            return ["workspaces": [["id": state.workspaceId, "name": state.workspaceName]]]
+        }
+    }
+    @objc func cancelSignIn(_ call: CAPPluginCall) {
+        // Cancellation must bypass the worker while it polls the device grant.
+        do { try native?.owner.cancel(); call.resolve() }
+        catch { call.reject("Sign-in could not be cancelled.") }
+    }
+    @objc func enroll(_ call: CAPPluginCall) {
+        let selected = call.getString("workspaceId")
+        run(call) { state in
+            guard selected == state.workspaceId else { throw PhoneFailure.unavailable }
+            if let prior = try state.machine.status() {
+                if prior.revoked { try state.owner.revokeMachine(machine: state.machine, tenantId: prior.tenantId) }
+                else if prior.enrolled { throw PhoneFailure.unavailable }
+            }
+            try state.owner.enrollMachine(machine: state.machine, tenantId: state.workspaceId, platform: "ios")
+            return try self.publicState(state)
+        }
+    }
+    @objc func renew(_ call: CAPPluginCall) {
+        run(call) { state in try state.machine.renew(); return try self.publicState(state) }
+    }
+    @objc func revoke(_ call: CAPPluginCall) {
+        run(call) { state in
+            guard let current = try state.machine.status() else { throw PhoneFailure.unavailable }
+            try state.owner.revokeMachine(machine: state.machine, tenantId: current.tenantId)
+            return try self.publicState(state)
+        }
+    }
+    @objc func connect(_ call: CAPPluginCall) { call.reject("Mesh provisioning is unavailable.") }
+    @objc func disconnect(_ call: CAPPluginCall) { run(call, publicState) }
+    deinit { try? native?.owner.cancel() }
+}
