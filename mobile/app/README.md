@@ -26,7 +26,7 @@ The s3r.ch identity owner is coordinating login, SEA custody, restoration and
 account switching. Reusable React components should consume narrow public
 interfaces; machine enrollment must not substitute for the person's SEA identity,
 account or workspace authorization. No shared package API is final until the owner
-confirms its existing contracts. Application service calls use Conductor; this
+confirms its existing contracts. AI/tool service calls use Conductor; this
 shell must not introduce a direct Gateway client.
 
 ## Native enrollment configuration

@@ -18,7 +18,7 @@ function App() {
     <section className="card" aria-busy={view.busy}>
       <h2>{state.revoked?'This phone is disconnected':state.enrolled?'This phone is enrolled':'Make yourself at home'}</h2>
       {view.userCode ? <><p>Complete sign-in in your browser using this code.</p><output className="code">{view.userCode}</output><button disabled={view.busy} onClick={()=>void controller.current?.finishSignIn()}>I’ve signed in</button><button className="secondary" onClick={()=>void controller.current?.cancel()}>Cancel</button></>
-      : view.workspaces.length ? <><p>Choose your workspace.</p>{view.workspaces.map(w=><button className="workspace" key={w.id} disabled={view.busy} onClick={()=>void controller.current?.enroll(w.id)}>{w.name}<span aria-hidden>→</span></button>)}</>
+      : view.workspaces.length ? <><p>Choose your workspace.</p>{view.workspaces.map(w=><button className="workspace" key={w.id} disabled={view.busy} onClick={()=>void controller.current?.enroll(w.id)}>{w.name}<span aria-hidden>→</span></button>)}<button className="secondary" disabled={view.busy} onClick={()=>void controller.current?.cancel()}>Back to sign in</button></>
       : state.enrolled ? <><p>{state.connection==='connected'?'Connected to your network.':'Your device identity is stored securely on this phone.'}</p>
         <button disabled={view.busy || (!state.canConnect && state.connection!=='connected')} onClick={()=>void (state.connection==='connected'?controller.current?.disconnect():controller.current?.connect())}>{state.connection==='connected'?'Disconnect':'Connect'}</button>
         {!state.canConnect && state.connection!=='connected' && <p className="note">Connection is currently unavailable.</p>}

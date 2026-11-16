@@ -39,6 +39,20 @@ describe('native UI contract',()=>{
     await s.controller.signIn();
     expect(s.view().userCode).toBe('ABCD-1234');
   });
+  it('can abandon workspace selection after expired owner enrollment', async () => {
+    const s=setup();
+    const workspace={id:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',name:'Workspace'};
+    s.native.finishSignIn=vi.fn(async()=>({workspaces:[workspace]}));
+    s.native.enroll=vi.fn(async()=>{throw new Error('expired owner');});
+    await s.controller.signIn();await s.controller.finishSignIn();await s.controller.enroll(workspace.id);
+    expect(s.view().workspaces).toHaveLength(1);
+    await s.controller.cancel();
+    expect(s.view().workspaces).toEqual([]);
+    expect(s.view().userCode).toBe('');
+    await s.controller.signIn();
+    expect(s.view().userCode).toBe('ABCD-1234');
+    expect(s.native.cancelSignIn).toHaveBeenCalled();
+  });
   it('drops unexpected native fields and never shows raw failure text',async()=>{
     const s=setup();s.native.status=vi.fn(async()=>({...disconnected,privateKey:'secret-canary'}));
     await s.controller.refresh();expect(JSON.stringify(s.view())).not.toContain('secret-canary');
