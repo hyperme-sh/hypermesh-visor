@@ -37,6 +37,7 @@ pub enum Action {
     McpStatus,
     McpConnections,
     ChooseSession,
+    ManageCompanions,
     ContinueAutomation,
     DismissAutomation,
 }
@@ -206,6 +207,7 @@ pub fn render(
             ("Continue the automation?", None),
             ("Continue", Some(Action::ContinueAutomation)),
             ("Not now", Some(Action::DismissAutomation)),
+            ("+ Companions", Some(Action::ManageCompanions)),
             ("Choose session", Some(Action::ChooseSession)),
         ];
         for (label, action) in rows {
@@ -265,6 +267,7 @@ pub fn render(
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
             ("MCP servers", Action::McpServers),
+            ("+ Companions", Action::ManageCompanions),
             ("Choose session", Action::ChooseSession),
             ("MCP connections", Action::McpConnections),
             ("MCP status", Action::McpStatus),

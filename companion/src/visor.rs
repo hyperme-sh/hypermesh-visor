@@ -27,6 +27,8 @@ struct Cache {
 }
 
 pub struct Poller {
+    activity: Arc<AtomicBool>,
+    observer_sample: Arc<Mutex<std::time::Instant>>,
     snapshot: Arc<Mutex<Cache>>,
     queue: Arc<Mutex<VecDeque<&'static str>>>,
     stop: Arc<AtomicBool>,
@@ -41,6 +43,10 @@ pub struct Poller {
 
 impl Poller {
     pub fn new() -> Self {
+        let observer_sample = Arc::new(Mutex::new(std::time::Instant::now()));
+        let observer_thread = observer_sample.clone();
+        let activity = Arc::new(AtomicBool::new(false));
+        let activity_thread = activity.clone();
         let snapshot = Arc::new(Mutex::new(Cache {
             snapshot: Snapshot::disconnected(),
             epoch: 0,
@@ -60,6 +66,8 @@ impl Poller {
             .name("hypermesh-companion-visor".into())
             .spawn(move || {
                 visor_loop(
+                    activity_thread,
+                    observer_thread,
                     snapshot_thread,
                     queue_thread,
                     stop_thread,
@@ -70,6 +78,8 @@ impl Poller {
             })
             .ok();
         Self {
+            activity,
+            observer_sample,
             snapshot,
             queue,
             stop,
@@ -79,6 +89,8 @@ impl Poller {
             thread,
         }
     }
+
+    pub fn physical_input(&self) { self.activity.store(true, Ordering::SeqCst); }
 
     pub fn snapshot(&self) -> (Snapshot, u64) {
         let cache = self.snapshot.lock().unwrap();
@@ -108,6 +120,7 @@ impl Poller {
 
     /// Level sent on the next poll. `true` is present, `false` is missing.
     pub fn set_keyboard_available(&self, available: bool) {
+        *self.observer_sample.lock().unwrap() = std::time::Instant::now();
         self.keyboard_level
             .store(if available { 1 } else { 2 }, Ordering::SeqCst);
     }
@@ -123,6 +136,8 @@ impl Drop for Poller {
 }
 
 fn visor_loop(
+    activity: Arc<AtomicBool>,
+    observer_sample: Arc<Mutex<std::time::Instant>>,
     snapshot: Arc<Mutex<Cache>>,
     queue: Arc<Mutex<VecDeque<&'static str>>>,
     stop: Arc<AtomicBool>,
@@ -133,6 +148,12 @@ fn visor_loop(
     let mut link = Link::new(Snapshot::disconnected());
     let mut pause_asked = false;
     while !stop.load(Ordering::SeqCst) {
+        if activity.swap(false, Ordering::SeqCst) && !post_activity() {
+            activity.store(true, Ordering::SeqCst);
+            // Do not renew the observer while a physical pause is undelivered.
+            thread::sleep(Duration::from_millis(40));
+            continue;
+        }
         if keyboard_report.load(Ordering::SeqCst) && post_interrupt() {
             keyboard_report.store(false, Ordering::SeqCst);
         }
@@ -151,7 +172,9 @@ fn visor_loop(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        let fetched = fetch(keyboard_header(keyboard_level.load(Ordering::SeqCst)));
+        let observed = observer_sample.lock().map(|sample| sample.elapsed() < Duration::from_millis(500)).unwrap_or(false);
+        let keyboard = if observed { keyboard_header(keyboard_level.load(Ordering::SeqCst)) } else { Some(false) };
+        let fetched = fetch(keyboard);
         let fresh = {
             let mut queued = queue.lock().unwrap();
             apply_poll(&mut link, &mut queued, &mut pause_asked, fetched)
@@ -370,6 +393,22 @@ pub fn approve_selected_session(session: &str, epoch: u64) -> Result<(), String>
     }
 }
 
+fn post_activity() -> bool {
+    let request = "POST /companion/activity HTTP/1.1\r\nhost: hypermesh\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+    matches!(exchange(request), Exchange::Body(ref response) if status_ok(response) || response.starts_with("HTTP/1.1 404 "))
+}
+
+pub fn manager_request(value: serde_json::Value) -> Result<serde_json::Value, String> {
+    let body = value.to_string();
+    let request = format!("POST /companion/manager HTTP/1.1\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+    let socket = socket_path().ok_or("Companion socket unavailable")?;
+    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(120), 1024 * 1024) else {
+        return Err("Companion operation outcome unknown; refresh status before retrying".into());
+    };
+    if !status_ok(&response) { return Err("Companion operation refused. Check host observer, Docker setup, available resources and current companion state.".into()); }
+    serde_json::from_str(body_of(&response).ok_or("Invalid companion response")?).map_err(|_| "Invalid companion response".into())
+}
+
 pub fn session_selection_request(session: Option<&str>) -> Result<serde_json::Value, String> {
     let body = match session {
         Some(id) => {
@@ -489,6 +528,9 @@ fn exchange_read(path: &Path, request: &str) -> Exchange {
     exchange_read_timeout(path, request, Duration::from_millis(300))
 }
 fn exchange_read_timeout(path: &Path, request: &str, timeout: Duration) -> Exchange {
+    exchange_read_bound(path, request, timeout, POLL_READ_MAX)
+}
+fn exchange_read_bound(path: &Path, request: &str, timeout: Duration, limit: usize) -> Exchange {
     let _attribution = crate::telemetry::UpstreamScope::enter(crate::telemetry::Service::Visor);
     let mut stream = match UnixStream::connect(path) {
         Ok(stream) => stream,
@@ -515,10 +557,13 @@ fn exchange_read_timeout(path: &Path, request: &str, timeout: Duration) -> Excha
     if stream.write_all(outgoing.as_bytes()).is_err() {
         return Exchange::Failed;
     }
-    read_capped(&mut stream)
+    read_capped_bound(&mut stream, limit)
 }
 
 fn read_capped(stream: &mut UnixStream) -> Exchange {
+    read_capped_bound(stream, POLL_READ_MAX)
+}
+fn read_capped_bound(stream: &mut UnixStream, limit: usize) -> Exchange {
     let mut buf = Vec::new();
     let mut tmp = [0u8; 2048];
     loop {
@@ -526,7 +571,7 @@ fn read_capped(stream: &mut UnixStream) -> Exchange {
             Ok(0) => break,
             Ok(n) => {
                 buf.extend_from_slice(&tmp[..n]);
-                if buf.len() > POLL_READ_MAX {
+                if buf.len() > limit {
                     return Exchange::Truncated;
                 }
             }

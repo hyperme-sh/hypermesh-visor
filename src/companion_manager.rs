@@ -46,6 +46,13 @@ pub struct Scope {
     generation: Uuid,
 }
 impl Scope {
+    pub(crate) fn recovered(companion: Uuid, session: Uuid, generation: Uuid) -> Self {
+        Self {
+            companion,
+            session,
+            generation,
+        }
+    }
     pub fn companion(self) -> Uuid {
         self.companion
     }
@@ -87,6 +94,7 @@ pub struct Snapshot {
 pub struct ResumeOffer {
     scope: Scope,
     pause: Uuid,
+    observer_epoch: Uuid,
 }
 impl ResumeOffer {
     pub fn scope(&self) -> Scope {
@@ -103,6 +111,42 @@ fn fresh(monitor: &Monitor) -> bool {
         .is_some_and(|last| last.elapsed() < MONITOR_TIMEOUT)
 }
 
+/// Fast host observer path, independent of the manager's backend operations.
+/// Only the authenticated native observer may hold this handle. Updating it
+/// never waits for Docker, cancellation, or desktop acknowledgements.
+#[derive(Clone)]
+pub struct Observer {
+    monitor: Monitor,
+    epoch: Arc<Mutex<Uuid>>,
+}
+impl Observer {
+    fn epoch(&self) -> Result<Uuid, Error> {
+        self.epoch
+            .lock()
+            .map(|epoch| *epoch)
+            .map_err(|_| Error::MonitorUnavailable)
+    }
+    pub fn physical_input(&self) -> Result<(), Error> {
+        *self.epoch.lock().map_err(|_| Error::MonitorUnavailable)? = Uuid::new_v4();
+        Ok(())
+    }
+    pub fn poll(&self, available: bool) -> Result<(), Error> {
+        self.poll_at(available, Instant::now())
+    }
+    fn poll_at(&self, available: bool, sampled: Instant) -> Result<(), Error> {
+        let mut last = self.monitor.lock().map_err(|_| Error::MonitorUnavailable)?;
+        let timely =
+            last.is_some_and(|last| sampled.saturating_duration_since(last) < MONITOR_TIMEOUT);
+        if !available || !timely {
+            // Revoke before renewing: a worker cannot revive an old permit by
+            // waiting for this monitor lock while a late poll is processed.
+            self.physical_input()?;
+        }
+        *last = available.then_some(sampled);
+        Ok(())
+    }
+}
+
 /// An in-memory revocable route. It cannot be deserialized or constructed by a
 /// caller. Copying it neither changes its target nor extends the observer lease.
 #[derive(Clone)]
@@ -110,6 +154,8 @@ pub struct Permit {
     scope: Scope,
     enabled: Arc<AtomicBool>,
     monitor: Monitor,
+    observer: Observer,
+    observer_epoch: Uuid,
 }
 impl Permit {
     pub fn check(&self, target: Scope) -> Result<(), Error> {
@@ -118,13 +164,16 @@ impl Permit {
     // The lease read can wait behind an observer update. Its completion must
     // never revive a route that was revoked while that read was pending.
     fn check_with_lease(&self, target: Scope, lease: impl FnOnce() -> bool) -> Result<(), Error> {
-        if self.scope != target || !self.enabled.load(Ordering::Acquire) {
+        if self.scope != target
+            || !self.enabled.load(Ordering::Acquire)
+            || self.observer.epoch()? != self.observer_epoch
+        {
             return Err(Error::Stale);
         }
         if !lease() {
             return Err(Error::MonitorUnavailable);
         }
-        if !self.enabled.load(Ordering::Acquire) {
+        if !self.enabled.load(Ordering::Acquire) || self.observer.epoch()? != self.observer_epoch {
             return Err(Error::Stale);
         }
         Ok(())
@@ -161,6 +210,8 @@ pub struct Manager<B: Backend> {
     slots: BTreeMap<Uuid, Slot>,
     budget: Resources,
     monitor: Monitor,
+    observer: Observer,
+    applied_epoch: Uuid,
 }
 impl<B: Backend> Manager<B> {
     /// Adopt exactly one existing native session, initially paused. The caller
@@ -184,11 +235,19 @@ impl<B: Backend> Manager<B> {
             session,
             generation: Uuid::new_v4(),
         };
+        let monitor = Arc::new(Mutex::new(None));
+        let applied_epoch = Uuid::new_v4();
+        let observer = Observer {
+            monitor: monitor.clone(),
+            epoch: Arc::new(Mutex::new(applied_epoch)),
+        };
         let mut manager = Self {
             backend,
             slots: BTreeMap::new(),
             budget,
-            monitor: Arc::new(Mutex::new(None)),
+            monitor,
+            observer,
+            applied_epoch,
         };
         manager.insert(Allocation {
             scope,
@@ -210,6 +269,9 @@ impl<B: Backend> Manager<B> {
             },
         );
     }
+    pub(crate) fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
     pub fn snapshots(&self) -> Vec<Snapshot> {
         self.slots.values().map(|slot| slot.snapshot).collect()
     }
@@ -219,46 +281,35 @@ impl<B: Backend> Manager<B> {
     pub fn observer_poll(&mut self, available: bool) -> Result<(), Error> {
         self.observer_poll_at(available, Instant::now())
     }
+    pub fn observer(&self) -> Observer {
+        self.observer.clone()
+    }
     fn observer_poll_at(&mut self, available: bool, sampled: Instant) -> Result<(), Error> {
-        // Check age and refresh atomically with permit readers. If the lease
-        // expired, leave it unavailable until every old route is revoked.
-        let must_pause = {
-            let mut last = self.monitor.lock().map_err(|_| Error::MonitorUnavailable)?;
-            let timely = last.is_some_and(|last| sampled.duration_since(last) < MONITOR_TIMEOUT);
-            if available && timely {
-                *last = Some(sampled);
-                false
-            } else {
-                *last = None;
-                true
-            }
-        };
-        if must_pause {
-            self.pause_all()?;
-            if available {
-                *self.monitor.lock().map_err(|_| Error::MonitorUnavailable)? = Some(sampled);
-            }
-        }
-        // Backend callbacks cannot extend the age of an observer sample.
+        self.observer.poll_at(available, sampled)?;
+        self.tick()?;
         if available && !fresh(&self.monitor) {
             return Err(Error::MonitorUnavailable);
         }
         Ok(())
     }
     /// The controller calls this periodically even with no incoming requests.
-    /// Permits independently reject an expired observer lease between ticks.
+    /// Permits independently reject host input and observer loss between ticks.
     pub fn tick(&mut self) -> Result<(), Error> {
-        if fresh(&self.monitor) {
-            Ok(())
-        } else {
+        let epoch = self.observer.epoch()?;
+        if self.applied_epoch != epoch || !fresh(&self.monitor) {
+            self.applied_epoch = epoch;
             self.pause_all()
+        } else {
+            Ok(())
         }
     }
     pub fn physical_input(&mut self) -> Result<(), Error> {
-        self.pause_all()
+        self.observer.physical_input()?;
+        self.tick()
     }
 
     pub fn add_container(&mut self, resources: Resources) -> Result<Scope, Error> {
+        self.tick()?;
         if !fresh(&self.monitor) {
             self.tick()?;
             return Err(Error::MonitorUnavailable);
@@ -310,6 +361,8 @@ impl<B: Backend> Manager<B> {
             .ok_or(Error::Stale)
     }
     pub fn offer_resume(&mut self, scope: Scope) -> Result<ResumeOffer, Error> {
+        self.tick()?;
+        let observer_epoch = self.observer.epoch()?;
         let slot = self.slot(scope)?;
         if slot.snapshot.phase != Phase::Paused {
             return Err(Error::NotPaused);
@@ -317,14 +370,19 @@ impl<B: Backend> Manager<B> {
         Ok(ResumeOffer {
             scope,
             pause: slot.pause,
+            observer_epoch,
         })
     }
     /// Called only after explicit local confirmation of this offer and current
     /// assignment checks. A scope alone is never sufficient to resume.
     pub fn resume(&mut self, offer: ResumeOffer) -> Result<Permit, Error> {
+        self.tick()?;
         if !fresh(&self.monitor) {
             self.tick()?;
             return Err(Error::MonitorUnavailable);
+        }
+        if offer.observer_epoch != self.observer.epoch()? {
+            return Err(Error::Stale);
         }
         let scope = offer.scope;
         let slot = self.slot(scope)?;
@@ -342,6 +400,8 @@ impl<B: Backend> Manager<B> {
             scope,
             enabled,
             monitor: Arc::clone(&self.monitor),
+            observer: self.observer.clone(),
+            observer_epoch: offer.observer_epoch,
         };
         if self.backend.resume(scope, permit.clone()).is_err() || permit.check(scope).is_err() {
             self.slot(scope)?.revoke();
@@ -781,6 +841,36 @@ mod tests {
         manager.observer_poll(true).unwrap();
         assert!(resume(&mut manager, native).unwrap().check(native).is_ok());
     }
+    #[test]
+    fn fast_observer_revokes_while_actor_is_unavailable() {
+        let (mut manager, _, native) = fixture();
+        let permit = resume(&mut manager, native).unwrap();
+        let observer = manager.observer();
+        // The actor is owned exclusively here; the observer does not need it.
+        observer.physical_input().unwrap();
+        assert_eq!(permit.check(native), Err(Error::Stale));
+        observer.poll(true).unwrap();
+        assert_eq!(permit.check(native), Err(Error::Stale));
+        manager.tick().unwrap();
+        assert_eq!(manager.snapshots()[0].phase, Phase::Paused);
+        assert!(resume(&mut manager, native).unwrap().check(native).is_ok());
+    }
+    #[test]
+    fn fast_observer_invalidates_offer_without_actor_tick() {
+        let (mut manager, _, native) = fixture();
+        let offer = manager.offer_resume(native).unwrap();
+        manager.observer().physical_input().unwrap();
+        assert!(matches!(manager.resume(offer), Err(Error::Stale)));
+    }
+    #[test]
+    fn fast_late_poll_cannot_restore_authority_without_actor_tick() {
+        let (mut manager, _, native) = fixture();
+        let permit = resume(&mut manager, native).unwrap();
+        expire(&manager);
+        manager.observer().poll(true).unwrap();
+        assert_eq!(permit.check(native), Err(Error::Stale));
+    }
+
     #[test]
     fn dropping_manager_revokes_all_cloned_routes() {
         let (mut manager, _, native) = fixture();

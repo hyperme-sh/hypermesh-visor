@@ -572,6 +572,7 @@ fn arm_signals() {
 }
 
 fn note_user_input(app: &mut App, effect: Effect) {
+    app.poller.physical_input();
     app.poller.cancel_resume();
     if app.pending.as_deref() == Some("resume") {
         app.pending = None;
@@ -854,12 +855,14 @@ fn on_click(
                 *app.status.lock().unwrap() = err;
             }
         }
-        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections | Action::ChooseSession => {
+        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections | Action::ChooseSession | Action::ManageCompanions => {
             app.menu = false;
             let status = Arc::clone(&app.status);
             let action = hit.action;
             std::thread::spawn(move || {
-                let result = if action == Action::ChooseSession {
+                let result = if action == Action::ManageCompanions {
+                    crate::companions::run()
+                } else if action == Action::ChooseSession {
                     crate::session_selection::run()
                 } else if action == Action::McpTrust {
                     crate::mcp_trust_gui::run()

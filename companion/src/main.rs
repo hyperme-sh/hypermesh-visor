@@ -25,6 +25,7 @@ mod pointer;
 mod prompt;
 mod session_cli;
 mod session_selection;
+mod companions;
 mod settings;
 #[path = "../../src/telemetry.rs"]
 mod telemetry;

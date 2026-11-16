@@ -17,6 +17,10 @@ mod companion_sock;
 #[path = "companion_windows.rs"]
 mod companion_sock;
 pub mod companion_manager;
+pub mod companion_recovery;
+pub mod companion_docker;
+pub mod companion_lease;
+pub mod companion_runtime;
 mod conductor_socket;
 mod desktop;
 mod harness;

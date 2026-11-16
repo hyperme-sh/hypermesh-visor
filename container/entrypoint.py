@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 import visor_unattended
+import visor_managed
 
 os.umask(0o077)
 stop = threading.Event()
@@ -60,6 +61,11 @@ try:
     start('window-manager', ['openbox', '--sm-disable'])
     start('audio', ['pulseaudio', '--daemonize=no', '--exit-idle-time=-1', '--disallow-exit', '-n',
                     '--load=module-native-protocol-unix socket=/run/visor/pulse/native', '--load=module-null-sink sink_name=visor'])
+    managed = visor_managed.scope(os.environ)
+    if managed is not None and os.environ.get("HYPERMESH_CONTAINER_UNATTENDED", "0") != "0":
+        raise RuntimeError("managed and unattended modes cannot be combined")
+    if not visor_managed.alive(managed):
+        raise RuntimeError("host control unavailable")
     unattended = visor_unattended.prepare(os.environ, root)
     start('visor', ['/usr/local/bin/hypermesh-visor'])
     wait_until(lambda: Path('/run/visor/hypermesh/companion.sock').is_socket(), 'visor unavailable')
@@ -71,6 +77,8 @@ try:
     if unattended is None:
         print('private desktop ready; automation remains off until explicitly started', flush=True)
     while not stop.wait(0.2):
+        if not visor_managed.alive(managed):
+            raise RuntimeError("host control expired")
         if any(process.poll() is not None for _, process in children):
             raise RuntimeError('essential desktop process exited')
 except Exception as error:

@@ -166,6 +166,11 @@ fn main() -> ExitCode {
         Ok(mut state) => {
             state.apply_companion_poll_env();
             state.apply_host_bridge_env();
+            if let Err(message) = state.apply_managed_guest_env() {
+                eprintln!("hypermesh-visor: {message}");
+                return ExitCode::from(2);
+            }
+            state.recover_companions_at_startup();
             Arc::new(state)
         }
         Err(message) => {
