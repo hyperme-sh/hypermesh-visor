@@ -42,3 +42,8 @@ compares both checks to the configured machine and to each other and rejects a
 cycle older than 30 seconds before sending. Collection and network operations
 are bounded. The collector still authenticates its ingest credential and assigns
 tenant identity independently; payloads carry no client tenant or machine tags.
+
+For bounded CI checks, exit 0 means accepted upload, 3 means explicit local
+authorization denial, 4 means the host reported its upstream authorization
+unavailable, and 1 means another failure. Fixed stderr distinguishes these
+outcomes without including upstream details.

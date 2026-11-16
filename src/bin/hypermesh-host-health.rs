@@ -10,8 +10,17 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        if hypermesh_visor::host_health::run(std::path::Path::new(path), once).is_ok() {
-            return;
+        match hypermesh_visor::host_health::run(std::path::Path::new(path), once) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("host health authorization refused");
+                std::process::exit(3);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted => {
+                eprintln!("host health authorization unavailable");
+                std::process::exit(4);
+            }
+            Err(_) => {}
         }
     }
     eprintln!("host health unavailable");

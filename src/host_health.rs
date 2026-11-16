@@ -190,6 +190,22 @@ fn decode_authority(bytes: &[u8]) -> io::Result<Authority> {
         .position(|b| b == b"\r\n\r\n")
         .ok_or_else(refused)?;
     let headers = std::str::from_utf8(&bytes[..split]).map_err(|_| refused())?;
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1));
+    if matches!(status, Some("401" | "403")) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "host health authorization refused",
+        ));
+    }
+    if status == Some("503") {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            "host health authorization unavailable",
+        ));
+    }
     if !headers
         .lines()
         .next()
@@ -387,6 +403,27 @@ mod tests {
             assert!(collector_url(url).is_err());
         }
         assert!(collector_url("https://collector.test/v1/metrics").is_ok());
+    }
+    #[test]
+    fn owner_denial_and_unavailability_have_distinct_results() {
+        assert_eq!(
+            decode_authority(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            decode_authority(b"HTTP/1.1 503 Service Unavailable\r\n\r\n")
+                .err()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        assert_eq!(
+            decode_authority(b"broken").err().unwrap().kind(),
+            io::ErrorKind::Other
+        );
     }
     #[test]
     fn private_reply_requires_success_and_valid_scoped_authority() {
