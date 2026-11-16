@@ -13,7 +13,7 @@ fn scoped(entry: &Value, action: &str) -> Result<Value, String> {
     }
     Ok(value)
 }
-pub fn run() -> Result<(), String> {
+pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
     loop {
         let snapshot = crate::visor::manager_request(json!({"action":"list"}))?;
         let companions = snapshot["companions"]
@@ -103,6 +103,7 @@ pub fn run() -> Result<(), String> {
             if dialog(&args("question", "Resume companion", &format!("Allow desktop input for companion {} and session {}? Host input will pause it again.", entry["companion"], entry["session"])), None)?.is_none() { continue; }
             // Request a fresh pause-bound offer after the dialog's own physical
             // click. Any later host activity still invalidates it server-side.
+            confirmation.wait()?;
             let offer = crate::visor::manager_request(scoped(entry, "offer")?)?;
             crate::visor::manager_request(json!({"action":"resume","offer":offer["offer"]}))?;
         } else {

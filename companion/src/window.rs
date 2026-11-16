@@ -306,6 +306,13 @@ fn show(mut app: App) -> Result<(), String> {
         // swallow a key or click that arrived while the gate was running, and
         // an off-to-running transition in this frame still pauses. A snapshot
         // that lifts the pause back to running is classified again.
+        let confirmation = app.poller.confirmation();
+        let confirmation_batch = confirmation.begin_frame();
+        if !confirmation_batch.is_empty() {
+            // Round-trip after the dialog exited, before draining its input.
+            conn.get_input_focus().map_err(|err| err.to_string())?
+                .reply().map_err(|err| err.to_string())?;
+        }
         let mut events = Vec::new();
         while let Some(event) = conn.poll_for_event().map_err(|err| err.to_string())? {
             events.push(event);
@@ -431,19 +438,16 @@ fn show(mut app: App) -> Result<(), String> {
                     instance: snap.instance,
                 };
                 if automation::classify_fallback(&input, &mut app.fallback) {
-                    if app.machine.phase() == Phase::Off {
-                        app.last_used = Instant::now();
-                    } else {
-                        let effect = app.machine.user_input(now_ms);
-                        note_user_input(&mut app, effect);
-                        app.last_used = Instant::now();
-                    }
+                    let effect = app.machine.user_input(now_ms);
+                    note_user_input(&mut app, effect);
+                    app.last_used = Instant::now();
                 }
             }
         } else {
             app.fallback = automation::FallbackTrack::default();
             app.fallback_sample = None;
         }
+        confirmation.finish_frame(confirmation_batch);
         if let Some((x, y)) = click {
             app.last_used = Instant::now();
             on_click(&mut app, &scene, x, y, pause_at_frame, now_ms);
@@ -859,9 +863,10 @@ fn on_click(
             app.menu = false;
             let status = Arc::clone(&app.status);
             let action = hit.action;
+            let confirmation = app.poller.confirmation();
             std::thread::spawn(move || {
                 let result = if action == Action::ManageCompanions {
-                    crate::companions::run()
+                    crate::companions::run(confirmation)
                 } else if action == Action::ChooseSession {
                     crate::session_selection::run()
                 } else if action == Action::McpTrust {

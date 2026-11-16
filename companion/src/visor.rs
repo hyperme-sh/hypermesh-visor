@@ -26,7 +26,46 @@ struct Cache {
     epoch: u64,
 }
 
+type ConfirmationBatch = Vec<std::sync::mpsc::SyncSender<bool>>;
+
+/// Confirmation must pass through both the X11 frame and the activity post.
+#[derive(Clone, Default)]
+pub struct Confirmation {
+    frames: Arc<Mutex<ConfirmationBatch>>,
+    delivery: Arc<Mutex<ConfirmationBatch>>,
+}
+impl Confirmation {
+    pub fn wait(&self) -> Result<(), String> {
+        let (send, receive) = std::sync::mpsc::sync_channel(1);
+        {
+            let mut frames = self.frames.lock().unwrap();
+            if frames.len() >= 8 { return Err("Observer confirmation busy".into()); }
+            frames.push(send);
+        }
+        match receive.recv_timeout(Duration::from_secs(3)) {
+            Ok(true) => Ok(()),
+            _ => Err("Observer confirmation unavailable; try again".into()),
+        }
+    }
+    pub fn begin_frame(&self) -> ConfirmationBatch {
+        std::mem::take(&mut *self.frames.lock().unwrap())
+    }
+    pub fn finish_frame(&self, batch: ConfirmationBatch) {
+        self.delivery.lock().unwrap().extend(batch);
+    }
+    fn deliver(&self, activity: &AtomicBool, post: impl FnOnce() -> bool) -> bool {
+        let batch = std::mem::take(&mut *self.delivery.lock().unwrap());
+        let active = activity.swap(false, Ordering::SeqCst);
+        if !active && batch.is_empty() { return true; }
+        let accepted = post();
+        if !accepted { activity.store(true, Ordering::SeqCst); }
+        for sender in batch { let _ = sender.try_send(accepted); }
+        accepted
+    }
+}
+
 pub struct Poller {
+    confirmation: Confirmation,
     activity: Arc<AtomicBool>,
     observer_sample: Arc<Mutex<std::time::Instant>>,
     snapshot: Arc<Mutex<Cache>>,
@@ -43,6 +82,8 @@ pub struct Poller {
 
 impl Poller {
     pub fn new() -> Self {
+        let confirmation = Confirmation::default();
+        let confirmation_thread = confirmation.clone();
         let observer_sample = Arc::new(Mutex::new(std::time::Instant::now()));
         let observer_thread = observer_sample.clone();
         let activity = Arc::new(AtomicBool::new(false));
@@ -66,6 +107,7 @@ impl Poller {
             .name("hypermesh-companion-visor".into())
             .spawn(move || {
                 visor_loop(
+                    confirmation_thread,
                     activity_thread,
                     observer_thread,
                     snapshot_thread,
@@ -78,6 +120,7 @@ impl Poller {
             })
             .ok();
         Self {
+            confirmation,
             activity,
             observer_sample,
             snapshot,
@@ -89,6 +132,8 @@ impl Poller {
             thread,
         }
     }
+
+    pub fn confirmation(&self) -> Confirmation { self.confirmation.clone() }
 
     pub fn physical_input(&self) { self.activity.store(true, Ordering::SeqCst); }
 
@@ -136,6 +181,7 @@ impl Drop for Poller {
 }
 
 fn visor_loop(
+    confirmation: Confirmation,
     activity: Arc<AtomicBool>,
     observer_sample: Arc<Mutex<std::time::Instant>>,
     snapshot: Arc<Mutex<Cache>>,
@@ -148,7 +194,7 @@ fn visor_loop(
     let mut link = Link::new(Snapshot::disconnected());
     let mut pause_asked = false;
     while !stop.load(Ordering::SeqCst) {
-        if activity.swap(false, Ordering::SeqCst) && !post_activity() {
+        if !confirmation.deliver(&activity, post_activity) {
             activity.store(true, Ordering::SeqCst);
             // Do not renew the observer while a physical pause is undelivered.
             thread::sleep(Duration::from_millis(40));
@@ -993,5 +1039,38 @@ mod tests {
         let mut queue = VecDeque::new();
         restore_after_cancel(&mut queue, &["resume"], false);
         assert_eq!(queue.into_iter().collect::<Vec<_>>(), vec!["resume"]);
+    }
+}
+
+#[cfg(test)]
+mod confirmation_tests {
+    use super::*;
+    #[test]
+    fn confirmation_waits_for_frame_and_delivery_and_preserves_later_activity() {
+        let confirmation = Confirmation::default();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        confirmation.frames.lock().unwrap().push(sender);
+        let activity = AtomicBool::new(true);
+        assert!(confirmation.deliver(&activity, || true));
+        assert!(receiver.try_recv().is_err());
+        let batch = confirmation.begin_frame();
+        assert!(receiver.try_recv().is_err());
+        confirmation.finish_frame(batch);
+        assert!(confirmation.deliver(&activity, || {
+            activity.store(true, Ordering::SeqCst);
+            true
+        }));
+        assert_eq!(receiver.try_recv(), Ok(true));
+        assert!(activity.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn failed_delivery_refuses_confirmation_and_keeps_pause_pending() {
+        let confirmation = Confirmation::default();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        confirmation.finish_frame(vec![sender]);
+        let activity = AtomicBool::new(false);
+        assert!(!confirmation.deliver(&activity, || false));
+        assert_eq!(receiver.try_recv(), Ok(false));
+        assert!(activity.load(Ordering::SeqCst));
     }
 }
