@@ -17,13 +17,14 @@ struct Client {
     session: Uuid,
 }
 impl Client {
-    fn new(assigned: bool) -> Self {
+    fn new(assigned: bool) -> Self { Self::with_hold(assigned, false) }
+    fn with_hold(assigned: bool, hold_turn: bool) -> Self {
         let directory = std::env::temp_dir().join(format!("visor-acp-cli-{}", Uuid::new_v4()));
         storage::create_dir(&directory).unwrap();
         let machine = Uuid::new_v4();
         let session = Uuid::new_v4();
         let path = directory.join("assignment.json");
-        storage::open(&path, storage::Open::New).unwrap().write_all(&serde_json::to_vec(&json!({"machine":machine,"session":session,"assigned":assigned,"paused":false})).unwrap()).unwrap();
+        storage::open(&path, storage::Open::New).unwrap().write_all(&serde_json::to_vec(&json!({"machine":machine,"session":session,"assigned":assigned,"paused":false,"hold_turn":hold_turn})).unwrap()).unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_hypermesh-acp"))
             .arg("--fixture-assignment")
             .arg(&path)
@@ -116,6 +117,9 @@ fn initialize_assigned_turn_and_cancel_without_prompt_logging() {
         "Fixture turn completed."
     );
     assert_eq!(client.recv()["result"]["stopReason"], "end_turn");
+    assert!(!client.finish().contains("private-prompt-canary"));
+    let mut client = Client::with_hold(true, true);
+    client.open();
     client.prompt(client.session);
     client.send(
         json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":client.session}}),
@@ -128,7 +132,7 @@ fn unassigned_wrong_session_and_changed_pause_are_refused() {
     let mut unassigned = Client::new(false);
     assert!(unassigned.open().get("error").is_some());
     unassigned.finish();
-    let mut client = Client::new(true);
+    let mut client = Client::with_hold(true, true);
     client.open();
     client.prompt(Uuid::new_v4());
     assert!(client.recv().get("error").is_some());
@@ -139,7 +143,9 @@ fn unassigned_wrong_session_and_changed_pause_are_refused() {
 }
 #[test]
 fn eof_cancels_active_turn_and_process_exits_with_idle_stdio_workers() {
-    let mut client = Client::new(true);
+    // A completed fixture turn may legally publish before stdin closes. Keep
+    // this turn pending so the assertion tests EOF, not scheduler timing.
+    let mut client = Client::with_hold(true, true);
     client.open();
     client.prompt(client.session);
     assert!(!client.finish().contains("private-prompt-canary"));
