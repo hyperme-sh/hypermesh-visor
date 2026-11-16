@@ -105,3 +105,11 @@ final class KeychainSessionStore: NativeSessionStore, @unchecked Sendable {
         }
     }
 }
+
+/// Keep this app-owned instance separate from the owner's OAuth refresh-token store.
+func appleMachineIdentity(service: String, ownerAccount: String, planeOrigin: String) throws -> MobileMachine {
+    // Origin remains part of the account binding; the core verifies it before any request.
+    let account = "machine-v1:" + ownerAccount + "|" + planeOrigin
+    let store = try KeychainSessionStore(service: service + ".machine.v1", account: account)
+    return try MobileMachine(store: store, planeOrigin: planeOrigin)
+}

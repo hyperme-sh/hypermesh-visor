@@ -22,3 +22,13 @@ required-features = ["bindgen"]
 hypermesh-session = { path = "../../session", default-features = false, features = ["external-store"] }
 uniffi = { version = "=0.32.2", default-features = false }
 thiserror = "2"
+
+base64 = "0.22"
+ed25519-dalek = "2"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+getrandom = "0.3.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+uuid = { version = "1", features = ["v4"] }
+ureq = { version = "2.12", default-features = false, features = ["tls"] }

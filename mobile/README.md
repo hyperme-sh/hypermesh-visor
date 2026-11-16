@@ -148,3 +148,37 @@ Platform/architecture metadata, original native bytes and generated headers are
 checked before a checksummed bundle with source revision and dependency notices
 is attached. See [Apple library consumption](apple/LIBRARY.md). Native apps,
 enrollment, VPN, agent access and signing remain open.
+
+
+## Phone machine enrollment
+
+`MobileMachine` implements Plane's `/api/v1/hypermesh/client-machines` contract.
+Use `androidMachineIdentity` or `appleMachineIdentity` with the signed-in owner's
+complete issuer/tenant/account namespace and the configured HTTPS Plane origin.
+Keep one instance for that namespace in the app's auth owner, off the UI thread.
+The factory uses a separate secure-store entry from the OAuth session. An OAuth
+refresh token is not a machine identity and cannot be read as one.
+
+The app's native sign-in flow supplies the current tenant-bound owner session to
+`enroll`. Keys and retry identifiers are persisted before any network request.
+The core validates the returned device/key/tenant/authority bindings, signs the
+existing machine proof, then stores the short-lived credential through the native
+secure-store callback. `renew` uses that signing key without an owner bearer.
+There is no exported token or private-key getter. HTTP responses are bounded,
+redirects are disabled, and fixed errors omit network/store diagnostics.
+
+`rotateSigningKey` saves the replacement before sending a rotation proof and
+retains it if the response is lost. A retry uses a fresh nonce and can recover
+using the saved replacement after the old key's overlap expires. `revoke` first
+marks the local identity revoked and clears its token, then calls the owner-scoped
+remote revocation route. Failure retains that local refusal for retry; successful
+revocation deletes the secure-store entry. Losing keys needs owner revocation and
+fresh enrollment. No fallback file, key recovery or automatic account substitution
+is provided. `status.enrolled` describes the local bound record, not live service
+permission. Native/Rust strings can leave transient memory copies.
+
+Rust unit tests use a recording authority substitute with real Ed25519 signature
+verification; they cover response loss, stored-key reuse, storage refusal, rotation
+and revocation. Generated Swift/Kotlin contracts construct the new API without
+network access. Native sign-in UI, WireGuard peer provisioning and authenticated
+Conductor operations remain separate app wiring; this does not claim them ready.

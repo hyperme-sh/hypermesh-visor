@@ -34,6 +34,8 @@ func require(_ condition: Bool) {
     precondition(condition, "mobile callback contract failed")
 }
 
+let machine = try MobileMachine(store: FixtureStore(), planeOrigin: "https://plane.test")
+require(try machine.status() == nil)
 let store = FixtureStore()
 let session = MobileSession(store: store)
 require(try !session.hasStoredSession())
