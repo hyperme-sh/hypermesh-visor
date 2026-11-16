@@ -535,7 +535,7 @@ pub fn trust_request(
 ) -> Result<serde_json::Value, String> {
     if !matches!(
         path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers"
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview"
     ) {
         return Err("Invalid trust endpoint".into());
     }
@@ -543,7 +543,7 @@ pub fn trust_request(
     let body = body.map(|v| v.to_string()).unwrap_or_default();
     let request = format!("{method} {path} HTTP/1.1\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
     let socket = socket_path().ok_or("Companion socket unavailable")?;
-    let Exchange::Body(response) = exchange_read_timeout(&socket, &request, Duration::from_secs(5))
+    let Exchange::Body(response) = exchange_read_timeout(&socket, &request, Duration::from_secs(if path == "/permissions/preview" {20} else {5}))
     else {
         return Err("Cannot reach visor; no trust change confirmed".into());
     };

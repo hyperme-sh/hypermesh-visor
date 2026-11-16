@@ -883,6 +883,13 @@ fn on_click(
                 }
             });
         }
+        Action::Permissions => {
+            app.menu = false;
+            let status = Arc::clone(&app.status);
+            std::thread::spawn(move || {
+                if let Err(err) = crate::permissions::run() { *status.lock().unwrap() = err; }
+            });
+        }
         Action::McpProfiles => {
             app.menu = false;
             let status = Arc::clone(&app.status);

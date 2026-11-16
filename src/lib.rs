@@ -43,6 +43,7 @@ mod native_prompt;
 mod mcp;
 mod orchestrator;
 mod prompt;
+pub mod permission_templates;
 mod session;
 mod stream;
 pub mod telemetry;

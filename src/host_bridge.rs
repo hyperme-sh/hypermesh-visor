@@ -94,6 +94,14 @@ impl Bridge {
     }
     #[cfg(windows)]
     async fn request(&self, _: &str, _: &str, _: Vec<u8>) -> Result<Value, ()> { Err(()) }
+    pub async fn permission_context(&self) -> Result<Value, ()> {
+        self.request("GET", "/permission-context", vec![]).await
+    }
+    pub async fn permission_preview(&self, body: Value) -> Result<Value, ()> {
+        let raw = serde_json::to_vec(&body).map_err(|_| ())?;
+        if raw.len() > 196608 { return Err(()); }
+        self.request("POST", "/permission-preview", raw).await
+    }
     pub async fn catalog(&self) -> Result<Vec<Entry>, ()> {
         let value = self.request("GET", "/catalog", vec![]).await?;
         let entries: Vec<Entry> = serde_json::from_value(value).map_err(|_| ())?;
