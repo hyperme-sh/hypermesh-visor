@@ -2,7 +2,7 @@
 
 This is the Apple library portion of Visor #226. The Swift package uses the
 MIT-licensed official WireGuardKit at the source revision recorded in
-`Package.swift`. It supports an app-owned NetworkExtension packet tunnel provider
+`Vendor/wireguard-apple/UPSTREAM.md`. It supports an app-owned NetworkExtension packet tunnel provider
 on iOS 15 and macOS 12 or newer. It does not create an app, VPN profile,
 entitlement, secure-store item, or startup job.
 
