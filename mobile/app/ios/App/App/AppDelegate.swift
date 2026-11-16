@@ -98,9 +98,12 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         if busy { busyLock.unlock(); call.reject("Another action is in progress."); return }
         busy = true; busyLock.unlock()
         worker.async {
-            defer { self.busyLock.lock(); self.busy = false; self.busyLock.unlock() }
-            do { call.resolve(try action(state)) }
-            catch { call.reject("That action could not be completed.") }
+            let result = Result { try action(state) }
+            self.busyLock.lock(); self.busy = false; self.busyLock.unlock()
+            switch result {
+            case .success(let value): call.resolve(value)
+            case .failure: call.reject("That action could not be completed.")
+            }
         }
     }
     private func publicState(_ state: PhoneNativeState) throws -> JSObject {

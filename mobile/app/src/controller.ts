@@ -11,7 +11,15 @@ export class Controller {
     const stamp = ++this.generation;
     this.publish({ busy: true, message: '' });
     try { const result = await action(); if (stamp === this.generation) this.publish(result); }
-    catch { if (stamp === this.generation) this.publish({ state: { ...this.view.state, connection: 'unreachable', canConnect: false }, message: 'That action could not be completed. Please try again.' }); }
+    catch {
+      if (stamp === this.generation) {
+        // Mutations can persist a safe local refusal before a remote failure.
+        // Reconcile native state so reauthentication is available immediately.
+        let state: State = { ...this.view.state, connection: 'unreachable', canConnect: false };
+        try { state = checkedState(await this.native.status()); } catch { /* Fixed public error below. */ }
+        if (stamp === this.generation) this.publish({ state, message: 'That action could not be completed. Please try again.' });
+      }
+    }
     finally { if (stamp === this.generation) this.publish({ busy: false }); }
   }
   refresh() { return this.operation(async () => ({ state: checkedState(await this.native.status()) })); }

@@ -23,6 +23,22 @@ describe('native UI contract',()=>{
     await s.controller.signIn();const pending=s.controller.finishSignIn();await s.controller.cancel();
     release({workspaces:[]});await pending;expect(s.view().userCode).toBe('');expect(s.view().busy).toBe(false);
   });
+  it('reconciles local revocation when owner authentication fails', async () => {
+    const s=setup();
+    s.native.status=vi.fn(async()=>({...disconnected,enrolled:true}));
+    await s.controller.refresh();
+    s.native.revoke=vi.fn(async()=>{
+      s.native.status=vi.fn(async()=>({...disconnected,revoked:true}));
+      throw new Error('expired private owner session');
+    });
+    await s.controller.revoke();
+    expect(s.view().state.enrolled).toBe(false);
+    expect(s.view().state.revoked).toBe(true);
+    expect(s.view().busy).toBe(false);
+    expect(JSON.stringify(s.view())).not.toContain('private owner session');
+    await s.controller.signIn();
+    expect(s.view().userCode).toBe('ABCD-1234');
+  });
   it('drops unexpected native fields and never shows raw failure text',async()=>{
     const s=setup();s.native.status=vi.fn(async()=>({...disconnected,privateKey:'secret-canary'}));
     await s.controller.refresh();expect(JSON.stringify(s.view())).not.toContain('secret-canary');
