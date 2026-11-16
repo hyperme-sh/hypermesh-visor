@@ -825,6 +825,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/session/:id/tasks", post(tasks::submit))
         .route("/session/:id/tasks/leased", post(tasks::submit_leased))
         .route("/session/:id/tasks/:task", get(tasks::status).delete(tasks::cancel))
+        .route("/session/:id/tasks/:task/status", get(tasks::status_only))
         .route("/session/:id/view", post(view))
         .route("/session/:id/watch", get(watch))
         .route("/session/:id/feed/snapshot", get(session_feed_snapshot))
@@ -874,7 +875,7 @@ async fn managed_status(State(state): State<Arc<AppState>>, Extension(link): Ext
     state.managed_active();
     let lease = guest.read().map_err(|_| ApiError::conflict("Host control unavailable"))?;
     let epoch = lock(&state.automation).epoch();
-    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch})))
+    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch,"resume_seq":lock(&state.automation).resume_seq()})))
 }
 async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {
     if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }

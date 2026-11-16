@@ -49,6 +49,8 @@ impl Record {
         matches!(self.status, "completed" | "failed" | "cancelled")
     }
 
+    fn brief(&self) -> Value { json!({"id":self.id,"status":self.status}) }
+
     fn snapshot(&self) -> Value {
         json!({"id":self.id,"session":self.session,"status":self.status,
             "completed_steps":self.completed,"total_steps":self.total,
@@ -323,6 +325,16 @@ pub(super) async fn status(
         .ok_or_else(ApiError::missing)
 }
 
+pub(super) async fn status_only(
+    State(state): State<Arc<AppState>>, Path((session, id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let session=parse_id(&session)?; let id=parse_id(&id)?;
+    let sessions=lock(&state.sessions);
+    if !sessions.contains_key(&session) { return Err(ApiError::missing()); }
+    lock(&state.tasks.records).iter().find(|r|r.id==id && r.session==session)
+        .map(|r|Json(r.brief())).ok_or_else(ApiError::missing)
+}
+
 pub(super) async fn cancel(
     State(state): State<Arc<AppState>>,
     Path((session, id)): Path<(String, String)>,
@@ -515,5 +527,19 @@ mod lease_tests {
         for until in [0, 999_999, 1_000_000, 1_015_001, u64::MAX] {
             assert!(lease_duration(until, 1_000_000).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod broker_status_tests {
+    use super::*;
+    #[test]
+    fn status_projection_excludes_large_results_and_errors() {
+        let record=Record { id:Uuid::new_v4(),session:Uuid::new_v4(),status:"completed",completed:2,total:2,
+            results:vec![json!({"png":"a".repeat(800000)})],error:Some("private detail".into()),cancel:Arc::new(AtomicBool::new(false)) };
+        let brief=record.brief();
+        assert_eq!(brief["status"],"completed"); assert_eq!(brief["id"],record.id.to_string());
+        assert_eq!(brief.as_object().unwrap().len(),2);
+        assert!(serde_json::to_vec(&brief).unwrap().len()<128);
     }
 }

@@ -1,5 +1,6 @@
 //! Linux host runtime for private, locally managed companion desktops.
 use crate::{
+    companion_broker::Broker,
     companion_docker::{Docker, LocalRunner},
     companion_lease::Lease,
     companion_manager::{
@@ -25,13 +26,18 @@ struct Control {
     scope: Scope,
     path: PathBuf,
     running: Option<(Uuid, Permit)>,
+    remote: bool,
+    remote_until: Option<Instant>,
 }
 type Controls = Arc<Mutex<HashMap<Uuid, Control>>>;
 fn write_lease(control: &Control) -> Result<(), Error> {
     let run = control
         .running
         .as_ref()
-        .filter(|(_, p)| p.check(control.scope).is_ok())
+        .filter(|(_, p)| {
+            p.check(control.scope).is_ok()
+                && (!control.remote || control.remote_until.is_some_and(|t| t > Instant::now()))
+        })
         .map(|(id, _)| *id);
     let bytes = serde_json::to_vec(&Lease::new(control.scope, run)?).map_err(|_| Error::Backend)?;
     let temp = control.path.join(format!(".lease-{}", Uuid::new_v4()));
@@ -89,6 +95,8 @@ impl Backend for DesktopBackend {
             scope: a.scope(),
             path: path.clone(),
             running: None,
+            remote: false,
+            remote_until: None,
         };
         write_lease(&control)?;
         self.controls
@@ -167,6 +175,7 @@ pub struct Runtime {
     observer: Observer,
     offers: Mutex<HashMap<Uuid, (Instant, ResumeOffer)>>,
     stopped: Arc<AtomicBool>,
+    broker: Mutex<Broker>,
 }
 impl Runtime {
     pub fn open(directory: &Path, image: String, native_session: Uuid) -> Result<Arc<Self>, Error> {
@@ -177,6 +186,14 @@ impl Runtime {
         let mut docker = Docker::new(LocalRunner::new(directory.into()), journal.owner(), image)?;
         docker.claim()?;
         journal.recover(&mut docker)?;
+        let mut broker = Broker::open(directory)?;
+        let scopes = journal
+            .active()
+            .iter()
+            .chain(journal.retained())
+            .map(|a| a.scope())
+            .collect::<Vec<_>>();
+        broker.retain(&scopes)?;
         let controls: Controls = Arc::new(Mutex::new(HashMap::new()));
         let backend = DesktopBackend {
             journal,
@@ -206,6 +223,7 @@ impl Runtime {
         let observer = manager.observer();
         let stopped = Arc::new(AtomicBool::new(false));
         let runtime = Arc::new(Self {
+            broker: Mutex::new(broker),
             manager: Mutex::new(manager),
             observer,
             offers: Mutex::new(HashMap::new()),
@@ -242,7 +260,101 @@ impl Runtime {
                 }
             })
             .map_err(|_| Error::Backend)?;
+        let weak = Arc::downgrade(&runtime);
+        std::thread::Builder::new()
+            .name("visor-companion-broker".into())
+            .spawn(move || {
+                let mut active = HashMap::<Uuid, (Uuid, Uuid)>::new();
+                while let Some(runtime) = weak.upgrade() {
+                    runtime.poll_bots(&mut active);
+                    drop(runtime);
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            })
+            .map_err(|_| Error::Backend)?;
         Ok(runtime)
+    }
+    fn poll_bots(&self, active: &mut HashMap<Uuid, (Uuid, Uuid)>) {
+        let Ok(mut manager) = self.manager.try_lock() else {
+            return;
+        };
+        let Ok(mut broker) = self.broker.lock() else {
+            return;
+        };
+        for snapshot in manager.snapshots() {
+            let scope = snapshot.allocation.scope;
+            if !broker.enrolled(scope) {
+                continue;
+            }
+            let running = snapshot.phase == crate::companion_manager::Phase::Running;
+            let result = (|| -> Result<(), Error> {
+                if running {
+                    // A missed grant never silently revives an old local permit.
+                    let controls = manager
+                        .backend_mut()
+                        .controls
+                        .lock()
+                        .map_err(|_| Error::Backend)?;
+                    if !controls
+                        .get(&scope.generation())
+                        .is_some_and(|c| c.remote_until.is_some_and(|t| t > Instant::now()))
+                    {
+                        return Err(Error::Stale);
+                    }
+                }
+                let status = broker.heartbeat(scope, running)?;
+                if !running {
+                    if active.remove(&scope.generation()).is_some() {
+                        broker.disconnect(scope);
+                    }
+                    return Ok(());
+                }
+                if let Some((cloud, _)) = active.get(&scope.generation()) {
+                    if !Broker::task_live(&status, *cloud) {
+                        return Err(Error::Stale);
+                    }
+                }
+                let duration = broker.authorized(scope, &status)?;
+                {
+                    let mut controls = manager
+                        .backend_mut()
+                        .controls
+                        .lock()
+                        .map_err(|_| Error::Backend)?;
+                    let control = controls.get_mut(&scope.generation()).ok_or(Error::Stale)?;
+                    if !control.remote_until.is_some_and(|t| t > Instant::now()) {
+                        return Err(Error::Stale);
+                    }
+                    control.remote_until = Some(Instant::now() + duration);
+                }
+                let backend = manager.backend_mut();
+                let owned = backend.owned(scope)?;
+                if let Some((cloud, local)) = active.get(&scope.generation()).copied() {
+                    let result = backend
+                        .docker
+                        .task(owned, json!({"action":"status","id":local}))?;
+                    if let Some(status @ ("completed" | "failed" | "cancelled")) =
+                        result["status"].as_str()
+                    {
+                        broker.complete(scope, cloud, status)?;
+                        active.remove(&scope.generation());
+                    }
+                } else if let Some((cloud, payload, until)) = broker.claim(scope)? {
+                    let result = backend.docker.task(owned, json!({"action":"submit","payload":payload,"until_ms":(until*1000.0).floor() as u64}))?;
+                    let local = result["id"]
+                        .as_str()
+                        .and_then(|s| Uuid::parse_str(s).ok())
+                        .ok_or(Error::Invalid)?;
+                    active.insert(scope.generation(), (cloud, local));
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                let _ = manager.pause(scope);
+                active.remove(&scope.generation());
+                broker.disconnect(scope);
+            }
+        }
     }
     pub fn observer(&self) -> &Observer {
         &self.observer
@@ -252,13 +364,14 @@ impl Runtime {
         let mut manager = self.manager.lock().map_err(|_| Error::Backend)?;
         // Refresh pending host revocations before showing or acting on state.
         let _ = manager.tick();
+        let mut broker = self.broker.lock().map_err(|_| Error::Backend)?;
         if action == "list" {
-            let retained = manager.backend_mut().journal.retained().iter().map(|a| json!({"companion":a.companion,"session":a.session,"generation":a.generation})).collect::<Vec<_>>();
+            let retained = manager.backend_mut().journal.retained().iter().map(|a| json!({"companion":a.companion,"session":a.session,"generation":a.generation,"enrolled":broker.enrolled(a.scope())})).collect::<Vec<_>>();
             return Ok(
                 json!({"retained":retained,"companions":manager.snapshots().iter().map(|s| json!({
                 "companion":s.allocation.scope.companion(),"session":s.allocation.scope.session(),
                 "generation":s.allocation.scope.generation(),"native":s.allocation.kind == Kind::Native,
-                "phase":format!("{:?}",s.phase)
+                "enrolled":broker.enrolled(s.allocation.scope),"phase":format!("{:?}",s.phase)
             })).collect::<Vec<_>>() }),
             );
         }
@@ -288,7 +401,34 @@ impl Runtime {
             if available < (u64::from(resources.memory_mib) + 1024) * 1024 {
                 return Err(Error::Capacity);
             }
+            let source = if action == "add" {
+                None
+            } else {
+                Some(request_scope(&body)?)
+            };
+            let owner = if source.is_some_and(|s| broker.enrolled(s)) {
+                Some(body["owner_token"].as_str().ok_or(Error::Invalid)?)
+            } else {
+                None
+            };
             let scope = manager.add_container(resources)?;
+            if let Some(token) = owner {
+                let source = source.ok_or(Error::Invalid)?;
+                let result = broker.recreate(source, scope, action, Uuid::new_v4(), token);
+                if result.is_err() {
+                    let _ = manager.stop(scope);
+                    return Err(Error::Backend);
+                }
+                let mut controls = manager
+                    .backend_mut()
+                    .controls
+                    .lock()
+                    .map_err(|_| Error::Backend)?;
+                controls
+                    .get_mut(&scope.generation())
+                    .ok_or(Error::Stale)?
+                    .remote = true;
+            }
             return Ok(
                 json!({"companion":scope.companion(), "session":scope.session(), "generation":scope.generation()}),
             );
@@ -307,6 +447,22 @@ impl Runtime {
             if when.elapsed() > Duration::from_secs(30) {
                 return Err(Error::Stale);
             }
+            let scope = offer.scope();
+            if broker.enrolled(scope) {
+                let owner = body["owner_token"].as_str().ok_or(Error::Invalid)?;
+                broker.control(scope, owner, "resume")?;
+                broker.heartbeat(scope, false)?;
+                let status = broker.heartbeat(scope, true)?;
+                let duration = broker.authorized(scope, &status)?;
+                let mut controls = manager
+                    .backend_mut()
+                    .controls
+                    .lock()
+                    .map_err(|_| Error::Backend)?;
+                let control = controls.get_mut(&scope.generation()).ok_or(Error::Stale)?;
+                control.remote = true;
+                control.remote_until = Some(Instant::now() + duration);
+            }
             manager.resume(offer)?;
             return Ok(json!({}));
         }
@@ -316,6 +472,7 @@ impl Runtime {
             backend
                 .journal
                 .delete_retained(&mut backend.docker, scope)?;
+            broker.remove(scope)?;
             return Ok(json!({}));
         }
         let snapshot = manager
@@ -327,6 +484,31 @@ impl Runtime {
             return Err(Error::Invalid);
         }
         match action {
+            "enroll" => {
+                manager.pause(scope)?;
+                let tenant = body["tenant"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .ok_or(Error::Invalid)?;
+                let result = broker.enroll(
+                    scope,
+                    body["origin"].as_str().ok_or(Error::Invalid)?,
+                    tenant,
+                    body["owner_token"].as_str().ok_or(Error::Invalid)?,
+                );
+                let required = enrollment_requires_remote(broker.enrolled(scope), &result);
+                {
+                    let mut controls = manager
+                        .backend_mut()
+                        .controls
+                        .lock()
+                        .map_err(|_| Error::Backend)?;
+                    let control = controls.get_mut(&scope.generation()).ok_or(Error::Stale)?;
+                    control.remote |= required;
+                }
+                result?;
+                Ok(json!({}))
+            }
             "offer" => {
                 let offer = manager.offer_resume(scope)?;
                 let mut offers = self.offers.lock().map_err(|_| Error::Backend)?;
@@ -339,9 +521,20 @@ impl Runtime {
                 Ok(json!({"offer":token}))
             }
             "stop" => {
+                // Pause revokes permits before attempting guest communication.
+                // Cleanup must still run if that guest or Plane is unavailable.
+                let _ = manager.pause(scope);
+                if broker.enrolled(scope) {
+                    if let Some(token) = body["owner_token"].as_str() {
+                        let _ = broker.control(scope, token, "stop");
+                    }
+                }
                 manager.backend_mut().retain =
                     body["retain_home"].as_bool().ok_or(Error::Invalid)?;
                 manager.stop(scope)?;
+                if !manager.backend_mut().retain {
+                    broker.remove(scope)?;
+                }
                 Ok(json!({}))
             }
             "view" => {
@@ -358,6 +551,14 @@ impl Drop for Runtime {
         self.stopped.store(true, Ordering::Release);
         let _ = self.observer.physical_input();
     }
+}
+
+fn enrollment_requires_remote(enrolled: bool, result: &Result<(), Error>) -> bool {
+    enrolled
+        || !matches!(
+            result,
+            Err(Error::Invalid | Error::Capacity | Error::Denied)
+        )
 }
 
 fn request_scope(body: &Value) -> Result<Scope, Error> {
@@ -421,6 +622,58 @@ mod recreation_tests {
         fn stop(&mut self, _: Scope) -> Result<(), Error> {
             Ok(())
         }
+    }
+    #[test]
+    fn expired_remote_grant_removes_guest_lease_without_waiting_for_manager() {
+        let unit = Resources {
+            memory_mib: 512,
+            cpu_millis: 1000,
+        };
+        let mut manager = Manager::new(
+            EmptyBackend,
+            Uuid::new_v4(),
+            unit,
+            Resources {
+                memory_mib: 4096,
+                cpu_millis: 4000,
+            },
+        )
+        .unwrap();
+        manager.observer_poll(true).unwrap();
+        let scope = manager.add_container(unit).unwrap();
+        let offer = manager.offer_resume(scope).unwrap();
+        let permit = manager.resume(offer).unwrap();
+        let path = std::env::temp_dir().join(format!("remote-lease-unit-{}", Uuid::new_v4()));
+        storage::create_dir(&path).unwrap();
+        let mut control = Control {
+            scope,
+            path: path.clone(),
+            running: Some((Uuid::new_v4(), permit)),
+            remote: true,
+            remote_until: Some(Instant::now() + Duration::from_secs(2)),
+        };
+        write_lease(&control).unwrap();
+        let read = || {
+            serde_json::from_slice::<Lease>(&std::fs::read(path.join("lease.json")).unwrap())
+                .unwrap()
+        };
+        assert!(read().run.is_some());
+        control.remote_until = Some(Instant::now() - Duration::from_secs(1));
+        write_lease(&control).unwrap();
+        assert!(read().run.is_none());
+        control.remote_until = None;
+        write_lease(&control).unwrap();
+        assert!(read().run.is_none());
+        std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn definitive_enrollment_refusal_keeps_local_mode_but_uncertainty_does_not() {
+        for error in [Error::Invalid, Error::Capacity, Error::Denied] {
+            assert!(!enrollment_requires_remote(false, &Err(error)));
+            assert!(enrollment_requires_remote(true, &Err(error)));
+        }
+        assert!(enrollment_requires_remote(false, &Err(Error::Backend)));
+        assert!(enrollment_requires_remote(true, &Ok(())));
     }
     fn saved() -> Owned {
         Owned {

@@ -20,8 +20,11 @@ struct Assignment {
     session: Uuid,
     assigned: bool,
     paused: bool,
+    #[serde(default)]
+    hold_turn: bool,
 }
 struct Fixture {
+    hold_turn: bool,
     path: PathBuf,
     machine: Uuid,
     session: Uuid,
@@ -74,7 +77,9 @@ impl Backend for Fixture {
         Box::pin(async move {
             // Fixture only: no model, desktop, filesystem content or tool action.
             // Recheck assignment and pause while the cancellable turn is active.
-            for _ in 0..10 {
+            let mut ticks = 0;
+            while self.hold_turn || ticks < 10 {
+                ticks += 1;
                 self.authorized(cancel).await?;
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
@@ -99,6 +104,7 @@ fn run() -> i32 {
         return 2;
     };
     let backend = Arc::new(Fixture {
+        hold_turn: assignment.hold_turn,
         path,
         machine: assignment.machine,
         session: assignment.session,

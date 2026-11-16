@@ -5,7 +5,7 @@ use crate::companion_recovery::{Cleanup, Owned};
 use serde_json::Value;
 use std::{
     fs::File,
-    io::Read,
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -20,6 +20,9 @@ const GENERATION: &str = "sh.hypermesh.companion.generation";
 const OUTPUT_LIMIT: u64 = 1024 * 1024;
 
 pub trait Runner {
+    fn run_with_input(&mut self, _: &[String], _: &[u8]) -> Result<Vec<u8>, Error> {
+        Err(Error::Backend)
+    }
     fn run(&mut self, arguments: &[String]) -> Result<Vec<u8>, Error>;
 }
 /// An explicit Unix engine address prevents inherited Docker context/TLS
@@ -34,6 +37,23 @@ impl LocalRunner {
 }
 impl Runner for LocalRunner {
     fn run(&mut self, arguments: &[String]) -> Result<Vec<u8>, Error> {
+        self.execute(arguments, Stdio::null())
+    }
+    fn run_with_input(&mut self, arguments: &[String], bytes: &[u8]) -> Result<Vec<u8>, Error> {
+        if bytes.len() > 262144 {
+            return Err(Error::Invalid);
+        }
+        let path = self.directory.join(format!(".input-{}", Uuid::new_v4()));
+        let mut file = hypermesh_local_storage::open(&path, hypermesh_local_storage::Open::New)
+            .map_err(|_| Error::Backend)?;
+        std::fs::remove_file(&path).map_err(|_| Error::Backend)?;
+        file.write_all(bytes).map_err(|_| Error::Backend)?;
+        file.seek(SeekFrom::Start(0)).map_err(|_| Error::Backend)?;
+        self.execute(arguments, Stdio::from(file))
+    }
+}
+impl LocalRunner {
+    fn execute(&mut self, arguments: &[String], input: Stdio) -> Result<Vec<u8>, Error> {
         if !cfg!(target_os = "linux") {
             return Err(Error::Backend);
         }
@@ -47,7 +67,7 @@ impl Runner for LocalRunner {
                 .arg("--host")
                 .arg("unix:///var/run/docker.sock")
                 .args(arguments)
-                .stdin(Stdio::null())
+                .stdin(input)
                 .stdout(Stdio::from(output.try_clone().map_err(|_| Error::Backend)?))
                 .stderr(Stdio::null())
                 .spawn()
@@ -226,6 +246,27 @@ impl<R: Runner> Docker<R> {
     pub fn present(&mut self, a: Owned) -> Result<bool, Error> {
         Ok(self.owned_container(a)?.is_some())
     }
+    pub fn task(&mut self, a: Owned, body: Value) -> Result<Value, Error> {
+        let exact = self.owned_container(a)?.ok_or(Error::Stale)?;
+        let bytes = serde_json::to_vec(&body).map_err(|_| Error::Invalid)?;
+        let output = self.runner.run_with_input(
+            &args(&[
+                "container",
+                "exec",
+                "-i",
+                "--user=1000:1000",
+                &exact,
+                "/usr/bin/python3",
+                "-I",
+                "-c",
+                GUEST_BRIDGE,
+                "task",
+                &a.session.to_string(),
+            ]),
+            &bytes,
+        )?;
+        serde_json::from_slice(&output).map_err(|_| Error::Backend)
+    }
     pub fn guest(&mut self, a: Owned, action: &str) -> Result<Value, Error> {
         if !matches!(action, "status" | "resume" | "pause" | "view") {
             return Err(Error::Invalid);
@@ -387,9 +428,9 @@ fn create_arguments(
     Ok(command)
 }
 
-// No shell, user code, bearer, prompt, or arbitrary URL crosses this bridge.
+// Fixed bridge code and paths. Task bodies use anonymous private stdin only.
 const GUEST_BRIDGE: &str = r#"
-import base64,http.client,json,socket,sys
+import base64,http.client,json,socket,sys,uuid
 class Local(http.client.HTTPConnection):
  def connect(self):
   self.sock=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
@@ -400,7 +441,7 @@ def call(method,path,body=None):
  try:
   c.request(method,path,None if body is None else json.dumps(body),{'Content-Type':'application/json'})
   r=c.getresponse(); raw=r.read(700001)
-  if r.status not in (200,204) or len(raw)>700000: raise RuntimeError('managed desktop refused')
+  if r.status not in (200,202,204) or len(raw)>700000: raise RuntimeError('managed desktop refused')
   if r.getheader('Content-Type','').startswith('image/'):
    return {'png':base64.b64encode(raw).decode('ascii')}
   return json.loads(raw) if raw else {}
@@ -413,6 +454,18 @@ elif a=='resume':
  result=call('POST','/companion/automation',{'action':'resume','expected_session':session,'expected_epoch':status['epoch']})
 elif a=='pause': result=call('POST','/companion/managed/cancel')
 elif a=='view': result=call('POST','/session/'+session+'/view',{})
+elif a=='task':
+ raw=sys.stdin.buffer.read(262145)
+ if len(raw)>262144: raise RuntimeError('task too large')
+ body=json.loads(raw)
+ if body['action']=='submit':
+  status=call('GET','/companion/managed')
+  if status['session']!=session: raise RuntimeError('scope changed')
+  result=call('POST','/session/'+session+'/tasks/leased',{'task':body['payload'],'authorized_until_ms':body['until_ms'],'resume_seq':status['resume_seq']})
+ elif body['action']=='status':
+  task=str(uuid.UUID(body['id']))
+  result=call('GET','/session/'+session+'/tasks/'+task+'/status')
+ else: raise RuntimeError('invalid task operation')
 else: raise RuntimeError('invalid operation')
 print(json.dumps(result))
 "#;
@@ -424,8 +477,13 @@ mod tests {
     struct Fake {
         replies: std::collections::VecDeque<Result<Vec<u8>, Error>>,
         calls: Vec<Vec<String>>,
+        input: Vec<u8>,
     }
     impl Runner for Fake {
+        fn run_with_input(&mut self, a: &[String], body: &[u8]) -> Result<Vec<u8>, Error> {
+            self.input = body.to_vec();
+            self.run(a)
+        }
         fn run(&mut self, a: &[String]) -> Result<Vec<u8>, Error> {
             self.calls.push(a.to_vec());
             self.replies.pop_front().unwrap_or(Err(Error::Backend))
@@ -504,6 +562,27 @@ mod tests {
                 assert_eq!(removes[0].last(), Some(&exact));
             }
         }
+    }
+    #[test]
+    fn task_body_is_private_stdin_and_target_is_exact_owned_container() {
+        let owner = Uuid::new_v4();
+        let a = owned();
+        let exact = "a".repeat(64);
+        let mut runner = Fake::default();
+        runner.replies.push_back(Ok(exact.as_bytes().to_vec()));
+        runner.replies.push_back(Ok(inspect(owner, a, &exact)));
+        runner.replies.push_back(Ok(b"{}".to_vec()));
+        let mut docker = Docker::new(runner, owner, IMAGE.into()).unwrap();
+        let body = serde_json::json!({"action":"submit","payload":{"steps":[{"tool":"type","arguments":{"text":"private task text"}}]},"until_ms":42});
+        docker.task(a, body.clone()).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&docker.runner.input).unwrap(),
+            body
+        );
+        let call = docker.runner.calls.last().unwrap();
+        assert!(call.contains(&exact));
+        assert!(call.contains(&"-i".into()));
+        assert!(!call.iter().any(|v| v.contains("private task text")));
     }
     #[test]
     fn unavailable_engine_is_not_mistaken_for_absent_desktop() {
