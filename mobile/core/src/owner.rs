@@ -251,6 +251,7 @@ impl MobileOwnerSignIn {
         if machine.status()?.ok_or(MachineError::Refused)?.tenant_id != tenant {
             return Err(MachineError::Refused);
         }
+        machine.revoke_local()?;
         let tokens = self.flow.refresh(&AppStore(self.store.clone()))?;
         machine.revoke(self.flow.tenant_session(&tokens.access_token, &tenant)?)
     }
@@ -353,6 +354,34 @@ mod tests {
         login.cancel().unwrap();
         assert!(login.finish().is_err());
         assert!(store.read_refresh_token().unwrap().is_none());
+    }
+    #[test]
+    fn expired_owner_session_still_revokes_local_machine_and_retains_retry_identity() {
+        use base64::Engine;
+        let (login, _) = setup(false, false);
+        let store = Arc::new(Store::default());
+        let tenant = uuid::Uuid::new_v4().to_string();
+        let device = uuid::Uuid::new_v4().to_string();
+        let key = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
+        store.write_refresh_token(json!({
+            "version":1,"origin":"https://plane.test","tenant_id":tenant,
+            "device_id":device,"request_id":uuid::Uuid::new_v4().to_string(),
+            "platform":"android","signing_key":key,"wireguard_key":key,
+            "pending_key":null,"authority_id":"local","control_plane_id":"local",
+            "bound":true,"revoked":false,"token":"cached-machine-credential","token_expires":9999999999u64
+        }).to_string()).unwrap();
+        let machine =
+            Arc::new(MobileMachine::new(store.clone(), "https://plane.test".into()).unwrap());
+        assert!(login
+            .revoke_machine(machine.clone(), tenant.clone())
+            .is_err());
+        assert!(machine.status().unwrap().unwrap().revoked);
+        assert!(machine.renew().is_err());
+        let saved: Value =
+            serde_json::from_str(&store.read_refresh_token().unwrap().unwrap()).unwrap();
+        assert!(saved["token"].is_null());
+        assert_eq!(saved["device_id"], device);
+        assert!(login.revoke_machine(machine, tenant).is_err());
     }
     #[test]
     fn issuer_redirects_and_insecure_configuration_are_refused() {

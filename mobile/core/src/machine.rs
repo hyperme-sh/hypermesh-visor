@@ -186,6 +186,14 @@ fn authority_name(value: &Value, name: &str) -> Result<String, MachineError> {
 }
 
 impl MobileMachine {
+    pub(crate) fn revoke_local(&self) -> Result<(), MachineError> {
+        let _lock = self.lock.lock().map_err(|_| MachineError::Unavailable)?;
+        let mut state = self.read()?.ok_or(MachineError::Refused)?;
+        state.revoked = true;
+        state.token = None;
+        state.token_expires = 0;
+        self.save(&state)
+    }
     fn read(&self) -> Result<Option<Identity>, MachineError> {
         let Some(raw) = self
             .store
