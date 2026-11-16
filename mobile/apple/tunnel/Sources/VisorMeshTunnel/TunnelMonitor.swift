@@ -37,7 +37,7 @@ final class TunnelMonitor {
         let (next, overflow) = effectiveWall.addingReportingOverflow(elapsed)
         if overflow { clockFailed = true; return .unreachable }
         effectiveWall = max(wall, next)
-        guard up else { startWall = wall; return .unreachable }
+        guard up else { startWall = wall - wall % 1000; return .unreachable }
         guard handshake <= wall else { return .unreachable }
         if handshake >= startWall && handshake > 0 && effectiveWall - handshake <= 180_000 {
             reached = true
@@ -111,4 +111,10 @@ final class TunnelOperations {
         case .running: return monitor.sample(up: up, handshake: handshake, wall: wall, mono: mono)
         }
     }
+}
+
+// Both interface addresses and peer networks become included routes upstream.
+func validTunnelPrefixes(interface: [UInt8], peer: [UInt8]) -> Bool {
+    !interface.isEmpty && interface.count <= 8 && interface.allSatisfy { $0 > 0 }
+        && !peer.isEmpty && peer.count <= 32 && peer.allSatisfy { $0 > 0 }
 }

@@ -22,11 +22,10 @@ public final class AppleMeshTunnel {
         let copy = TunnelConfiguration(name: nil, interface: configuration.interface, peers: configuration.peers)
         queue.async {
             guard self.operations.phase == .stopped,
-                  !copy.interface.addresses.isEmpty, copy.interface.addresses.count <= 8,
                   (copy.interface.listenPort ?? 0) == 0,
                   let selected = copy.peers.first, selected.endpoint != nil,
-                  !selected.allowedIPs.isEmpty, selected.allowedIPs.count <= 32,
-                  selected.allowedIPs.allSatisfy({ $0.networkPrefixLength > 0 }),
+                  validTunnelPrefixes(interface: copy.interface.addresses.map { $0.networkPrefixLength },
+                                      peer: selected.allowedIPs.map { $0.networkPrefixLength }),
                   (1...25).contains(selected.persistentKeepAlive ?? 0) else { completion(false); return }
             guard let current = self.operations.start(wall: Self.wall(), mono: Self.monotonic()) else { completion(false); return }
             self.peer = selected.publicKey.hexKey
