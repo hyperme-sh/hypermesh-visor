@@ -871,8 +871,10 @@ async fn companion_manager_request(State(state): State<Arc<AppState>>, Extension
 async fn managed_status(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<Json<serde_json::Value>, ApiError> {
     if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }
     let guest = state.managed_guest.as_ref().ok_or_else(|| ApiError::conflict("Not a managed desktop"))?;
+    state.managed_active();
     let lease = guest.read().map_err(|_| ApiError::conflict("Host control unavailable"))?;
-    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation})))
+    let epoch = lock(&state.automation).epoch();
+    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch})))
 }
 async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {
     if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }
@@ -889,7 +891,9 @@ async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Ext
 async fn managed_admission(State(state): State<Arc<AppState>>, request: Request<Body>, next: Next) -> Response {
     if state.managed_guest.is_some() {
         let path = request.uri().path();
-        if path == "/session" || path == "/companion/sessions" && request.method() != axum::http::Method::GET {
+        let fixed = format!("/session/{}", state.managed_guest.as_ref().unwrap().session());
+        if path == "/session" || (path == fixed && request.method() == axum::http::Method::DELETE)
+            || path == "/companion/sessions" && request.method() != axum::http::Method::GET {
             return (StatusCode::FORBIDDEN, "Managed desktop has one fixed session").into_response();
         }
         let read_only = request.method() == axum::http::Method::GET
@@ -7925,15 +7929,30 @@ while True:
         // Move only the fixture session; no OS desktop or container is started.
         *lock(&state.sessions) = std::mem::take(&mut *lock(&original.sessions));
         state.managed_guest = Some(crate::companion_lease::Guest::fixture(scope, path.clone()));
+        *lock(&state.selected_session) = Some(id);
+        state.selected_approved.store(true, Ordering::SeqCst);
         let state = Arc::new(state);
         assert!(!state.managed_active());
         assert!(state.control_automation(Control::Resume, true, Some(id)).is_err());
         let run = Uuid::new_v4();
         std::fs::write(&path, serde_json::to_vec(&crate::companion_lease::Lease::new(scope, Some(run)).unwrap()).unwrap()).unwrap();
         assert!(state.managed_active());
+        let app = companion_router(state.clone());
+        let (_, status) = trust_test_request(app.clone(), "GET", "/companion/managed", serde_json::json!({})).await;
+        let missing_epoch = serde_json::json!({"action":"resume","expected_session":id});
+        assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", missing_epoch).await.0, StatusCode::CONFLICT);
+        let approval = serde_json::json!({"action":"resume","expected_session":id,"expected_epoch":status["epoch"]});
+        assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", approval.clone()).await.0, StatusCode::NO_CONTENT);
+        assert_eq!(trust_test_request(app.clone(), "DELETE", &format!("/session/{id}"), serde_json::json!({})).await.0, StatusCode::FORBIDDEN);
+        assert!(state.has_session(id));
+        lock(&state.automation).pause();
+        assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", approval).await.0, StatusCode::CONFLICT);
+        let prior_prompt = state.prompt_cancellation(Some(id));
+        assert!(!prior_prompt.cancelled());
         let epoch = lock(&state.automation).epoch();
         std::fs::write(&path, serde_json::to_vec(&crate::companion_lease::Lease::new(scope, None).unwrap()).unwrap()).unwrap();
         assert!(!state.managed_active());
+        assert!(prior_prompt.cancelled());
         assert_ne!(lock(&state.automation).epoch(), epoch);
         let app = companion_router(state.clone());
         assert_eq!(trust_test_request(app.clone(), "POST", "/session", serde_json::json!({})).await.0, StatusCode::FORBIDDEN);

@@ -38,3 +38,28 @@ class ManagedTests(unittest.TestCase):
             path = Path(directory) / 'lease.json'
             path.symlink_to('/dev/zero')
             self.assertFalse(m.alive({}, path, 1000))
+
+class ManagedBridgeTests(unittest.TestCase):
+    def test_resume_uses_current_epoch_and_exact_session(self):
+        import contextlib
+        import http.client
+        import io
+        import re
+        from unittest.mock import patch
+        source = (ROOT/'src/companion_docker.rs').read_text()
+        bridge = re.search(r'const GUEST_BRIDGE: &str = r#"(.*?)"#;', source, re.S).group(1)
+        session = str(uuid.uuid4())
+        calls = []
+        class Response:
+            status = 200
+            def __init__(self, body): self.body = body
+            def read(self, limit): return json.dumps(self.body).encode()
+            def getheader(self, *args): return 'application/json'
+        class Connection:
+            def __init__(self, *args, **kwargs): pass
+            def request(self, method, path, body, headers): calls.append((method,path,json.loads(body) if body else None))
+            def getresponse(self): return Response({'version':1,'session':session,'epoch':37} if len(calls)==1 else {})
+            def close(self): pass
+        with patch.object(http.client, 'HTTPConnection', Connection), patch('sys.argv', ['bridge','resume',session]), contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(bridge, 'managed-bridge', 'exec'), {})
+        self.assertEqual(calls, [('GET','/companion/managed',None), ('POST','/companion/automation',{'action':'resume','expected_session':session,'expected_epoch':37})])

@@ -407,7 +407,10 @@ def call(method,path,body=None):
  finally: c.close()
 a,session=sys.argv[1:]
 if a=='status': result=call('GET','/companion/managed')
-elif a=='resume': result=call('POST','/companion/automation',{'action':'resume','expected_session':session})
+elif a=='resume':
+ status=call('GET','/companion/managed')
+ if status['version']!=1 or status['session']!=session: raise RuntimeError('managed scope changed')
+ result=call('POST','/companion/automation',{'action':'resume','expected_session':session,'expected_epoch':status['epoch']})
 elif a=='pause': result=call('POST','/companion/managed/cancel')
 elif a=='view': result=call('POST','/session/'+session+'/view',{})
 else: raise RuntimeError('invalid operation')

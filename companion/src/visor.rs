@@ -173,7 +173,8 @@ fn visor_loop(
             break;
         }
         let observed = observer_sample.lock().map(|sample| sample.elapsed() < Duration::from_millis(500)).unwrap_or(false);
-        let keyboard = if observed { keyboard_header(keyboard_level.load(Ordering::SeqCst)) } else { Some(false) };
+        let level = keyboard_level.load(Ordering::SeqCst);
+        let keyboard = if observed || level == 0 { keyboard_header(level) } else { Some(false) };
         let fetched = fetch(keyboard);
         let fresh = {
             let mut queued = queue.lock().unwrap();

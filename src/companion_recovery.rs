@@ -71,6 +71,27 @@ pub trait Cleanup {
     fn remove_home(&mut self, owner: Uuid, allocation: Owned) -> Result<(), Error>;
 }
 
+fn check_ancestors(directory: &Path) -> Result<(), Error> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let uid = unsafe { libc::geteuid() };
+        for path in directory.ancestors().skip(1) {
+            let meta = std::fs::symlink_metadata(path).map_err(|_| Error::Backend)?;
+            // A root-owned sticky /tmp is safe for its owner-bound children;
+            // an ordinary shared writable parent could replace our mount path.
+            let sticky_root = meta.uid() == 0 && meta.mode() & 0o1000 != 0;
+            if !meta.is_dir()
+                || (meta.uid() != 0 && meta.uid() != uid)
+                || meta.mode() & 0o022 != 0 && !sticky_root
+            {
+                return Err(Error::Invalid);
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct Journal {
     directory: PathBuf,
     _lock: File,
@@ -81,6 +102,7 @@ impl Journal {
     pub fn open(directory: &Path) -> Result<Self, Error> {
         storage::create_dir(directory).map_err(|_| Error::Backend)?;
         storage::check_dir(directory).map_err(|_| Error::Backend)?;
+        check_ancestors(directory)?;
         let file = storage::open(&directory.join("manager.lock"), storage::Open::Lock)
             .map_err(|_| Error::Backend)?;
         storage::lock(&file).map_err(|_| Error::Backend)?;
@@ -346,6 +368,19 @@ mod tests {
         journal.delete_retained(&mut engine, b.scope()).unwrap();
         assert!(journal.retained().is_empty());
     }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn writable_or_symlinked_parent_cannot_supply_control_mounts() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let temp = Temp::new();
+        std::fs::create_dir(&temp.0).unwrap();
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(Journal::open(&temp.0.join("child")).is_err());
+        std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(temp.0.join("child"), temp.0.join("link")).unwrap();
+        assert!(Journal::open(&temp.0.join("link/nested")).is_err());
+    }
+
     #[test]
     fn malformed_oversized_and_foreign_records_are_refused() {
         let temp = Temp::new();

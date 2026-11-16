@@ -948,13 +948,14 @@ start_visor() {
     args=(--tcp --listen 127.0.0.1:0)
   fi
   # Keep cwd-based discovery fixtures inside harness-owned storage.
-  ( cd "$RUNTIME" && exec "$VISOR_BIN" "${args[@]}" ) \
+  ( cd "$RUNTIME" && export HYPERMESH_COMPANION_STATE_DIR="${HYPERMESH_COMPANION_STATE_DIR:-$STATE/companions}"; exec "$VISOR_BIN" "${args[@]}" ) \
     >"$DISPLAY_LOG_DIR/visor.out" 2>"$DISPLAY_LOG_DIR/visor.err" &
   VISOR_PID=$!
   note_started "$VISOR_PID" "$VISOR_BIN"
   write_state visor.pid "$VISOR_PID"
-  local i line
-  for i in $(seq 1 50); do
+  local i line attempts=50
+  [[ -z ${HYPERMESH_COMPANION_STATE_DIR:-} ]] || attempts=1200
+  for i in $(seq 1 "$attempts"); do
     if [[ -s $DISPLAY_LOG_DIR/visor.out ]]; then
       line=$(awk '/^control socket / { print substr($0, 16); exit }' "$DISPLAY_LOG_DIR/visor.out")
       if [[ -n $line && -S $line ]]; then
@@ -2629,7 +2630,8 @@ scenario_managed_companions() {
   local checker="$NIGHTLY_FRAMEWORK_ROOT/scripts/nightly/visor_managed.py"
   stop_companion
   stop_visor
-  export HYPERMESH_COMPANION_STATE_DIR="$TMPDIR/visor-managed/state"
+  HYPERMESH_COMPANION_STATE_DIR=$(python3 "$checker" state-path)
+  export HYPERMESH_COMPANION_STATE_DIR
   export HYPERMESH_COMPANION_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor:nightly-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
   start_visor
   start_companion
