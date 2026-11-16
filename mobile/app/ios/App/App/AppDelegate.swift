@@ -70,8 +70,8 @@ private final class PhoneNativeState {
 final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     let identifier = "VisorPlugin"
     let jsName = "Visor"
-    let pluginMethods = ["status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
-        CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)
+    let pluginMethods: [CAPPluginMethod] = ["status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
+        CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)!
     }
     private static var shared: PhoneNativeState?
     private static let stateLock = NSLock()
