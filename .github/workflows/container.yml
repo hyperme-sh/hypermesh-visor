@@ -89,15 +89,14 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
           GHCR_USER: ${{ github.actor }}
           SOURCE_REVISION: ${{ github.sha }}
-          SOURCE_REPOSITORY: ${{ github.repository }}
+          VISOR_TEST_REPOSITORY: ghcr.io/hyperme-sh/hypermesh-visor
           DOCKER_CONFIG: ${{ runner.temp }}/visor-registry-auth
         run: |
           mkdir -p "$DOCKER_CONFIG"
           chmod 700 "$DOCKER_CONFIG"
           trap 'docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf "$DOCKER_CONFIG"' EXIT
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GHCR_USER" --password-stdin
-          image="ghcr.io/${SOURCE_REPOSITORY,,}"
-          python3 ci/container/publish_test.py "$RUNNER_TEMP/native-images" "$image" "$SOURCE_REVISION" "$RUNNER_TEMP/container-test-channel.json"
+          python3 ci/container/publish_test.py "$RUNNER_TEMP/native-images" "$VISOR_TEST_REPOSITORY" "$SOURCE_REVISION" "$RUNNER_TEMP/container-test-channel.json"
       - uses: actions/upload-artifact@v4
         with:
           name: container-test-channel
