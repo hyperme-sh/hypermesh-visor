@@ -76,7 +76,7 @@ conductor_sha256=db45339985fdee8d708e1d3610d8f0e36167d84819927df973d3e9a830cb500
 conductor_src=$(mktemp -d)
 trap 'rm -rf -- "$conductor_src"' EXIT
 curl --fail --silent --show-error --location \
-  "https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/$conductor_revision" \
+  "https://codeload.github.com/hyperme-sh/conductor/tar.gz/$conductor_revision" \
   -o "$conductor_src/source.tar.gz"
 echo "$conductor_sha256  $conductor_src/source.tar.gz" | sha256sum --check --status
 tar --extract --gzip --file="$conductor_src/source.tar.gz" --directory="$conductor_src" --strip-components=1

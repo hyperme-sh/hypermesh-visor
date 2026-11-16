@@ -30,7 +30,7 @@ $source = Join-Path ([IO.Path]::GetTempPath()) ('visor-conductor-' + [guid]::New
 New-Item -ItemType Directory -Path $source | Out-Null
 try {
     $archive = Join-Path $source 'source.tar.gz'
-    Invoke-WebRequest -Uri "https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/$revision" -OutFile $archive
+    Invoke-WebRequest -Uri "https://codeload.github.com/hyperme-sh/conductor/tar.gz/$revision" -OutFile $archive
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest) { throw 'Conductor source checksum mismatch' }
     & tar -xzf $archive --strip-components=1 -C $source
     if ($LASTEXITCODE -ne 0) { throw 'Conductor source extraction failed' }
