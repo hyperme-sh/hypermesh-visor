@@ -175,7 +175,7 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let phone = state.phone else { throw PhoneFailure.unavailable }
             return ["sessions": try phone.ownedSessions(owner: state.owner).map { session in
                 ["botId": session.botId, "assignmentId": session.assignmentId,
-                 "sessionId": session.sessionId, "expiresAt": session.expiresAt] as JSObject
+                 "sessionId": session.sessionId, "expiresAt": Int(session.expiresAt)] as JSObject
             }]
         }
     }
