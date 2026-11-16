@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Visor</string>
+    <string name="title_activity_main">Visor</string>
+    <string name="package_name">sh.hyperme.visor.mobile</string>
+    <string name="custom_url_scheme">sh.hyperme.visor.mobile</string>
+</resources>
