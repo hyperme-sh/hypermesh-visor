@@ -32,13 +32,22 @@ export class Conversation {
     if (this.view.busy || !this.view.sessions.some(s => s.botId === id)) return;
     ++this.generation; this.publish({ selected: id, messages: [], error: '' });
   }
-  async send(text: string, destination: string, taskClass: string) {
+  async send(text: string, destination: string, taskClass: string, accepted: () => void = () => {}) {
     const selected = this.view.sessions.find(s => s.botId === this.view.selected);
-    if (!this.connected || this.view.busy || !selected || selected.expiresAt <= Date.now()/1000 ||
-      !text.trim() || new TextEncoder().encode(text).length > 65536 || !destination.trim() || destination.length > 256 ||
-      !['chat','coding'].includes(taskClass)) return;
+    if (this.view.busy) return;
+    if (!this.connected) { this.publish({ error: 'Connect this phone before sending.' }); return; }
+    if (!selected || selected.expiresAt <= Date.now()/1000) {
+      this.publish({ error: 'This assignment has expired or is unavailable. Refresh assistants and select one again.' }); return;
+    }
+    if (!text.trim() || new TextEncoder().encode(text).length > 65536) {
+      this.publish({ error: 'Enter a message of at most 64 KB. Your draft has been kept.' }); return;
+    }
+    if (!destination.trim() || destination.length > 256 || /[\x00-\x1f\x7f]/.test(destination) || !['chat','coding'].includes(taskClass)) {
+      this.publish({ error: 'Choose a valid model and purpose. Your draft has been kept.' }); return;
+    }
     const stamp = ++this.generation;
     this.publish({ busy: true, error: '', messages: [...this.view.messages.slice(-48), { role: 'user', text }] });
+    accepted();
     try {
       const result = await this.native.sendPrompt({ ...selected, taskClass, destination, prompt: text, maxOutputTokens: 2048 });
       if (typeof result.text !== 'string' || new TextEncoder().encode(result.text).length > 262144) throw new Error();

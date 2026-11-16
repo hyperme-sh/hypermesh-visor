@@ -153,8 +153,9 @@ impl MobilePhoneClient {
         &self,
         owner: Arc<MobileOwnerSignIn>,
     ) -> Result<Vec<PhoneSession>, MachineError> {
+        let expected = owner.phone_epoch();
         let current = self.machine.phone_credential()?;
-        owner.with_session(&current.tenant, |session| {
+        owner.with_session(&current.tenant, expected, |session| {
             sessions(
                 &session.request(self.machine.plane_origin(), "", None)?,
                 now()?,
@@ -170,6 +171,7 @@ impl MobilePhoneClient {
         expires_at: i64,
     ) -> Result<String, MachineError> {
         let _active = self.active.try_lock().map_err(|_| MachineError::Refused)?;
+        let expected = owner.phone_epoch();
         let prepared = self.prepare(prompt)?;
         let pending = self
             .pending
@@ -192,7 +194,7 @@ impl MobilePhoneClient {
         if expires <= now()? {
             return Err(MachineError::Refused);
         }
-        owner.with_session(&current.tenant, |session| {
+        owner.with_session(&current.tenant, expected, |session| {
             let prefix = format!("/{}/phone", raw["bot_id"].as_str().ok_or(MachineError::Invalid)?);
             let binding = json!({"version":1,"device_id":current.device,"enrollment_id":current.enrollment,
                 "assignment_id":raw["assignment_id"],"session_id":raw["session_id"]});
@@ -554,6 +556,45 @@ mod tests {
             }),
         );
         *owner_ref.lock().unwrap() = Some(Arc::downgrade(&owner));
+        assert!(client
+            .send_owned(owner, prompt(), (now().unwrap() + 60) as i64)
+            .is_err());
+        assert!(capture.calls.lock().unwrap().is_empty());
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn cancellation_during_preparation_does_not_become_a_new_authorization_epoch() {
+        let (mut client, store, capture) = setup(false);
+        let owner = crate::owner::fixture_owner(
+            store.clone(),
+            Arc::new(|_, _| panic!("cancelled preparation must not contact Plane")),
+        );
+        struct CancellingStore {
+            inner: Arc<Store>,
+            owner: Arc<MobileOwnerSignIn>,
+        }
+        impl NativeSessionStore for CancellingStore {
+            fn read_refresh_token(&self) -> Result<Option<String>, StoreError> {
+                self.owner.cancel_phone_operations();
+                self.inner.read_refresh_token()
+            }
+            fn write_refresh_token(&self, token: String) -> Result<(), StoreError> {
+                self.inner.write_refresh_token(token)
+            }
+            fn delete_refresh_token(&self) -> Result<(), StoreError> {
+                self.inner.delete_refresh_token()
+            }
+        }
+        client.machine = Arc::new(
+            MobileMachine::new(
+                Arc::new(CancellingStore {
+                    inner: store,
+                    owner: owner.clone(),
+                }),
+                "https://plane.test".into(),
+            )
+            .unwrap(),
+        );
         assert!(client
             .send_owned(owner, prompt(), (now().unwrap() + 60) as i64)
             .is_err());

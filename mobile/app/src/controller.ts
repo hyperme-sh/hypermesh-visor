@@ -32,6 +32,7 @@ export class Controller {
     const result = await this.native.finishSignIn();
     if (!Array.isArray(result.workspaces) || result.workspaces.length > 100 || result.workspaces.some(w =>
       !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(w.id) || typeof w.name !== 'string' || !w.name.trim() || w.name.length > 128)) throw new Error();
+    if (this.view.state.enrolled && !this.view.state.revoked) return { userCode: '', workspaces: [], state: checkedState(await this.native.status()) };
     return { userCode: '', workspaces: result.workspaces.map(({id,name})=>({id,name})) };
   }); }
   enroll(workspaceId: string) { return this.operation(async () => {

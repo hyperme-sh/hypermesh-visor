@@ -59,4 +59,12 @@ describe('native UI contract',()=>{
     s.native.beginSignIn=vi.fn(async()=>{throw new Error('credential-canary');});
     await s.controller.signIn();expect(JSON.stringify(s.view())).not.toContain('credential-canary');
   });
+  it('reauthenticates an enrolled phone without revoking or reenrolling it',async()=>{
+    const s=setup(); s.native.status=vi.fn(async()=>({...disconnected,enrolled:true}));
+    s.native.finishSignIn=vi.fn(async()=>({workspaces:[{id:'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',name:'Workspace'}]}));
+    await s.controller.refresh(); await s.controller.signIn(); await s.controller.finishSignIn();
+    expect(s.view().state.enrolled).toBe(true); expect(s.view().workspaces).toEqual([]); expect(s.view().userCode).toBe('');
+    expect(s.native.revoke).not.toHaveBeenCalled(); expect(s.native.enroll).not.toHaveBeenCalled();
+  });
+
 });

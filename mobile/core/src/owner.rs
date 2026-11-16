@@ -273,13 +273,19 @@ impl MobileOwnerSignIn {
 
 // Internal only: the UI cannot obtain a tenant session or choose an HTTP URL.
 impl MobileOwnerSignIn {
+    pub(crate) fn phone_epoch(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
     pub(crate) fn with_session<T>(
         &self,
         tenant: &str,
+        expected: u64,
         action: impl FnOnce(&OwnerSession<'_>) -> Result<T, MachineError>,
     ) -> Result<T, MachineError> {
-        let expected = self.generation.load(Ordering::SeqCst);
         let _guard = self.commit.lock().map_err(|_| MachineError::Unavailable)?;
+        if self.phone_epoch() != expected {
+            return Err(MachineError::Refused);
+        }
         let tokens = self.flow.refresh(&AppStore(self.store.clone()))?;
         let token = self.flow.tenant_session(&tokens.access_token, tenant)?;
         let session = OwnerSession {

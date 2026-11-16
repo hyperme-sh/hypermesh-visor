@@ -40,4 +40,17 @@ describe('phone conversation',()=>{
     const f=fixture(); f.native.ownedSessions.mockResolvedValue({sessions:[{...session,expiresAt:0}]});
     await f.controller.refresh(); expect(f.view().sessions).toEqual([]); expect(f.view().error).not.toBe('');
   });
+  it('keeps drafts when an assignment expires or UTF-8 input is too large',async()=>{
+    const f=fixture(); await f.controller.refresh(); f.controller.select(id); f.controller.connection(true);
+    const accepted=vi.fn();
+    await f.controller.send('😀'.repeat(20000),'model','chat',accepted);
+    expect(accepted).not.toHaveBeenCalled(); expect(f.view().error).toContain('64 KB');
+    const clock=vi.spyOn(Date,'now').mockReturnValue((session.expiresAt+1)*1000);
+    try {
+      await f.controller.send('Kept draft','model','chat',accepted);
+      expect(accepted).not.toHaveBeenCalled(); expect(f.view().error).toContain('expired');
+      expect(f.native.sendPrompt).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+
 });

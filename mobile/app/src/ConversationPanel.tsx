@@ -26,7 +26,7 @@ export function ConversationPanel({ connected }: { connected: boolean }) {
     <label>Purpose<select value={purpose} disabled={view.busy} onChange={e=>setPurpose(e.target.value)}><option value="chat">Conversation</option><option value="coding">Coding</option></select></label>
     <div className="transcript" role="log" aria-label="Conversation" aria-live="polite">{view.messages.map((message,i)=><article key={i} className={message.role}><strong>{message.role==='user'?'You':'Assistant'}</strong><p>{message.text}</p></article>)}</div>
     {!connected && <p>Connect this phone to send a message.</p>}
-    <form onSubmit={e=>{ e.preventDefault(); const prompt=text; setText(''); void controller.current?.send(prompt,model,purpose); }}>
+    <form onSubmit={e=>{ e.preventDefault(); void controller.current?.send(text,model,purpose,()=>setText('')); }}>
       <label>Message<textarea value={text} onChange={e=>setText(e.target.value)} disabled={!connected || view.busy} maxLength={65536} rows={4}/></label>
       <button disabled={!connected || view.busy || !view.selected || !text.trim() || !model.trim()}>Send message</button>
     </form>
