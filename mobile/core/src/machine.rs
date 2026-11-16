@@ -118,7 +118,7 @@ pub struct MobileMachine {
     lock: Mutex<()>,
 }
 
-fn origin(value: &str) -> Result<String, MachineError> {
+pub(crate) fn origin(value: &str) -> Result<String, MachineError> {
     let parsed = url::Url::parse(value).map_err(|_| MachineError::Invalid)?;
     if parsed.scheme() != "https"
         || parsed.host_str().is_none()
@@ -156,13 +156,13 @@ fn wg_public(value: &str) -> Result<String, MachineError> {
         x25519_dalek::PublicKey::from(&x25519_dalek::StaticSecret::from(bytes(value)?)).to_bytes(),
     ))
 }
-fn now() -> Result<u64, MachineError> {
+pub(crate) fn now() -> Result<u64, MachineError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .map_err(|_| MachineError::Invalid)
 }
-fn identifier(value: &str) -> Result<(), MachineError> {
+pub(crate) fn identifier(value: &str) -> Result<(), MachineError> {
     if uuid::Uuid::parse_str(value)
         .map_err(|_| MachineError::Invalid)?
         .to_string()
@@ -185,7 +185,40 @@ fn authority_name(value: &Value, name: &str) -> Result<String, MachineError> {
     Ok(value.into())
 }
 
+pub(crate) struct PhoneCredential {
+    pub tenant: String,
+    pub device: String,
+    pub enrollment: String,
+    pub token: String,
+}
+
 impl MobileMachine {
+    pub(crate) fn phone_credential(&self) -> Result<PhoneCredential, MachineError> {
+        let _lock = self.lock.lock().map_err(|_| MachineError::Unavailable)?;
+        let mut state = self.read()?.ok_or(MachineError::Refused)?;
+        if state.revoked {
+            return Err(MachineError::Revoked);
+        }
+        if !state.bound {
+            return Err(MachineError::Refused);
+        }
+        if state.token_expires <= now()?.saturating_add(30) || state.token.is_none() {
+            self.renew_locked(&mut state)?;
+        }
+        let token = state.token.as_deref().ok_or(MachineError::Refused)?;
+        if !token.starts_with(&format!("hm_msi_{}.", state.device_id))
+            || token.len() > 512
+            || token.chars().any(char::is_control)
+        {
+            return Err(MachineError::Invalid);
+        }
+        Ok(PhoneCredential {
+            tenant: state.tenant_id,
+            device: state.device_id,
+            enrollment: state.request_id,
+            token: state.token.ok_or(MachineError::Refused)?,
+        })
+    }
     pub(crate) fn revoke_local(&self) -> Result<(), MachineError> {
         let _lock = self.lock.lock().map_err(|_| MachineError::Unavailable)?;
         let mut state = self.read()?.ok_or(MachineError::Refused)?;
