@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { Controller, disconnected, type View } from './controller';
 import { nativeClient } from './native';
 import './style.css';
+import { ConversationPanel } from './ConversationPanel';
 function App() {
   const [view, setView] = useState<View>({ state: disconnected, busy: true, userCode: '', workspaces: [], message: '' });
   const controller = useRef<Controller | null>(null);
@@ -22,11 +23,12 @@ function App() {
       : state.enrolled ? <><p>{state.connection==='connected'?'Connected to your network.':'Your device identity is stored securely on this phone.'}</p>
         <button disabled={view.busy || (!state.canConnect && state.connection!=='connected')} onClick={()=>void (state.connection==='connected'?controller.current?.disconnect():controller.current?.connect())}>{state.connection==='connected'?'Disconnect':'Connect'}</button>
         {!state.canConnect && state.connection!=='connected' && <p className="note">Connection is currently unavailable.</p>}
+        <button className="secondary" disabled={view.busy} onClick={()=>void controller.current?.signIn()}>Sign in again</button>
         <button className="secondary" disabled={view.busy} onClick={()=>{ if(window.confirm('Revoke this phone’s network access?')) void controller.current?.revoke(); }}>Remove this phone</button></>
       : <><p>Sign in with your account, then choose a workspace. Your private keys stay on this device.</p><button disabled={view.busy || !controller.current} onClick={()=>void controller.current?.signIn()}>Sign in</button></>}
       {view.busy && <p role="status">Working…</p>}
       {view.message && <p className="message" role="alert">{view.message}</p>}
-    </section><footer>Private by default. Connected on your terms.</footer>
+    </section>{state.enrolled && !state.revoked && !view.busy && !view.userCode && !view.workspaces.length && <ConversationPanel connected={state.connection==='connected'}/> }<footer>Private by default. Connected on your terms.</footer>
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);

@@ -6,7 +6,7 @@ uniffi::setup_scaffolding!();
 mod machine;
 mod owner;
 mod phone;
-pub use phone::{MobilePhoneClient, PhonePrompt, PreparedPhonePrompt};
+pub use phone::{MobilePhoneClient, PhonePrompt, PhoneSession, PreparedPhonePrompt};
 pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};
 pub use machine::{MachineError, MachineStatus, MobileMachine};
 

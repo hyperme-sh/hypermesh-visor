@@ -18,6 +18,16 @@ pub struct OwnerSignInPrompt {
 }
 
 trait Flow: Send + Sync {
+    fn bot_request(
+        &self,
+        origin: &str,
+        path: &str,
+        tenant: &str,
+        token: &str,
+        body: Option<Value>,
+    ) -> Result<Value, MachineError> {
+        bot_request(origin, path, tenant, token, body)
+    }
     fn start(&self) -> Result<DeviceCodes, MachineError>;
     fn poll(&self, codes: &DeviceCodes, clock: &mut CancelClock) -> Result<Tokens, MachineError>;
     fn refresh(&self, store: &AppStore) -> Result<Tokens, MachineError>;
@@ -118,6 +128,7 @@ pub struct MobileOwnerSignIn {
     issuer_origin: String,
     pending: Mutex<Option<Pending>>,
     generation: Arc<AtomicU64>,
+    phone_generation: AtomicU64,
     commit: Mutex<()>,
 }
 fn https(value: &str, root: bool) -> Result<url::Url, MachineError> {
@@ -153,6 +164,7 @@ impl MobileOwnerSignIn {
             issuer_origin: issuer_url.origin().ascii_serialization(),
             pending: Mutex::new(None),
             generation: Arc::new(AtomicU64::new(0)),
+            phone_generation: AtomicU64::new(0),
             commit: Mutex::new(()),
         })
     }
@@ -218,9 +230,13 @@ impl MobileOwnerSignIn {
             .write_refresh_token(token.into())
             .map_err(|_| MachineError::Storage)
     }
+    /// Fence phone admission without blocking the UI on a network request.
+    pub fn cancel_phone_operations(&self) {
+        self.phone_generation.fetch_add(1, Ordering::SeqCst);
+    }
     pub fn cancel(&self) -> Result<(), MachineError> {
-        let _guard = self.commit.lock().map_err(|_| MachineError::Unavailable)?;
         self.generation.fetch_add(1, Ordering::SeqCst);
+        let _guard = self.commit.lock().map_err(|_| MachineError::Unavailable)?;
         *self.pending.lock().map_err(|_| MachineError::Unavailable)? = None;
         Ok(())
     }
@@ -255,6 +271,154 @@ impl MobileOwnerSignIn {
         let tokens = self.flow.refresh(&AppStore(self.store.clone()))?;
         machine.revoke(self.flow.tenant_session(&tokens.access_token, &tenant)?)
     }
+}
+
+// Internal only: the UI cannot obtain a tenant session or choose an HTTP URL.
+impl MobileOwnerSignIn {
+    pub(crate) fn phone_epoch(&self) -> PhoneEpoch {
+        PhoneEpoch {
+            login: self.generation.load(Ordering::SeqCst),
+            phone: self.phone_generation.load(Ordering::SeqCst),
+        }
+    }
+    pub(crate) fn with_session<T>(
+        &self,
+        tenant: &str,
+        expected: PhoneEpoch,
+        action: impl FnOnce(&OwnerSession<'_>) -> Result<T, MachineError>,
+    ) -> Result<T, MachineError> {
+        let _guard = self.commit.lock().map_err(|_| MachineError::Unavailable)?;
+        if self.phone_epoch() != expected {
+            return Err(MachineError::Refused);
+        }
+        let tokens = self.flow.refresh(&AppStore(self.store.clone()))?;
+        let token = self.flow.tenant_session(&tokens.access_token, tenant)?;
+        let session = OwnerSession {
+            owner: self,
+            expected,
+            token,
+            tenant,
+        };
+        session.current()?;
+        drop(_guard);
+        action(&session)
+    }
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PhoneEpoch {
+    login: u64,
+    phone: u64,
+}
+pub(crate) struct OwnerSession<'a> {
+    owner: &'a MobileOwnerSignIn,
+    expected: PhoneEpoch,
+    token: String,
+    tenant: &'a str,
+}
+impl OwnerSession<'_> {
+    pub(crate) fn current(&self) -> Result<(), MachineError> {
+        if self.owner.phone_epoch() != self.expected {
+            return Err(MachineError::Refused);
+        }
+        Ok(())
+    }
+    pub(crate) fn request(
+        &self,
+        origin: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, MachineError> {
+        self.current()?;
+        let result = self
+            .owner
+            .flow
+            .bot_request(origin, path, self.tenant, &self.token, body)?;
+        self.current()?;
+        Ok(result)
+    }
+}
+fn bot_request(
+    origin: &str,
+    path: &str,
+    tenant: &str,
+    token: &str,
+    body: Option<Value>,
+) -> Result<Value, MachineError> {
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(Duration::from_secs(30))
+        .build();
+    let url = format!("{origin}/api/v1/hypermesh/bots{path}");
+    let req = agent
+        .request(if body.is_some() { "POST" } else { "GET" }, &url)
+        .set("Authorization", &format!("Bearer {}", token))
+        .set("X-Tenant-ID", tenant)
+        .set("Content-Type", "application/json");
+    let response = match body {
+        Some(body) => req.send_string(&body.to_string()),
+        None => req.call(),
+    }
+    .map_err(|_| MachineError::Unavailable)?;
+    if response.status() != 200 {
+        return Err(MachineError::Refused);
+    }
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(1_048_577)
+        .read_to_end(&mut bytes)
+        .map_err(|_| MachineError::Unavailable)?;
+    if bytes.len() > 1_048_576 {
+        return Err(MachineError::Invalid);
+    }
+    serde_json::from_slice(&bytes).map_err(|_| MachineError::Invalid)
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_owner(
+    store: Arc<dyn NativeSessionStore>,
+    request: Arc<dyn Fn(&str, Option<Value>) -> Result<Value, MachineError> + Send + Sync>,
+) -> Arc<MobileOwnerSignIn> {
+    struct Requests(Arc<dyn Fn(&str, Option<Value>) -> Result<Value, MachineError> + Send + Sync>);
+    impl Flow for Requests {
+        fn start(&self) -> Result<DeviceCodes, MachineError> {
+            Err(MachineError::Refused)
+        }
+        fn poll(&self, _: &DeviceCodes, _: &mut CancelClock) -> Result<Tokens, MachineError> {
+            Err(MachineError::Refused)
+        }
+        fn refresh(&self, _: &AppStore) -> Result<Tokens, MachineError> {
+            Ok(Tokens {
+                access_token: "owner-access".into(),
+                refresh_token: None,
+                expires_in: Duration::from_secs(60),
+            })
+        }
+        fn tenant_session(&self, _: &str, _: &str) -> Result<String, MachineError> {
+            Ok("owner-session".into())
+        }
+        fn bot_request(
+            &self,
+            origin: &str,
+            path: &str,
+            _: &str,
+            token: &str,
+            body: Option<Value>,
+        ) -> Result<Value, MachineError> {
+            assert_eq!(origin, "https://plane.test");
+            assert_eq!(token, "owner-session");
+            (self.0)(path, body)
+        }
+    }
+    Arc::new(MobileOwnerSignIn {
+        store,
+        flow: Arc::new(Requests(request)),
+        issuer_origin: "https://issuer.test".into(),
+        pending: Mutex::new(None),
+        generation: Arc::new(AtomicU64::new(0)),
+        phone_generation: AtomicU64::new(0),
+        commit: Mutex::new(()),
+    })
 }
 
 #[cfg(test)]
@@ -328,6 +492,7 @@ mod tests {
                 issuer_origin: "https://issuer.test".into(),
                 pending: Mutex::new(None),
                 generation,
+                phone_generation: AtomicU64::new(0),
                 commit: Mutex::new(()),
             },
             store,
@@ -409,5 +574,18 @@ mod tests {
         };
         let deadline = clock.now() + Duration::from_secs(180);
         assert!(clock.now() > deadline);
+    }
+    #[test]
+    fn disposing_phone_conversation_does_not_cancel_new_owner_sign_in() {
+        let (login, store) = setup(false, false);
+        let before = login.phone_epoch();
+        login.begin().unwrap();
+        login.cancel_phone_operations();
+        assert!(login.phone_epoch() != before);
+        login.finish().unwrap();
+        assert_eq!(
+            store.read_refresh_token().unwrap().as_deref(),
+            Some("private-refresh-token")
+        );
     }
 }

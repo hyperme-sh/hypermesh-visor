@@ -1,7 +1,7 @@
 //! Native-only phone credential transport. Prepared prompt bytes are memory-only.
 use crate::{
     machine::{identifier, now, origin},
-    MachineError, MobileMachine,
+    MachineError, MobileMachine, MobileOwnerSignIn,
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -27,6 +27,55 @@ pub struct PreparedPhonePrompt {
     pub operation_id: String,
     pub task_id: String,
     pub request_sha256: String,
+}
+#[derive(uniffi::Record)]
+pub struct PhoneSession {
+    pub bot_id: String,
+    pub assignment_id: String,
+    pub session_id: String,
+    pub expires_at: i64,
+}
+fn sessions(value: &Value, current: u64) -> Result<Vec<PhoneSession>, MachineError> {
+    let bots = value["bots"]
+        .as_array()
+        .filter(|v| v.len() <= 100)
+        .ok_or(MachineError::Invalid)?;
+    let mut result = Vec::new();
+    for bot in bots {
+        if bot["revoked"] != false
+            || bot["online"] != true
+            || bot["local_consent"] != true
+            || bot["mode"] != "interactive"
+            || bot["desired"] != "running"
+            || !bot["capabilities"]
+                .as_array()
+                .is_some_and(|v| v.iter().any(|x| x == "prompt"))
+        {
+            continue;
+        }
+        let assignment = &bot["assignment"];
+        let Some(expiry) = assignment["expires_at"]
+            .as_f64()
+            .filter(|v| v.is_finite() && *v > current as f64 && *v < i64::MAX as f64)
+        else {
+            continue;
+        };
+        let id = |value: &Value| -> Result<String, MachineError> {
+            let id = value.as_str().ok_or(MachineError::Invalid)?;
+            identifier(id)?;
+            if id == "00000000-0000-0000-0000-000000000000" {
+                return Err(MachineError::Invalid);
+            }
+            Ok(id.into())
+        };
+        result.push(PhoneSession {
+            bot_id: id(&bot["bot_id"])?,
+            assignment_id: id(&assignment["id"])?,
+            session_id: id(&assignment["session_id"])?,
+            expires_at: expiry as i64,
+        });
+    }
+    Ok(result)
 }
 struct Pending {
     raw: String,
@@ -80,6 +129,7 @@ pub struct MobilePhoneClient {
     machine: Arc<MobileMachine>,
     sender: Arc<dyn Sender>,
     pending: Mutex<HashMap<String, Pending>>,
+    active: Mutex<()>,
 }
 #[uniffi::export]
 impl MobilePhoneClient {
@@ -95,6 +145,75 @@ impl MobilePhoneClient {
                 origin: origin(&conductor_origin)?,
             }),
             pending: Mutex::new(HashMap::new()),
+            active: Mutex::new(()),
+        })
+    }
+    /// Public owned assignments only; no bot or owner credential crosses FFI.
+    pub fn owned_sessions(
+        &self,
+        owner: Arc<MobileOwnerSignIn>,
+    ) -> Result<Vec<PhoneSession>, MachineError> {
+        let expected = owner.phone_epoch();
+        let current = self.machine.phone_credential()?;
+        owner.with_session(&current.tenant, expected, |session| {
+            sessions(
+                &session.request(self.machine.plane_origin(), "", None)?,
+                now()?,
+            )
+        })
+    }
+    /// One explicit user send grants this phone and admits the exact digest.
+    /// Consume before any owner request: uncertain admission is never retried.
+    pub fn send_owned(
+        &self,
+        owner: Arc<MobileOwnerSignIn>,
+        prompt: PhonePrompt,
+        expires_at: i64,
+    ) -> Result<String, MachineError> {
+        let _active = self.active.try_lock().map_err(|_| MachineError::Refused)?;
+        let expected = owner.phone_epoch();
+        let prepared = self.prepare(prompt)?;
+        let pending = self
+            .pending
+            .lock()
+            .map_err(|_| MachineError::Unavailable)?
+            .remove(&prepared.operation_id)
+            .ok_or(MachineError::Refused)?;
+        let current = self.machine.phone_credential()?;
+        let raw: Value = serde_json::from_str(&pending.raw).map_err(|_| MachineError::Invalid)?;
+        let expires = u64::try_from(expires_at)
+            .map_err(|_| MachineError::Invalid)?
+            .min(now()?.saturating_add(300));
+        if pending.tenant != current.tenant
+            || pending.device != current.device
+            || pending.enrollment != current.enrollment
+            || pending.expires <= now()?
+        {
+            return Err(MachineError::Refused);
+        }
+        if expires <= now()? {
+            return Err(MachineError::Refused);
+        }
+        owner.with_session(&current.tenant, expected, |session| {
+            let prefix = format!("/{}/phone", raw["bot_id"].as_str().ok_or(MachineError::Invalid)?);
+            let binding = json!({"version":1,"device_id":current.device,"enrollment_id":current.enrollment,
+                "assignment_id":raw["assignment_id"],"session_id":raw["session_id"]});
+            let mut grant = binding.clone(); grant["expires_at"] = json!(expires); grant["revoke"] = json!(false);
+            let granted = session.request(self.machine.plane_origin(), &format!("{prefix}/grant"), Some(grant))?;
+            if granted["version"] != 1 || granted["revoked"] != false { return Err(MachineError::Refused); }
+            let nonce = uuid::Uuid::new_v4().to_string();
+            let mut admission = binding;
+            admission["request_id"] = json!(nonce); admission["task_id"] = json!(prepared.task_id);
+            admission["request_sha256"] = json!(prepared.request_sha256);
+            let admitted = session.request(self.machine.plane_origin(), &format!("{prefix}/owner-prompt"), Some(admission))?;
+            if admitted["version"] != 1 || admitted["request_id"] != nonce || admitted["task_id"] != prepared.task_id
+                || admitted["request_sha256"] != prepared.request_sha256 || admitted["assignment_id"] != raw["assignment_id"]
+                || admitted["session_id"] != raw["session_id"]
+                || !admitted["expires_at"].as_f64().is_some_and(|v| v > now().unwrap_or(u64::MAX) as f64 && v <= expires as f64) {
+                return Err(MachineError::Refused);
+            }
+            session.current()?;
+            self.send_pending_checked(pending, || session.current())
         })
     }
     /// Returns only public task binding. The owner must authorize this exact digest
@@ -158,15 +277,7 @@ impl MobilePhoneClient {
             .map_err(|_| MachineError::Unavailable)?
             .remove(&operation_id)
             .ok_or(MachineError::Refused)?;
-        let current = self.machine.phone_credential()?;
-        if pending.expires <= now()?
-            || pending.tenant != current.tenant
-            || pending.device != current.device
-            || pending.enrollment != current.enrollment
-        {
-            return Err(MachineError::Refused);
-        }
-        self.sender.send(&current.token, &pending.raw)
+        self.send_pending(pending)
     }
     /// Cancels only a prepared request. Submitted operations have uncertain outcomes.
     pub fn discard(&self, operation_id: String) -> Result<(), MachineError> {
@@ -175,6 +286,28 @@ impl MobilePhoneClient {
             .map_err(|_| MachineError::Unavailable)?
             .remove(&operation_id);
         Ok(())
+    }
+}
+
+impl MobilePhoneClient {
+    fn send_pending(&self, pending: Pending) -> Result<String, MachineError> {
+        self.send_pending_checked(pending, || Ok(()))
+    }
+    fn send_pending_checked(
+        &self,
+        pending: Pending,
+        check: impl FnOnce() -> Result<(), MachineError>,
+    ) -> Result<String, MachineError> {
+        let current = self.machine.phone_credential()?;
+        if pending.expires <= now()?
+            || pending.tenant != current.tenant
+            || pending.device != current.device
+            || pending.enrollment != current.enrollment
+        {
+            return Err(MachineError::Refused);
+        }
+        check()?;
+        self.sender.send(&current.token, &pending.raw)
     }
 }
 
@@ -232,6 +365,7 @@ mod tests {
                 machine,
                 sender: capture.clone(),
                 pending: Mutex::new(HashMap::new()),
+                active: Mutex::new(()),
             },
             store,
             capture,
@@ -304,5 +438,167 @@ mod tests {
             assert!(MobilePhoneClient::new(client.machine.clone(), value.into()).is_err());
         }
         assert!(capture.calls.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn owner_admission_binds_exact_native_bytes_and_never_sends_owner_token() {
+        let (client, store, capture) = setup(false);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let owner = crate::owner::fixture_owner(
+            store.clone(),
+            Arc::new(move |path, body| {
+                let mut body = body.unwrap();
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push((path.to_string(), body.clone()));
+                if path.ends_with("/grant") {
+                    return Ok(json!({"version":1,"revoked":false}));
+                }
+                body["expires_at"] = json!(now().unwrap() + 5);
+                Ok(body)
+            }),
+        );
+        assert_eq!(
+            client
+                .send_owned(owner, prompt(), (now().unwrap() + 60) as i64)
+                .unwrap(),
+            "Reply"
+        );
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls[0].0.ends_with("/phone/grant"));
+        assert!(calls[1].0.ends_with("/phone/owner-prompt"));
+        let sent = capture.calls.lock().unwrap();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].0.starts_with("hm_msi_"));
+        assert_eq!(
+            calls[1].1["request_sha256"],
+            format!("{:x}", Sha256::digest(sent[0].1.as_bytes()))
+        );
+        assert!(!serde_json::to_string(&*calls)
+            .unwrap()
+            .contains("Private prompt"));
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn refused_or_mismatched_admission_and_local_revoke_never_reach_conductor() {
+        for mode in 0..3 {
+            let (client, store, capture) = setup(false);
+            let machine = client.machine.clone();
+            let owner = crate::owner::fixture_owner(
+                store,
+                Arc::new(move |path, body| {
+                    if path.ends_with("/grant") {
+                        return Ok(json!({"version":1,"revoked":false}));
+                    }
+                    if mode == 0 {
+                        return Err(MachineError::Unavailable);
+                    }
+                    let mut body = body.unwrap();
+                    body["expires_at"] = json!(now().unwrap() + 5);
+                    if mode == 1 {
+                        body["request_sha256"] = json!("wrong");
+                    }
+                    if mode == 2 {
+                        machine.revoke_local()?;
+                    }
+                    Ok(body)
+                }),
+            );
+            assert!(client
+                .send_owned(owner, prompt(), (now().unwrap() + 60) as i64)
+                .is_err());
+            assert!(capture.calls.lock().unwrap().is_empty());
+            assert!(client.pending.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn owned_session_list_filters_expired_paused_and_unconsented_assignments() {
+        let input = prompt();
+        let bot = json!({"bot_id":input.bot_id,"revoked":false,"online":true,"local_consent":true,
+            "mode":"interactive","desired":"running","capabilities":["prompt"],
+            "assignment":{"id":input.assignment_id,"session_id":input.session_id,"expires_at":200}});
+        assert_eq!(
+            sessions(&json!({"bots":[bot.clone()]}), 100).unwrap().len(),
+            1
+        );
+        for (key, value) in [
+            ("local_consent", json!(false)),
+            ("online", json!(false)),
+            ("revoked", json!(true)),
+            ("desired", json!("paused")),
+        ] {
+            let mut item = bot.clone();
+            item[key] = value;
+            assert!(sessions(&json!({"bots":[item]}), 100).unwrap().is_empty());
+        }
+        assert!(sessions(&json!({"bots":[bot]}), 200).unwrap().is_empty());
+    }
+    #[test]
+    fn cancellation_during_grant_fences_admission_without_blocking() {
+        let (client, store, capture) = setup(false);
+        let owner_ref = Arc::new(Mutex::new(None::<std::sync::Weak<MobileOwnerSignIn>>));
+        let reference = owner_ref.clone();
+        let owner = crate::owner::fixture_owner(
+            store,
+            Arc::new(move |path, _| {
+                assert!(path.ends_with("/grant"));
+                reference
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .upgrade()
+                    .unwrap()
+                    .cancel_phone_operations();
+                Ok(json!({"version":1,"revoked":false}))
+            }),
+        );
+        *owner_ref.lock().unwrap() = Some(Arc::downgrade(&owner));
+        assert!(client
+            .send_owned(owner, prompt(), (now().unwrap() + 60) as i64)
+            .is_err());
+        assert!(capture.calls.lock().unwrap().is_empty());
+        assert!(client.pending.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn cancellation_during_preparation_does_not_become_a_new_authorization_epoch() {
+        let (mut client, store, capture) = setup(false);
+        let owner = crate::owner::fixture_owner(
+            store.clone(),
+            Arc::new(|_, _| panic!("cancelled preparation must not contact Plane")),
+        );
+        struct CancellingStore {
+            inner: Arc<Store>,
+            owner: Arc<MobileOwnerSignIn>,
+        }
+        impl NativeSessionStore for CancellingStore {
+            fn read_refresh_token(&self) -> Result<Option<String>, StoreError> {
+                self.owner.cancel_phone_operations();
+                self.inner.read_refresh_token()
+            }
+            fn write_refresh_token(&self, token: String) -> Result<(), StoreError> {
+                self.inner.write_refresh_token(token)
+            }
+            fn delete_refresh_token(&self) -> Result<(), StoreError> {
+                self.inner.delete_refresh_token()
+            }
+        }
+        client.machine = Arc::new(
+            MobileMachine::new(
+                Arc::new(CancellingStore {
+                    inner: store,
+                    owner: owner.clone(),
+                }),
+                "https://plane.test".into(),
+            )
+            .unwrap(),
+        );
+        assert!(client
+            .send_owned(owner, prompt(), (now().unwrap() + 60) as i64)
+            .is_err());
+        assert!(capture.calls.lock().unwrap().is_empty());
+        assert!(client.pending.lock().unwrap().is_empty());
     }
 }

@@ -63,3 +63,16 @@ the exact digest. The owner/session task workflow must authorize that binding
 before submission. A failed submission is uncertain and must not be retried.
 These operations do not claim mesh connectivity or provide the remaining remote
 session picker, task orchestration, or SEA identity adapter.
+
+## Shared s3r.ch presentation
+
+The phone conversation uses `MessageComposer` from the same private
+`@s3rch/forum-ui` source package as s3r.ch room chat. Its checked-in source copy
+is refreshed with `python3 mobile/app/sync-forum-ui.py /path/to/s3r.ch` from the
+checkout's committed revision. `vendor/s3rch-forum-ui/UPSTREAM.json` records the
+application version, revision and each source file digest. No network fetch or
+floating source dependency is needed to build the phone.
+
+The composer owns no credentials, navigation or transport. Native owner and
+machine authorization stay in Rust. This presentation reuse does not connect
+a SEA identity or create a Squad/forum membership.
