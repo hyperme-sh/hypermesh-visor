@@ -138,13 +138,57 @@ revokes its route, asks the backend to cancel active work, then stops its deskto
 Both acknowledgements must succeed before the slot becomes reusable. A failed
 resume or cleanup leaves the allocation quarantined, available only for stop.
 
-Unit contracts use an in-memory backend with injected failures. This core is not
-yet connected to Docker, the daemon or the plus control. Before enabling those
-adapters, #224 still needs durable allocation/recovery and a single manager per
-machine, a restricted container launcher, per-generation private storage/control
-channels, actual host observer/watchdog wiring and desktop/view routing. #88
-still needs native UI confirmation and current assignment checks. Dropping the
-Rust manager revokes its permits but does not prove that OS processes stopped;
-startup must reconcile existing allocations before admitting replacements.
-The original issues remain open, and no concurrent desktop mode is enabled by
-this core alone.
+## Linux runtime and native controls
+
+The native X11 menu's **+ Companions** control opens the manager. It lists the
+native desktop and up to three private Linux desktops, with explicit add,
+resume, stop, home-retention and view-only snapshot operations. Native session
+selection continues to use the existing native controls. Additional desktops
+require an already installed local rootful Docker engine and the installed
+`ghcr.io/hyperme-sh/hypermesh-visor:test` image. The manager never installs a
+backend, pulls an image or changes permissions to obtain Docker access.
+Windows, macOS, Wayland, remote Docker and rootless Docker are refused by this
+first runtime adapter.
+
+Every guest receives 2 GiB RAM, one CPU, 512 process slots, bounded temporary
+storage, a private named home volume and a read-only control mount. Network
+access is disabled. The fixed specification has no host display, input device,
+Docker socket or shared home. Resource flags follow the official
+[Docker create reference](https://docs.docker.com/reference/cli/docker/container/create/)
+and [resource constraints](https://docs.docker.com/engine/containers/resource_constraints/).
+Homes consume Docker storage and are retained only by explicit choice; retained
+homes appear separately for deletion and are never mounted for another bot.
+
+The owner-only `~/.hypermesh-companions` directory holds an exclusive manager
+lock and an atomically replaced allocation journal. An explicit
+`HYPERMESH_COMPANION_STATE_DIR` can select an absolute private state directory;
+the engine-wide claim still enforces one owner. `HYPERMESH_COMPANION_IMAGE` may
+select another installed project channel/version tag, including the central
+nightly fixture image; arbitrary images and digests are refused. A fixed Docker claim also
+prevents a second owner/configuration from claiming the supported engine.
+Allocations are committed before Docker effects. Startup attempts cleanup of
+previous allocations, preserving their homes. Failed or uncertain cleanup
+refuses new admission. Cleanup checks the owner and complete scope labels and
+removes containers by their full inspected ID. It never prunes unrelated Docker
+resources. Deleting the journal is not a supported reset or recovery operation.
+
+Only the peer-checked native companion socket exposes manager operations. TCP
+callers and managed guests cannot create or control the host manager. Physical
+input invalidates permits through an observer handle independent of Docker
+operations. Polls are considered healthy only while the X11 event loop continues
+to report input availability; a background HTTP poll alone cannot keep the
+observer alive. Lease publication and Docker cleanup run on separate workers.
+
+The guest starts with one fixed, empty local session and no copied MCP servers,
+secrets, remote assignment or authority. Its daemon checks the short host lease
+at admission and input cancellation points. Pausing cancels queued local tasks;
+a new run invalidates prior prompt cancellation tokens. Its supervisor exits
+when host control expires. A local guest resume cannot override a paused host.
+The host verifies the guest protocol and exact scope before exposing a newly
+started desktop. Normal remote assignment/authentication rules still apply;
+these local routing IDs are not enrolled bot identities or SociACL grants.
+
+Unit contracts use an in-memory Docker command runner and temporary local
+journals, not a running Docker engine. Native display scenarios are owned by
+the central scheduled batch. Clone, resurrect, preprompt sets and squad forum
+embedding retain their separate issue ownership.

@@ -11,6 +11,7 @@ name = "hypermesh-companion"
 path = "src/main.rs"
 
 [dependencies]
+base64 = "0.22"
 hypermesh-session = { path = "../session" }
 libc = "0.2"
 png = "0.17"

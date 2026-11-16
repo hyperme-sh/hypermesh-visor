@@ -47,6 +47,10 @@ mod mcp_prompts;
 mod host;
 
 pub struct AppState {
+    companions: std::sync::OnceLock<Arc<crate::companion_runtime::Runtime>>,
+    companion_init: Mutex<()>,
+    managed_guest: Option<crate::companion_lease::Guest>,
+    managed_run: Mutex<Option<Uuid>>,
     prompts_stopped: AtomicBool,
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
@@ -168,6 +172,10 @@ impl AppState {
         let gate = automation::Gate::default();
         let published = gate.snapshot_handle();
         Self {
+            companions: std::sync::OnceLock::new(),
+            companion_init: Mutex::new(()),
+            managed_guest: None,
+            managed_run: Mutex::new(None),
             prompts_stopped: AtomicBool::new(false),
             host_bridge: None,
             tasks: tasks::Queue::new(),
@@ -208,10 +216,70 @@ impl AppState {
             .and_then(|path| crate::host_bridge::Bridge::new(path.into()).ok());
     }
 
+    fn initialize_companions(&self) -> Result<(), ApiError> {
+        if self.companions.get().is_none() {
+            let _init = lock(&self.companion_init);
+            if self.companions.get().is_none() {
+                // The fixed owner state root is independent of daemon config
+                // and socket overrides. No image is pulled or backend installed.
+                let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| ApiError::unavailable("Home directory unavailable"))?;
+                let directory = std::env::var_os("HYPERMESH_COMPANION_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".hypermesh-companions"));
+                if !directory.is_absolute() { return Err(ApiError::bad("Companion state path must be absolute")); }
+                hypermesh_local_storage::create_dir(&directory).map_err(|_| ApiError::unavailable("Private companion storage unavailable"))?;
+                let image = std::env::var("HYPERMESH_COMPANION_IMAGE").unwrap_or_else(|_| "ghcr.io/hyperme-sh/hypermesh-visor:test".to_string());
+                lock(&self.automation).pause();
+                let native = lock(&self.selected_session).unwrap_or_else(Uuid::new_v4);
+                let runtime = crate::companion_runtime::Runtime::open(&directory, image, native)
+                    .map_err(|_| ApiError::unavailable("Local Docker backend unavailable or recovery incomplete; install the TEST desktop image through the normal setup"))?;
+                let _ = self.companions.set(runtime);
+            }
+        }
+        Ok(())
+    }
+    pub fn recover_companions_at_startup(&self) {
+        if self.managed_guest.is_some() || self.desktop.backend_name() != "x11" { return; }
+        if std::env::var_os("HOME").is_some_and(|home| std::env::var_os("HYPERMESH_COMPANION_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(home).join(".hypermesh-companions")).join("allocations.json").exists()) {
+            if self.initialize_companions().is_err() {
+                eprintln!("hypermesh-visor: companion recovery incomplete; additional desktops remain unavailable");
+            }
+        }
+    }
+
+    pub fn apply_managed_guest_env(&mut self) -> Result<(), String> {
+        let guest = crate::companion_lease::Guest::from_env().map_err(|_| "Invalid managed companion configuration")?;
+        if let Some(guest) = &guest {
+            let id = guest.session();
+            let harness = Harness { purpose: "Managed companion desktop".into(), recipes: Vec::new(),
+                agent: Agent { name: "Companion".into(), instructions: String::new() }, skills: Vec::new() };
+            let vault = Vault::open(&[], self.mcp_dir.clone()).map_err(|_| "Managed companion vault unavailable")?;
+            lock(&self.sessions).insert(id, Session::create(id, harness, vault, mcp::McpBundle::default()));
+            *lock(&self.selected_session) = Some(id);
+            self.selected_approved.store(true, Ordering::SeqCst);
+            lock(&self.automation).pause();
+        }
+        self.managed_guest = guest;
+        Ok(())
+    }
+
+    fn managed_active(&self) -> bool {
+        let Some(guest) = &self.managed_guest else { return true; };
+        let current = guest.active();
+        let mut previous = lock(&self.managed_run);
+        if *previous != current {
+            // Never let a renewed lease revive a queued turn from its predecessor.
+            lock(&self.automation).pause();
+            self.tasks.close(guest.session());
+            *previous = current;
+        }
+        current.is_some()
+    }
+
     fn prompt_cancellation(self: &Arc<Self>, session: Option<Uuid>) -> prompt::PromptCancellation {
+        let run = self.managed_guest.as_ref().and_then(|g| g.active());
         let weak = Arc::downgrade(self);
         prompt::PromptCancellation::watching(move || weak.upgrade().is_none_or(|state| {
             state.prompts_stopped.load(Ordering::SeqCst)
+                || state.managed_guest.as_ref().is_some_and(|g| run.is_none() || g.active() != run)
                 || session.is_some_and(|id| !state.has_session(id))
         }))
     }
@@ -493,6 +561,9 @@ impl AppState {
     }
 
     fn control_automation_at(&self, action: Control, companion: bool, expected_session: Option<Uuid>, expected_epoch: Option<u64>) -> Result<(), ApiError> {
+        if matches!(action, Control::Start | Control::Resume) && !self.managed_active() {
+            return Err(ApiError::conflict("Host control is paused or unavailable"));
+        }
         if expected_session.is_some() && !matches!(action, Control::Start | Control::Resume) {
             return Err(ApiError::bad("expected_session applies only to start or resume"));
         }
@@ -741,6 +812,10 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/host/call", post(host::call))
         .route("/host/mcp", post(host::mcp))
         .route("/companion", get(companion))
+        .route("/companion/manager", post(companion_manager_request))
+        .route("/companion/activity", post(companion_activity))
+        .route("/companion/managed", get(managed_status))
+        .route("/companion/managed/cancel", post(managed_cancel))
         .route("/companion/automation", post(companion_automation))
         .route("/companion/sessions", get(companion_sessions).post(companion_select))
         .route("/companion/interrupt", post(companion_interrupt))
@@ -773,8 +848,62 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/session/:id/mcp/resources", post(mcp_resources::request))
         .route("/session/:id/mcp/prompts", post(mcp_prompts::request))
         .route("/session/:id/mcp/refresh", post(mcp_refresh))
+        .layer(middleware::from_fn_with_state(state.clone(), managed_admission))
         .layer(Extension(CompanionLink(from_companion)))
         .with_state(state)
+}
+
+async fn companion_activity(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {
+    if !link.0 { return Err(ApiError::forbidden("Native companion required")); }
+    if let Some(runtime) = state.companions.get() { let _ = runtime.observer().physical_input(); }
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn companion_manager_request(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>, Json(body): Json<serde_json::Value>) -> Result<Json<serde_json::Value>, ApiError> {
+    if !link.0 || state.managed_guest.is_some() { return Err(ApiError::forbidden("Native companion required")); }
+    if state.desktop.backend_name() != "x11" { return Err(ApiError::not_implemented("Additional desktops require a Linux X11 host observer")); }
+    tokio::task::spawn_blocking(move || {
+        state.initialize_companions()?;
+        let runtime = state.companions.get().ok_or_else(|| ApiError::unavailable("Companion manager unavailable"))?;
+        runtime.request(body).map(Json).map_err(|error| ApiError::conflict(format!("Companion operation refused: {error:?}")))
+    }).await.map_err(|_| ApiError::internal("Companion operation failed"))?
+}
+
+async fn managed_status(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<Json<serde_json::Value>, ApiError> {
+    if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }
+    let guest = state.managed_guest.as_ref().ok_or_else(|| ApiError::conflict("Not a managed desktop"))?;
+    state.managed_active();
+    let lease = guest.read().map_err(|_| ApiError::conflict("Host control unavailable"))?;
+    let epoch = lock(&state.automation).epoch();
+    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch})))
+}
+async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {
+    if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }
+    let guest = state.managed_guest.as_ref().ok_or_else(|| ApiError::conflict("Not a managed desktop"))?;
+    state.managed_active();
+    lock(&state.automation).pause();
+    state.tasks.close(guest.session());
+    tokio::task::spawn_blocking(move || {
+        lock_for(&state.injection, Duration::from_secs(1)).map(|_| ()).ok_or_else(|| ApiError::conflict("Desktop cancellation pending"))
+    }).await.map_err(|_| ApiError::internal("Desktop cancellation failed"))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn managed_admission(State(state): State<Arc<AppState>>, request: Request<Body>, next: Next) -> Response {
+    if state.managed_guest.is_some() {
+        let path = request.uri().path();
+        let closes_session = request.method() == axum::http::Method::DELETE
+            && path.strip_prefix("/session/").is_some_and(|id| !id.contains('/'));
+        if path == "/session" || closes_session
+            || path == "/companion/sessions" && request.method() != axum::http::Method::GET {
+            return (StatusCode::FORBIDDEN, "Managed desktop has one fixed session").into_response();
+        }
+        let read_only = request.method() == axum::http::Method::GET
+            || path.ends_with("/view") || path.starts_with("/companion/");
+        if !state.managed_active() && !read_only {
+            return (StatusCode::CONFLICT, "Host control is paused or unavailable").into_response();
+        }
+    }
+    next.run(request).await
 }
 
 #[derive(Deserialize)]
@@ -1673,6 +1802,10 @@ async fn companion(
     headers: HeaderMap,
 ) -> Json<CompanionBody> {
     if from_companion {
+        if let Some(runtime) = state.companions.get() {
+            let available = headers.get("x-hypermesh-keyboard").and_then(|v| v.to_str().ok()) == Some("1");
+            let _ = runtime.observer().poll(available);
+        }
         // Level-triggered. A missing keyboard pauses a live gate before this
         // poll is stored, so the heartbeat cannot keep that stretch running.
         if headers
@@ -1816,6 +1949,7 @@ async fn companion_interrupt(
         return Err(ApiError::bad("keyboard interrupt cannot be re-enabled"));
     }
     lock(&state.automation).set_keyboard_interrupt(false);
+    if let Some(runtime) = state.companions.get() { let _ = runtime.observer().poll(false); }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2073,6 +2207,7 @@ fn stretch_ended(state: &AppState) -> bool {
 }
 
 fn gate_word(state: &AppState) -> u64 {
+    state.managed_active();
     state.published.load(Ordering::SeqCst)
 }
 
@@ -2326,6 +2461,7 @@ fn spawn_companion_watch(state: Arc<AppState>) {
             let slice = (state.companion_poll_timeout / 4)
                 .clamp(Duration::from_millis(10), Duration::from_millis(250));
             tokio::time::sleep(slice).await;
+            state.managed_active();
             lock(&state.automation).watchdog(Instant::now(), state.companion_poll_timeout);
         }
     });
@@ -7771,6 +7907,60 @@ while True:
         assert!(state.control_automation(Control::Pause, true, None).is_ok());
         assert!(state.control_automation(Control::Resume, true, None).is_ok());
         drop(original);
+    }
+
+    #[tokio::test]
+    async fn companion_manager_routes_are_private_and_unconfigured_guests_refuse() {
+        let (state, _, _) = task_fixture();
+        for app in [router(state.clone()), tcp_router(state.clone(), "fixture-token".into())] {
+            for route in ["/companion/manager", "/companion/activity", "/companion/managed/cancel"] {
+                assert_eq!(trust_test_request(app.clone(), "POST", route, serde_json::json!({"action":"list"})).await.0, StatusCode::FORBIDDEN);
+            }
+            assert_eq!(trust_test_request(app, "GET", "/companion/managed", serde_json::json!({})).await.0, StatusCode::FORBIDDEN);
+        }
+        assert_eq!(trust_test_request(companion_router(state.clone()), "GET", "/companion/managed", serde_json::json!({})).await.0, StatusCode::CONFLICT);
+        assert!(state.companions.get().is_none());
+    }
+    #[tokio::test]
+    async fn companion_guest_lease_loss_cancels_input_and_prior_prompt_generation() {
+        let (original, _, id) = task_fixture();
+        let scope = crate::companion_manager::Scope::recovered(Uuid::new_v4(), id, Uuid::new_v4());
+        let path = std::env::temp_dir().join(format!("visor-guest-{}.json", Uuid::new_v4()));
+        let mut state = AppState::new(original.desktop.clone(), Duration::from_millis(20));
+        // Move only the fixture session; no OS desktop or container is started.
+        *lock(&state.sessions) = std::mem::take(&mut *lock(&original.sessions));
+        state.managed_guest = Some(crate::companion_lease::Guest::fixture(scope, path.clone()));
+        *lock(&state.selected_session) = Some(id);
+        state.selected_approved.store(true, Ordering::SeqCst);
+        let state = Arc::new(state);
+        assert!(!state.managed_active());
+        assert!(state.control_automation(Control::Resume, true, Some(id)).is_err());
+        let run = Uuid::new_v4();
+        std::fs::write(&path, serde_json::to_vec(&crate::companion_lease::Lease::new(scope, Some(run)).unwrap()).unwrap()).unwrap();
+        assert!(state.managed_active());
+        let app = companion_router(state.clone());
+        let (_, status) = trust_test_request(app.clone(), "GET", "/companion/managed", serde_json::json!({})).await;
+        let missing_epoch = serde_json::json!({"action":"resume","expected_session":id});
+        assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", missing_epoch).await.0, StatusCode::CONFLICT);
+        let approval = serde_json::json!({"action":"resume","expected_session":id,"expected_epoch":status["epoch"]});
+        assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", approval.clone()).await.0, StatusCode::NO_CONTENT);
+        for encoded in [id.to_string(), id.to_string().to_uppercase(), id.to_string().replace('-', "%2d")] {
+            assert_eq!(trust_test_request(app.clone(), "DELETE", &format!("/session/{encoded}"), serde_json::json!({})).await.0, StatusCode::FORBIDDEN);
+            assert!(state.has_session(id));
+        }
+        lock(&state.automation).pause();
+        assert_eq!(trust_test_request(app.clone(), "POST", "/companion/automation", approval).await.0, StatusCode::CONFLICT);
+        let prior_prompt = state.prompt_cancellation(Some(id));
+        assert!(!prior_prompt.cancelled());
+        let epoch = lock(&state.automation).epoch();
+        std::fs::write(&path, serde_json::to_vec(&crate::companion_lease::Lease::new(scope, None).unwrap()).unwrap()).unwrap();
+        assert!(!state.managed_active());
+        assert!(prior_prompt.cancelled());
+        assert_ne!(lock(&state.automation).epoch(), epoch);
+        let app = companion_router(state.clone());
+        assert_eq!(trust_test_request(app.clone(), "POST", "/session", serde_json::json!({})).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(trust_test_request(app, "POST", &format!("/session/{id}/mouse"), serde_json::json!({})).await.0, StatusCode::CONFLICT);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
