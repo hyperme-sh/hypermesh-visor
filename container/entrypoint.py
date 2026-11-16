@@ -49,19 +49,21 @@ try:
         if target.is_symlink() or target.stat().st_uid != os.getuid():
             raise RuntimeError('private directory ownership invalid')
         target.chmod(0o700)
+    managed = visor_managed.scope(os.environ)
     identity = Path('/home/bot/.local/state/hypermesh/bot-id')
     try:
         with identity.open('x') as stream:
-            stream.write(str(uuid.uuid4()) + '\n')
+            stream.write((managed['companion'] if managed is not None else str(uuid.uuid4())) + '\n')
     except FileExistsError:
-        uuid.UUID(identity.read_text().strip())
+        existing = str(uuid.UUID(identity.read_text().strip()))
+        if managed is not None and existing != managed['companion']:
+            raise RuntimeError('managed home identity does not match its scope')
     subprocess.run(['xauth', '-f', os.environ['XAUTHORITY'], 'add', ':99', '.', secrets.token_hex(16)], check=True)
     start('display', ['Xvfb', ':99', '-screen', '0', '1280x800x24', '-nolisten', 'tcp', '-auth', os.environ['XAUTHORITY']])
     wait_until(lambda: subprocess.run(['xdpyinfo'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0, 'display unavailable')
     start('window-manager', ['openbox', '--sm-disable'])
     start('audio', ['pulseaudio', '--daemonize=no', '--exit-idle-time=-1', '--disallow-exit', '-n',
                     '--load=module-native-protocol-unix socket=/run/visor/pulse/native', '--load=module-null-sink sink_name=visor'])
-    managed = visor_managed.scope(os.environ)
     if managed is not None and os.environ.get("HYPERMESH_CONTAINER_UNATTENDED", "0") != "0":
         raise RuntimeError("managed and unattended modes cannot be combined")
     if not visor_managed.alive(managed):

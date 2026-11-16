@@ -2624,6 +2624,28 @@ scenario_mcp_daemon_crash() {
   python3 "$root/ci/display/mcp-daemon-crash.py" after "$RUNTIME" "$CONFIG" "$REQ_DIR"
 }
 
+scenario_managed_companions() {
+  [[ -n ${NIGHTLY_FRAMEWORK_ROOT:-} ]] || die "managed desktops require the central Infra fixture"
+  local checker="$NIGHTLY_FRAMEWORK_ROOT/scripts/nightly/visor_managed.py"
+  stop_companion
+  stop_visor
+  export HYPERMESH_COMPANION_STATE_DIR="$TMPDIR/visor-managed/state"
+  export HYPERMESH_COMPANION_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor:nightly-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+  start_visor
+  start_companion
+  python3 "$checker" start --socket "$RUNTIME/companion.sock"
+  uinput_cmd "rel 30 12"
+  python3 "$checker" paused --socket "$RUNTIME/companion.sock"
+  stop_companion
+  stop_visor
+  start_visor
+  start_companion
+  python3 "$checker" recovered --socket "$RUNTIME/companion.sock"
+  stop_companion
+  stop_visor
+  unset HYPERMESH_COMPANION_STATE_DIR HYPERMESH_COMPANION_IMAGE
+}
+
 X11_SCENARIOS=(
   uinput-channel
   key-down-detects
@@ -2649,6 +2671,12 @@ X11_SCENARIOS=(
   mcp-daemon-crash
   other-user-cannot-drive
 )
+
+# The manager fixture is owned by Infra and runs only in its existing X11 lane.
+# Installed-package CI keeps its existing display cases and does not create it.
+if [[ ${NIGHTLY_SUITE:-} == visor-x11 && -n ${NIGHTLY_FRAMEWORK_ROOT:-} ]]; then
+  X11_SCENARIOS+=(managed-companions)
+fi
 
 WAYLAND_SCENARIOS=(
   wayland-refuses-automation
@@ -2680,6 +2708,7 @@ run_x11() {
     fi
     case $name in
       mcp-http | mcp-daemon-crash | mcp-persistence | mcp-discovery | uinput-key-pauses-type | held-release | stop-resume-during-type | other-user-cannot-drive) limit=60 ;;
+      managed-companions) limit=300 ;;
       auto-resume) limit=30 ;;
       key-down-detects) limit=20 ;;
       *) limit=45 ;;

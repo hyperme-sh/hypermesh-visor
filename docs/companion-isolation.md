@@ -160,7 +160,11 @@ Homes consume Docker storage and are retained only by explicit choice; retained
 homes appear separately for deletion and are never mounted for another bot.
 
 The owner-only `~/.hypermesh-companions` directory holds an exclusive manager
-lock and an atomically replaced allocation journal. A fixed Docker claim also
+lock and an atomically replaced allocation journal. An explicit
+`HYPERMESH_COMPANION_STATE_DIR` can select an absolute private state directory;
+the engine-wide claim still enforces one owner. `HYPERMESH_COMPANION_IMAGE` may
+select another installed project channel/version tag, including the central
+nightly fixture image; arbitrary images and digests are refused. A fixed Docker claim also
 prevents a second owner/configuration from claiming the supported engine.
 Allocations are committed before Docker effects. Startup attempts cleanup of
 previous allocations, preserving their homes. Failed or uncertain cleanup

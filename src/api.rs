@@ -223,9 +223,10 @@ impl AppState {
                 // The fixed owner state root is independent of daemon config
                 // and socket overrides. No image is pulled or backend installed.
                 let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| ApiError::unavailable("Home directory unavailable"))?;
-                let directory = home.join(".hypermesh-companions");
+                let directory = std::env::var_os("HYPERMESH_COMPANION_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home.join(".hypermesh-companions"));
+                if !directory.is_absolute() { return Err(ApiError::bad("Companion state path must be absolute")); }
                 hypermesh_local_storage::create_dir(&directory).map_err(|_| ApiError::unavailable("Private companion storage unavailable"))?;
-                let image = "ghcr.io/hyperme-sh/hypermesh-visor:test".to_string();
+                let image = std::env::var("HYPERMESH_COMPANION_IMAGE").unwrap_or_else(|_| "ghcr.io/hyperme-sh/hypermesh-visor:test".to_string());
                 lock(&self.automation).pause();
                 let native = lock(&self.selected_session).unwrap_or_else(Uuid::new_v4);
                 let runtime = crate::companion_runtime::Runtime::open(&directory, image, native)
@@ -237,7 +238,7 @@ impl AppState {
     }
     pub fn recover_companions_at_startup(&self) {
         if self.managed_guest.is_some() || self.desktop.backend_name() != "x11" { return; }
-        if std::env::var_os("HOME").is_some_and(|home| PathBuf::from(home).join(".hypermesh-companions/allocations.json").exists()) {
+        if std::env::var_os("HOME").is_some_and(|home| std::env::var_os("HYPERMESH_COMPANION_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(home).join(".hypermesh-companions")).join("allocations.json").exists()) {
             if self.initialize_companions().is_err() {
                 eprintln!("hypermesh-visor: companion recovery incomplete; additional desktops remain unavailable");
             }
