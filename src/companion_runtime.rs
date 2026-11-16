@@ -188,7 +188,11 @@ impl Runtime {
         // Individual additions also check currently available host RAM.
         let budget = Resources {
             memory_mib: 8192,
-            cpu_millis: 4000,
+            cpu_millis: std::thread::available_parallelism()
+                .map_err(|_| Error::Capacity)?
+                .get()
+                .min(4) as u32
+                * 1000,
         };
         let manager = Manager::new(
             backend,
