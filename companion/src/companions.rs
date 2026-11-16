@@ -38,7 +38,11 @@ pub fn run() -> Result<(), String> {
                     "Linux container desktop"
                 },
                 c["companion"].as_str().unwrap_or("unknown"),
-                c["phase"].as_str().unwrap_or("unknown")
+                if c["native"] == true {
+                    "state shown in native controls"
+                } else {
+                    c["phase"].as_str().unwrap_or("unknown")
+                }
             )
         }));
         rows.extend(retained.iter().map(|c| {
