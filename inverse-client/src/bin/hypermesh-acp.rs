@@ -91,24 +91,40 @@ impl Backend for Fixture {
 fn run() -> i32 {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args.len() == 1 && args[0] == "--help" {
-        println!("hypermesh-acp --fixture-assignment PRIVATE_JSON\nLocal ACP stdio adapter. Fixture mode performs no model or tool calls.\nProduction Conductor routing is not configured by this executable yet.");
+        println!("hypermesh-acp --visor-socket PRIVATE_SOCKET | --fixture-assignment PRIVATE_JSON\nLocal ACP stdio adapter. Fixture mode performs no model or tool calls.\nUse --visor-socket PRIVATE_SOCKET for the assigned local Visor backend. Launch from the configured project directory.");
         return 0;
     }
-    if args.len() != 2 || args[0] != "--fixture-assignment" {
-        eprintln!("ACP backend unavailable; use --help for explicit fixture mode");
+    if args.len() != 2 {
+        eprintln!("ACP backend unavailable; use --help");
         return 2;
     }
-    let path = PathBuf::from(&args[1]);
-    let Ok(assignment) = Fixture::read(&path) else {
-        eprintln!("ACP fixture configuration refused");
+    let backend: Arc<dyn Backend> = if args[0] == "--visor-socket" {
+        let Ok(workspace) = std::env::current_dir() else {
+            return 2;
+        };
+        let Ok(machine) =
+            hypermesh_visor_client::acp::machine::Machine::new(PathBuf::from(&args[1]), workspace)
+        else {
+            eprintln!("Assigned Visor backend unavailable");
+            return 2;
+        };
+        Arc::new(machine)
+    } else if args[0] == "--fixture-assignment" {
+        let path = PathBuf::from(&args[1]);
+        let Ok(assignment) = Fixture::read(&path) else {
+            eprintln!("ACP fixture configuration refused");
+            return 2;
+        };
+        Arc::new(Fixture {
+            hold_turn: assignment.hold_turn,
+            path,
+            machine: assignment.machine,
+            session: assignment.session,
+        })
+    } else {
+        eprintln!("ACP backend unavailable; use --help");
         return 2;
     };
-    let backend = Arc::new(Fixture {
-        hold_turn: assignment.hold_turn,
-        path,
-        machine: assignment.machine,
-        session: assignment.session,
-    });
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

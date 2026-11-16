@@ -94,6 +94,13 @@ impl Bridge {
     }
     #[cfg(windows)]
     async fn request(&self, _: &str, _: &str, _: Vec<u8>) -> Result<Value, ()> { Err(()) }
+    pub async fn machine_context(&self) -> Result<Value, ()> {
+        self.request("GET", "/machine-context", vec![]).await
+    }
+    pub async fn machine_prompt(&self, raw: Vec<u8>) -> Result<Value, ()> {
+        if raw.len() > 96*1024 { return Err(()); }
+        self.request("POST", "/machine-prompt", raw).await
+    }
     pub async fn permission_context(&self) -> Result<Value, ()> {
         self.request("GET", "/permission-context", vec![]).await
     }

@@ -1,8 +1,7 @@
 # ACP adapter boundary
 
 The `hypermesh-visor-client::acp` library implements the ACP v1 admission and
-stdio turn state for #188. The `hypermesh-acp` executable exposes it on stdio. No production
-backend or network listener is enabled. The existing inverse MCP executable
+stdio turn state for #188. The `hypermesh-acp` executable exposes it on stdio. The assigned backend uses the private Visor socket; no network listener is added. The existing inverse MCP executable
 is unchanged. Native session units exercise the new code on Linux, Windows and
 macOS in CI.
 
@@ -31,22 +30,33 @@ Unknown outcomes are not retried. Errors contain fixed text, not backend
 diagnostics or prompt bodies. The backend must likewise avoid logging sensitive
 inputs, including in panic messages.
 
-## Required production backend
+## Assigned machine backend
 
-The backend must verify the enrolled machine identity, current assignment and
-local session on admission and every prompt. It must preserve physical-user
-pause, bind requests to that session and an operation ID, and route through
-Conductor, AIuditor and the destination. Cancellation, expiry, revocation and
-disconnect must reach active upstream work. A successful protocol handshake or
-an earlier successful admission is not a standing grant.
+Launch `hypermesh-acp --visor-socket /absolute/private/companion.sock` from the
+configured project directory. The initial backend uses the Linux host bridge.
+The adapter checks the same-user private socket and obtains the current assigned
+session from Visor. The IDE never supplies a machine identity, credential,
+provider destination or command. A different project or unassigned session is
+refused. Unsupported native bridge configurations return unavailable.
 
-The existing Visor `/prompt` and session stream routes use the renter API-key
-path. Conductor's current `/v1/peer/prompt-submit` takes an operator-configured
-bearer grant and destination/class; it does not establish the machine proof or
-assigned Visor session required by #188. Neither is a substitute for the missing
-machine/session ingress contract. No manual JWT or renter-token fallback is
-added. Production routing belongs to #219 and Conductor #64. #188 explicitly uses
-a fixture backend and does not depend on that production route.
+The root-managed host configuration selects one owner-bound bot, project and
+Conductor route. Visor requires its existing physical-user consent and active
+session. For each turn, the signed-in owner's OS-keyring session admits the exact
+submission digest through Plane's `owner-prompt` endpoint. The owner must match
+the completed host registration. The host then supplies its machine credential
+to Conductor's protected local socket; Conductor rechecks the delivered task and
+routes through AIuditor. Neither renter keys nor the operator bearer route is a
+substitute. Owner task admission and machine execution remain separate checks.
+
+A dropped editor connection cancels the Visor response stream and upstream host
+request. Local pause is checked during active work; Plane cancellation, current
+assignment and heartbeat are checked by Conductor. Unknown delivery is never
+retried. An abandoned owner admission expires to unknown on the existing queue.
+The response is bounded text, not an instruction to run project commands.
+
+The CLI fixture remains explicit and unchanged for isolated protocol contracts.
+The IDE client is tracked in hypermesh-vscode #9; this backend is Visor #219.
+Installed editor-to-model scenarios belong only to the central nightly batch.
 
 References: [ACP initialization](https://agentclientprotocol.com/protocol/v1/initialization),
 [session setup](https://agentclientprotocol.com/protocol/v1/session-setup),
@@ -61,7 +71,7 @@ include `hypermesh-acp`. An ACP editor may launch it with
 `--fixture-assignment /absolute/private/assignment.json`. The owner-private JSON
 contains `machine` and `session` UUIDs, plus boolean `assigned` and `paused`
 fields. It is a test fixture, never an enrollment credential or a production
-assignment grant. With no explicit fixture, the executable refuses startup.
+assignment grant. With neither a private Visor socket nor an explicit fixture, the executable refuses startup.
 
 Fixture turns return only a fixed response and perform no model, tool or desktop
 actions. Admission and every turn check assignment, machine/session identity

@@ -5,6 +5,7 @@ pub const MAX_FRAME: usize = 512 * 1024;
 pub const MAX_PROMPT: usize = 64 * 1024;
 
 pub mod transport;
+pub mod machine;
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
