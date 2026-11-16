@@ -89,6 +89,9 @@ impl Guest {
     pub(crate) fn fixture(scope: Scope, path: PathBuf) -> Self {
         Self { scope, path }
     }
+    pub fn instructions(&self) -> Result<String, Error> {
+        crate::companion_sets::read_guest(&self.path.with_file_name("profile.json"), self.scope)
+    }
     pub fn session(&self) -> Uuid {
         self.scope.session()
     }

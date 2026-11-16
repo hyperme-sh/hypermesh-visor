@@ -310,6 +310,13 @@ impl<B: Backend> Manager<B> {
     }
 
     pub fn add_container(&mut self, resources: Resources) -> Result<Scope, Error> {
+        self.add_checked(resources, |_| Ok(()))
+    }
+    pub fn add_checked(
+        &mut self,
+        resources: Resources,
+        check: impl FnOnce(Scope) -> Result<(), Error>,
+    ) -> Result<Scope, Error> {
         self.tick()?;
         if !fresh(&self.monitor) {
             self.tick()?;
@@ -346,6 +353,11 @@ impl<B: Backend> Manager<B> {
             kind: Kind::Container,
             resources,
         };
+        // A missing grant/resource must not start a guest, even a paused one.
+        check(scope)?;
+        if !fresh(&self.monitor) {
+            return Err(Error::MonitorUnavailable);
+        }
         // Reserve before starting. Even an uncertain start owns a slot until
         // explicit cancellation and stop both succeed.
         self.insert(allocation);
@@ -589,6 +601,37 @@ mod tests {
             );
         }
         assert!(manager.snapshots().iter().all(|s| s.phase == Phase::Paused));
+    }
+    #[test]
+    fn preflight_refusals_never_start_or_reserve_a_guest() {
+        let (mut manager, calls, _) = fixture();
+        assert_eq!(
+            manager.add_checked(UNIT, |_| Err(Error::Denied)),
+            Err(Error::Denied)
+        );
+        assert_eq!(manager.snapshots().len(), 1);
+        assert!(calls.lock().unwrap().calls.is_empty());
+        assert_eq!(
+            manager.add_checked(
+                Resources {
+                    memory_mib: u32::MAX,
+                    ..UNIT
+                },
+                |_| panic!("capacity must be checked first")
+            ),
+            Err(Error::Capacity)
+        );
+        let scope = manager.add_checked(UNIT, |_| Ok(())).unwrap();
+        assert_eq!(
+            manager
+                .snapshots()
+                .iter()
+                .find(|s| s.allocation.scope == scope)
+                .unwrap()
+                .phase,
+            Phase::Paused
+        );
+        assert_eq!(calls.lock().unwrap().calls, vec![(Op::Start, scope)]);
     }
     #[test]
     fn capacity_and_invalid_sizes_do_not_reserve_or_start() {

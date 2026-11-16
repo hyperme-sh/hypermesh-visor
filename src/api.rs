@@ -250,7 +250,7 @@ impl AppState {
         if let Some(guest) = &guest {
             let id = guest.session();
             let harness = Harness { purpose: "Managed companion desktop".into(), recipes: Vec::new(),
-                agent: Agent { name: "Companion".into(), instructions: String::new() }, skills: Vec::new() };
+                agent: Agent { name: "Companion".into(), instructions: guest.instructions().map_err(|_| "Invalid managed companion instructions")? }, skills: Vec::new() };
             let vault = Vault::open(&[], self.mcp_dir.clone()).map_err(|_| "Managed companion vault unavailable")?;
             lock(&self.sessions).insert(id, Session::create(id, harness, vault, mcp::McpBundle::default()));
             *lock(&self.selected_session) = Some(id);
@@ -816,6 +816,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/companion/activity", post(companion_activity))
         .route("/companion/managed", get(managed_status))
         .route("/companion/managed/cancel", post(managed_cancel))
+        .route("/companion/managed/profile", post(managed_profile))
         .route("/companion/automation", post(companion_automation))
         .route("/companion/sessions", get(companion_sessions).post(companion_select))
         .route("/companion/interrupt", post(companion_interrupt))
@@ -875,7 +876,27 @@ async fn managed_status(State(state): State<Arc<AppState>>, Extension(link): Ext
     state.managed_active();
     let lease = guest.read().map_err(|_| ApiError::conflict("Host control unavailable"))?;
     let epoch = lock(&state.automation).epoch();
-    Ok(Json(serde_json::json!({"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch,"resume_seq":lock(&state.automation).resume_seq()})))
+    let profile_hash = lock(&state.sessions).get(&guest.session()).map(|s| crate::companion_sets::digest(&s.harness().agent.instructions));
+    Ok(Json(serde_json::json!({"profile_hash":profile_hash,"version":1,"companion":lease.companion,"session":lease.session,"generation":lease.generation,"epoch":epoch,"resume_seq":lock(&state.automation).resume_seq()})))
+}
+async fn managed_profile(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    managed_cancel(State(state.clone()), Extension(link)).await?;
+    let guest = state
+        .managed_guest
+        .as_ref()
+        .ok_or_else(|| ApiError::conflict("Not a managed desktop"))?;
+    let instructions = guest
+        .instructions()
+        .map_err(|_| ApiError::conflict("Invalid managed instructions"))?;
+    lock(&state.sessions)
+        .get_mut(&guest.session())
+        .ok_or_else(ApiError::missing)?
+        .set_instructions(instructions)
+        .map_err(|_| ApiError::bad("Invalid managed instructions"))?;
+    managed_status(State(state), Extension(link)).await
 }
 async fn managed_cancel(State(state): State<Arc<AppState>>, Extension(link): Extension<CompanionLink>) -> Result<StatusCode, ApiError> {
     if !link.0 { return Err(ApiError::forbidden("Private companion control required")); }
@@ -7921,6 +7942,30 @@ while True:
         }
         assert_eq!(trust_test_request(companion_router(state.clone()), "GET", "/companion/managed", serde_json::json!({})).await.0, StatusCode::CONFLICT);
         assert!(state.companions.get().is_none());
+    }
+    #[tokio::test]
+    async fn companion_profile_update_checks_scope_and_keeps_automation_paused() {
+        let (original, _, id) = task_fixture();
+        let scope = crate::companion_manager::Scope::recovered(Uuid::new_v4(), id, Uuid::new_v4());
+        let directory = std::env::temp_dir().join(format!("visor-profile-unit-{}", Uuid::new_v4()));
+        hypermesh_local_storage::create_dir(&directory).unwrap();
+        let path = directory.join("lease.json");
+        std::fs::write(&path, serde_json::to_vec(&crate::companion_lease::Lease::new(scope, None).unwrap()).unwrap()).unwrap();
+        crate::companion_sets::write_guest(&directory, scope, "Review only the assigned patch").unwrap();
+        let mut state = AppState::new(original.desktop.clone(), Duration::from_millis(20));
+        *lock(&state.sessions) = std::mem::take(&mut *lock(&original.sessions));
+        state.managed_guest = Some(crate::companion_lease::Guest::fixture(scope, path));
+        let state = Arc::new(state);
+        let (status, body) = trust_test_request(companion_router(state.clone()), "POST", "/companion/managed/profile", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["profile_hash"], crate::companion_sets::digest("Review only the assigned patch"));
+        assert!(!state.managed_active());
+        assert_eq!(lock(&state.sessions).get(&id).unwrap().harness().agent.instructions, "Review only the assigned patch");
+        let wrong = crate::companion_manager::Scope::recovered(scope.companion(), id, Uuid::new_v4());
+        crate::companion_sets::write_guest(&directory, wrong, "Wrong generation").unwrap();
+        assert_eq!(trust_test_request(companion_router(state.clone()), "POST", "/companion/managed/profile", serde_json::json!({})).await.0, StatusCode::CONFLICT);
+        assert_eq!(lock(&state.sessions).get(&id).unwrap().harness().agent.instructions, "Review only the assigned patch");
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[tokio::test]
     async fn companion_guest_lease_loss_cancels_input_and_prior_prompt_generation() {

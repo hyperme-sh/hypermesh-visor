@@ -268,7 +268,7 @@ impl<R: Runner> Docker<R> {
         serde_json::from_slice(&output).map_err(|_| Error::Backend)
     }
     pub fn guest(&mut self, a: Owned, action: &str) -> Result<Value, Error> {
-        if !matches!(action, "status" | "resume" | "pause" | "view") {
+        if !matches!(action, "status" | "resume" | "pause" | "view" | "configure") {
             return Err(Error::Invalid);
         }
         let exact = self.owned_container(a)?.ok_or(Error::Stale)?;
@@ -453,6 +453,7 @@ elif a=='resume':
  if status['version']!=1 or status['session']!=session: raise RuntimeError('managed scope changed')
  result=call('POST','/companion/automation',{'action':'resume','expected_session':session,'expected_epoch':status['epoch']})
 elif a=='pause': result=call('POST','/companion/managed/cancel')
+elif a=='configure': result=call('POST','/companion/managed/profile')
 elif a=='view': result=call('POST','/session/'+session+'/view',{})
 elif a=='task':
  raw=sys.stdin.buffer.read(262145)

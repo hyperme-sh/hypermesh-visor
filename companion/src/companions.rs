@@ -24,7 +24,7 @@ fn owner_request(mut body: Value) -> Result<Value, String> {
 }
 fn send(entry: &Value, mut body: Value) -> Result<Value, String> {
     if entry["enrolled"] == true {
-        if body["action"] == "stop" {
+        if body["action"] == "stop" || body["action"] == "load_set" {
             // Local cleanup remains available after logout or service failure.
             if let Ok(tokens) = hypermesh_session::refresh_session(
                 &hypermesh_session::KeyringStore,
@@ -78,10 +78,80 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
                 c["companion"].as_str().unwrap_or("unknown")
             )
         }));
+        let save_index = rows.len();
+        rows.push("Save current companion set".into());
+        rows.push("Load or delete a saved companion set".into());
         let Some(index) = choose(&mut dialog, "Companions", "One native desktop; up to three private Linux desktops. Physical host input pauses all managed desktops. Containers have no network or shared host files.", &rows)? else { return Ok(()); };
         if index == 0 {
             if dialog(&args("question", "Add companion", "Create a paused Linux desktop with its own home and session? The installed TEST image is required."), None)?.is_some() {
                 crate::visor::manager_request(json!({"action":"add"}))?;
+            }
+            continue;
+        }
+        if index == save_index {
+            let Some(name) = dialog(
+                &args(
+                    "entry",
+                    "Save companion set",
+                    "Name this set of Linux companion configurations:",
+                ),
+                None,
+            )?
+            else {
+                continue;
+            };
+            crate::visor::manager_request(json!({"action":"save_set","name":name}))?;
+            continue;
+        }
+        if index == save_index + 1 {
+            let response = crate::visor::manager_request(json!({"action":"sets"}))?;
+            let sets = response["sets"]
+                .as_array()
+                .ok_or("Saved sets unavailable")?;
+            if sets.is_empty() {
+                dialog(
+                    &args("info", "Saved companion sets", "No saved sets yet."),
+                    None,
+                )?;
+                continue;
+            }
+            let rows = sets
+                .iter()
+                .map(|s| s["name"].as_str().unwrap_or("Unnamed set").to_owned())
+                .collect::<Vec<_>>();
+            let Some(choice) = choose(
+                &mut dialog,
+                "Saved companion sets",
+                "Choose a saved set.",
+                &rows,
+            )?
+            else {
+                continue;
+            };
+            let selected = &sets[choice];
+            let Some(operation)=choose(&mut dialog,"Saved companion set","Loading creates fresh paused desktops and rechecks resources and current bot grants. Deleting removes only the saved definition.",&["Load paused companions".into(),"Delete saved definition".into()])? else { continue; };
+            if operation == 1 {
+                crate::visor::manager_request(json!({"action":"delete_set","id":selected["id"]}))?;
+            } else {
+                let result = send(
+                    &json!({"enrolled":selected["requires_owner"]}),
+                    json!({"action":"load_set","id":selected["id"]}),
+                )?;
+                let members = result["members"].as_array().ok_or("Invalid load results")?;
+                let summary = members
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| {
+                        format!(
+                            "Member {}: {} {}",
+                            i + 1,
+                            m["status"].as_str().unwrap_or("unknown"),
+                            m["reason"].as_str().unwrap_or("")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                dialog(&args("info", "Companion set results", &summary), None)?;
             }
             continue;
         }
@@ -118,6 +188,7 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
                 "Stop and delete private home".into(),
                 "Clone configuration to a new desktop".into(),
                 "Enroll this desktop for assigned bot tasks".into(),
+                "Edit saved instructions".into(),
             ],
         )?
         else {
@@ -140,6 +211,24 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
             if dialog(&args("question", "Clone companion configuration", "Create an empty, paused desktop with the same resource limits and a fresh identity? No files or credentials are copied. Enrolled bots require a fresh owner-authorized assignment."), None)?.is_some() {
                 send(entry, scoped(entry, "clone")?)?;
             }
+        } else if action == 6 {
+            let profile = crate::visor::manager_request(scoped(entry, "profile")?)?;
+            let mut options=args("text-info","Companion instructions","Instruction text is stored locally with the configuration. Credentials stay in the host broker. Editing pauses this companion.");
+            options.push("--editable".into());
+            let Some(instructions) = dialog(
+                &options,
+                Some(
+                    profile["instructions"]
+                        .as_str()
+                        .ok_or("Invalid instructions")?,
+                ),
+            )?
+            else {
+                continue;
+            };
+            let mut body = scoped(entry, "configure")?;
+            body["instructions"] = instructions.into();
+            crate::visor::manager_request(body)?;
         } else if action == 5 {
             if entry["enrolled"] == true {
                 return Err("This companion is already enrolled".into());

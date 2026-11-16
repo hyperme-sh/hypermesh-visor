@@ -7,6 +7,7 @@ use crate::{
         Allocation, Backend, Error, Kind, Manager, Observer, Permit, Resources, ResumeOffer, Scope,
     },
     companion_recovery::{Journal, Owned},
+    companion_sets::{self, Member, Reference, Store as Sets},
 };
 use hypermesh_local_storage as storage;
 use serde_json::{json, Value};
@@ -59,6 +60,7 @@ struct DesktopBackend {
     docker: Docker<LocalRunner>,
     controls: Controls,
     retain: bool,
+    profiles: Arc<Mutex<Sets>>,
 }
 impl DesktopBackend {
     fn owned(&self, scope: Scope) -> Result<Owned, Error> {
@@ -99,6 +101,12 @@ impl Backend for DesktopBackend {
             remote_until: None,
         };
         write_lease(&control)?;
+        let instructions = self
+            .profiles
+            .lock()
+            .map_err(|_| Error::Backend)?
+            .instructions(a.scope())?;
+        companion_sets::write_guest(&path, a.scope(), &instructions)?;
         self.controls
             .lock()
             .map_err(|_| Error::Backend)?
@@ -114,6 +122,11 @@ impl Backend for DesktopBackend {
                 {
                     return Err(Error::Backend);
                 }
+                if !instructions.is_empty()
+                    && status["profile_hash"] != companion_sets::digest(&instructions)
+                {
+                    return Err(Error::Backend);
+                }
                 return Ok(());
             }
             if Instant::now() >= deadline {
@@ -125,6 +138,17 @@ impl Backend for DesktopBackend {
     fn resume(&mut self, scope: Scope, permit: Permit) -> Result<(), Error> {
         let a = self.owned(scope)?;
         permit.check(scope)?;
+        let instructions = self
+            .profiles
+            .lock()
+            .map_err(|_| Error::Backend)?
+            .instructions(scope)?;
+        if !instructions.is_empty()
+            && self.docker.guest(a, "status")?["profile_hash"]
+                != companion_sets::digest(&instructions)
+        {
+            return Err(Error::Stale);
+        }
         {
             let mut controls = self.controls.lock().map_err(|_| Error::Backend)?;
             let control = controls.get_mut(&scope.generation()).ok_or(Error::Stale)?;
@@ -176,6 +200,7 @@ pub struct Runtime {
     offers: Mutex<HashMap<Uuid, (Instant, ResumeOffer)>>,
     stopped: Arc<AtomicBool>,
     broker: Mutex<Broker>,
+    profiles: Arc<Mutex<Sets>>,
 }
 impl Runtime {
     pub fn open(directory: &Path, image: String, native_session: Uuid) -> Result<Arc<Self>, Error> {
@@ -194,12 +219,16 @@ impl Runtime {
             .map(|a| a.scope())
             .collect::<Vec<_>>();
         broker.retain(&scopes)?;
+        let mut profiles = Sets::open(directory)?;
+        profiles.retain(&scopes)?;
+        let profiles = Arc::new(Mutex::new(profiles));
         let controls: Controls = Arc::new(Mutex::new(HashMap::new()));
         let backend = DesktopBackend {
             journal,
             docker,
             controls: controls.clone(),
             retain: true,
+            profiles: profiles.clone(),
         };
         // Reserve one native desktop and at most three 2 GiB / 1 CPU guests.
         // Individual additions also check currently available host RAM.
@@ -224,6 +253,7 @@ impl Runtime {
         let stopped = Arc::new(AtomicBool::new(false));
         let runtime = Arc::new(Self {
             broker: Mutex::new(broker),
+            profiles,
             manager: Mutex::new(manager),
             observer,
             offers: Mutex::new(HashMap::new()),
@@ -365,6 +395,112 @@ impl Runtime {
         // Refresh pending host revocations before showing or acting on state.
         let _ = manager.tick();
         let mut broker = self.broker.lock().map_err(|_| Error::Backend)?;
+        if action == "sets" {
+            let sets = self.profiles.lock().map_err(|_| Error::Backend)?.list()?;
+            return Ok(
+                json!({"sets":sets.into_iter().map(|(id,name,count,requires_owner)|json!({"id":id,"name":name,"members":count,"requires_owner":requires_owner})).collect::<Vec<_>>()}),
+            );
+        }
+        if action == "save_set" {
+            let members = manager
+                .snapshots()
+                .into_iter()
+                .filter(|s| s.allocation.kind == Kind::Container)
+                .map(|s| {
+                    let scope = s.allocation.scope;
+                    Ok(Member {
+                        memory_mib: s.allocation.resources.memory_mib,
+                        cpu_millis: s.allocation.resources.cpu_millis,
+                        instructions: self
+                            .profiles
+                            .lock()
+                            .map_err(|_| Error::Backend)?
+                            .instructions(scope)?,
+                        grant: broker.enrolled(scope).then(|| Reference::new(scope)),
+                    })
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            let id = self
+                .profiles
+                .lock()
+                .map_err(|_| Error::Backend)?
+                .create(body["name"].as_str().ok_or(Error::Invalid)?.into(), members)?;
+            return Ok(json!({"id":id}));
+        }
+        if matches!(action, "load_set" | "delete_set") {
+            let id = body["id"]
+                .as_str()
+                .and_then(|v| Uuid::parse_str(v).ok())
+                .ok_or(Error::Invalid)?;
+            if action == "delete_set" {
+                self.profiles
+                    .lock()
+                    .map_err(|_| Error::Backend)?
+                    .delete(id)?;
+                return Ok(json!({}));
+            }
+            let saved = self.profiles.lock().map_err(|_| Error::Backend)?.get(id)?;
+            let mut results = Vec::new();
+            for (index, member) in saved.members.into_iter().enumerate() {
+                let result = (|| {
+                    available_memory(member.memory_mib)?;
+                    let scope = manager.add_checked(member.resources(), |target| {
+                        if let Some(reference) = member.grant {
+                            if !broker.enrolled(reference.scope()) {
+                                return Err(Error::Denied);
+                            }
+                            broker.recreate(
+                                reference.scope(),
+                                target,
+                                "clone",
+                                Uuid::new_v4(),
+                                body["owner_token"].as_str().ok_or(Error::Denied)?,
+                            )?;
+                        }
+                        self.profiles
+                            .lock()
+                            .map_err(|_| Error::Backend)?
+                            .configure(target, member.instructions.clone())
+                    })?;
+                    if member.grant.is_some() {
+                        let mut controls = manager
+                            .backend_mut()
+                            .controls
+                            .lock()
+                            .map_err(|_| Error::Backend)?;
+                        controls
+                            .get_mut(&scope.generation())
+                            .ok_or(Error::Stale)?
+                            .remote = true;
+                    }
+                    Ok::<_, Error>(scope)
+                })();
+                // Keep uncertain starts, but discard preparation that never reserved a guest.
+                let mut scopes = manager
+                    .snapshots()
+                    .iter()
+                    .map(|s| s.allocation.scope)
+                    .collect::<Vec<_>>();
+                scopes.extend(
+                    manager
+                        .backend_mut()
+                        .journal
+                        .retained()
+                        .iter()
+                        .map(|a| a.scope()),
+                );
+                broker.retain(&scopes)?;
+                self.profiles
+                    .lock()
+                    .map_err(|_| Error::Backend)?
+                    .retain(&scopes)?;
+                results.push(match result {
+                    Ok(scope)=>json!({"member":index,"status":"paused","companion":scope.companion(),"session":scope.session(),"generation":scope.generation()}),
+                    Err(error)=>json!({"member":index,"status":"refused","reason":format!("{error:?}")}),
+                });
+            }
+            return Ok(json!({"members":results}));
+        }
         if action == "list" {
             let retained = manager.backend_mut().journal.retained().iter().map(|a| json!({"companion":a.companion,"session":a.session,"generation":a.generation,"enrolled":broker.enrolled(a.scope())})).collect::<Vec<_>>();
             return Ok(
@@ -387,20 +523,7 @@ impl Runtime {
                 let retained = manager.backend_mut().journal.retained();
                 recreation_resources(action, scope, &snapshots, retained)?
             };
-            let memory = std::fs::read_to_string("/proc/meminfo").map_err(|_| Error::Capacity)?;
-            let available = memory
-                .lines()
-                .find_map(|line| {
-                    line.strip_prefix("MemAvailable:")?
-                        .split_whitespace()
-                        .next()?
-                        .parse::<u64>()
-                        .ok()
-                })
-                .ok_or(Error::Capacity)?;
-            if available < (u64::from(resources.memory_mib) + 1024) * 1024 {
-                return Err(Error::Capacity);
-            }
+            available_memory(resources.memory_mib)?;
             let source = if action == "add" {
                 None
             } else {
@@ -411,7 +534,21 @@ impl Runtime {
             } else {
                 None
             };
-            let scope = manager.add_container(resources)?;
+            let instructions = source
+                .map(|scope| {
+                    self.profiles
+                        .lock()
+                        .map_err(|_| Error::Backend)?
+                        .instructions(scope)
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let scope = manager.add_checked(resources, |target| {
+                self.profiles
+                    .lock()
+                    .map_err(|_| Error::Backend)?
+                    .configure(target, instructions)
+            })?;
             if let Some(token) = owner {
                 let source = source.ok_or(Error::Invalid)?;
                 let result = broker.recreate(source, scope, action, Uuid::new_v4(), token);
@@ -473,6 +610,18 @@ impl Runtime {
                 .journal
                 .delete_retained(&mut backend.docker, scope)?;
             broker.remove(scope)?;
+            let backend = manager.backend_mut();
+            let scopes = backend
+                .journal
+                .active()
+                .iter()
+                .chain(backend.journal.retained())
+                .map(|a| a.scope())
+                .collect::<Vec<_>>();
+            self.profiles
+                .lock()
+                .map_err(|_| Error::Backend)?
+                .retain(&scopes)?;
             return Ok(json!({}));
         }
         let snapshot = manager
@@ -484,6 +633,32 @@ impl Runtime {
             return Err(Error::Invalid);
         }
         match action {
+            "profile" => Ok(
+                json!({"instructions":self.profiles.lock().map_err(|_|Error::Backend)?.instructions(scope)?}),
+            ),
+            "configure" => {
+                let instructions = body["instructions"].as_str().ok_or(Error::Invalid)?;
+                if !companion_sets::valid_instructions(instructions) {
+                    return Err(Error::Invalid);
+                }
+                manager.pause(scope)?;
+                self.profiles
+                    .lock()
+                    .map_err(|_| Error::Backend)?
+                    .configure(scope, instructions.into())?;
+                let backend = manager.backend_mut();
+                let owned = backend.owned(scope)?;
+                let path = backend
+                    .journal
+                    .directory()
+                    .join(scope.generation().to_string());
+                companion_sets::write_guest(&path, scope, instructions)?;
+                let status = backend.docker.guest(owned, "configure")?;
+                if status["profile_hash"] != companion_sets::digest(instructions) {
+                    return Err(Error::Stale);
+                }
+                Ok(json!({}))
+            }
             "enroll" => {
                 manager.pause(scope)?;
                 let tenant = body["tenant"]
@@ -534,6 +709,18 @@ impl Runtime {
                 manager.stop(scope)?;
                 if !manager.backend_mut().retain {
                     broker.remove(scope)?;
+                    let backend = manager.backend_mut();
+                    let scopes = backend
+                        .journal
+                        .active()
+                        .iter()
+                        .chain(backend.journal.retained())
+                        .map(|a| a.scope())
+                        .collect::<Vec<_>>();
+                    self.profiles
+                        .lock()
+                        .map_err(|_| Error::Backend)?
+                        .retain(&scopes)?;
                 }
                 Ok(json!({}))
             }
@@ -553,6 +740,23 @@ impl Drop for Runtime {
     }
 }
 
+fn available_memory(memory_mib: u32) -> Result<(), Error> {
+    let memory = std::fs::read_to_string("/proc/meminfo").map_err(|_| Error::Capacity)?;
+    let available = memory
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("MemAvailable:")?
+                .split_whitespace()
+                .next()?
+                .parse::<u64>()
+                .ok()
+        })
+        .ok_or(Error::Capacity)?;
+    if available < (u64::from(memory_mib) + 1024) * 1024 {
+        return Err(Error::Capacity);
+    }
+    Ok(())
+}
 fn enrollment_requires_remote(enrolled: bool, result: &Result<(), Error>) -> bool {
     enrolled
         || !matches!(
