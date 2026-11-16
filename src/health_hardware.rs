@@ -224,7 +224,10 @@ fn amd(bytes: &[u8]) -> Sample {
     let Some(value) = json(bytes) else {
         return Sample::default();
     };
-    let Some(rows) = value.as_array() else {
+    let Some(rows) = value
+        .as_array()
+        .or_else(|| value.get("gpu_data").and_then(Value::as_array))
+    else {
         return Sample::default();
     };
     if rows.len() > 32 {
@@ -294,6 +297,35 @@ fn trusted_executable(path: &Path) -> io::Result<PathBuf> {
     }
     Ok(path)
 }
+// A driver can remain uninterruptible after SIGKILL. Keep at most eight
+// outstanding invocations and reap them on later cycles without blocking.
+static PROCESS_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static DEFERRED: std::sync::Mutex<Vec<(std::process::Child, Slot<'static>)>> =
+    std::sync::Mutex::new(Vec::new());
+struct Slot<'a>(&'a std::sync::atomic::AtomicUsize);
+impl<'a> Slot<'a> {
+    fn reserve(count: &'a std::sync::atomic::AtomicUsize) -> io::Result<Self> {
+        use std::sync::atomic::Ordering;
+        count
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                (n < 8).then_some(n + 1)
+            })
+            .map_err(|_| unavailable())?;
+        Ok(Self(count))
+    }
+}
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+fn reap() -> io::Result<()> {
+    DEFERRED
+        .lock()
+        .map_err(|_| unavailable())?
+        .retain_mut(|(child, _)| !matches!(child.try_wait(), Ok(Some(_))));
+    Ok(())
+}
 fn command(
     path: &str,
     args: &[String],
@@ -303,8 +335,11 @@ fn command(
     if Instant::now() >= deadline {
         return Err(unavailable());
     }
+    reap()?;
+    let slot = Slot::reserve(&PROCESS_COUNT)?;
     let executable = trusted_executable(Path::new(path))?;
     let mut child = Command::new(executable)
+        .arg0(path)
         .args(args)
         .current_dir("/")
         .env_clear()
@@ -359,7 +394,12 @@ fn command(
         unsafe {
             libc::kill(-(child.id() as i32), libc::SIGKILL);
         }
-        let _ = child.wait();
+        if !matches!(child.try_wait(), Ok(Some(_))) {
+            DEFERRED
+                .lock()
+                .map_err(|_| unavailable())?
+                .push((child, slot));
+        }
     }
     result
 }
@@ -532,6 +572,28 @@ mod tests {
             br#"[{"temperature":{"edge":{"value":45,"unit":"F"}},"power":{"socket_power":"N/A"}}]"#
         )
         .present());
+    }
+    #[test]
+    fn amd_gpu_data_envelope_is_supported_without_cpu_or_identity_fields() {
+        let bytes=br#"{"gpu_data":[{"gpu":0,"temperature":{"hotspot":{"value":54,"unit":"C"}},"power":{"socket_power":{"value":123,"unit":"W"}},"serial_number":"private-canary"}],"cpu_data":[{"temperature":{"hotspot":199}}]}"#;
+        let value = amd(bytes);
+        assert_eq!(value.temperature, Some(54));
+        assert_eq!(value.power, Some(123));
+        assert!(!projection(value, Source::Amd)
+            .to_string()
+            .contains("private-canary"));
+    }
+    #[test]
+    fn deferred_process_slots_are_bounded_and_released_without_waiting() {
+        let count = std::sync::atomic::AtomicUsize::new(0);
+        let mut slots = (0..8)
+            .map(|_| Slot::reserve(&count).unwrap())
+            .collect::<Vec<_>>();
+        assert!(Slot::reserve(&count).is_err());
+        slots.pop();
+        assert!(Slot::reserve(&count).is_ok());
+        drop(slots);
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
     #[test]
     fn smart_failure_is_real_false_and_serials_never_reach_metrics() {

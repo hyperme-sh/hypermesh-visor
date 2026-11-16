@@ -76,7 +76,9 @@ No device names, UUIDs, serials, free-form labels or raw tool output are uploade
   disk source is unavailable. Names are local configuration, never metric labels.
 
 Each command has a two-second deadline and a 64 KiB memory limit, within a
-20-second hardware budget. Standard error is discarded; raw output is neither
+20-second hardware budget. Killed processes stuck in a driver are reaped on
+later cycles without blocking; at most eight outstanding invocations are allowed.
+Standard error is discarded; raw output is neither
 logged nor persisted. Executables and their resolved ancestors must be owned by
 root and not writable by group or others. Command options are fixed and no shell
 is used. Missing commands, permissions, unsupported formats and timeouts report
