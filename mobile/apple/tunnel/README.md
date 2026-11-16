@@ -40,3 +40,9 @@ The dependency uses the last official revision before the upstream minimum-OS
 manifest change, which used platform constants unavailable under its declared
 Swift tools version. The later tunnel-source changes only update copyright years.
 Visor still requires iOS 15 and macOS 12.
+
+On current Apple SDKs, pass `-Xcc -include -Xcc sys/types.h` to `swift build`
+(as CI does for all three Apple targets). Upstream WireGuardKitC declares Darwin
+control structures without including that system header. App build settings must
+provide the same forced include to the dependency C compiler and Swift Clang
+importer; compiling this package without it is not supported on those SDKs.
