@@ -51,3 +51,15 @@ Apple SDK CI stages the checksum-verified XCFramework and Swift wrappers from th
 same source revision, then compiles the unsigned simulator app without launching a
 simulator. Android SDK CI builds an unsigned ARM64 release APK against the same
 job's native AAR. Neither compile job provisions a peer or performs live sign-in.
+
+## Native prompt operations
+
+Optional `VISOR_MOBILE_CONDUCTOR_ORIGIN` configures the native phone transport.
+It must be a credential-free HTTPS origin and requires the enrollment configuration
+above. Both platform plugins expose `preparePrompt`, `submitPrompt` and
+`discardPrompt`; no per-request origin, bearer token or arbitrary network method
+crosses the JavaScript boundary. Preparing returns public task/operation IDs and
+the exact digest. The owner/session task workflow must authorize that binding
+before submission. A failed submission is uncertain and must not be retried.
+These operations do not claim mesh connectivity or provide the remaining remote
+session picker, task orchestration, or SEA identity adapter.

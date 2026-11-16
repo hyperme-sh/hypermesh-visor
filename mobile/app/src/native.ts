@@ -19,7 +19,21 @@ export interface VisorNative {
   connect(): Promise<State>;
   disconnect(): Promise<State>;
 }
-const plugin = registerPlugin<VisorNative>('Visor');
+export interface PhonePromptInput {
+  botId: string; assignmentId: string; sessionId: string;
+  taskClass: string; destination: string; prompt: string; maxOutputTokens: number;
+}
+export interface PreparedPhonePrompt { operationId: string; taskId: string; requestSha256: string }
+export interface VisorPromptNative extends VisorNative {
+  preparePrompt(options: PhonePromptInput): Promise<PreparedPhonePrompt>;
+  submitPrompt(options: { operationId: string }): Promise<{ text: string }>;
+  discardPrompt(options: { operationId: string }): Promise<void>;
+}
+const plugin = registerPlugin<VisorPromptNative>('Visor');
+export function nativePromptClient(): VisorPromptNative {
+  if (!Capacitor.isNativePlatform()) throw new Error('Open Visor in the mobile app.');
+  return plugin;
+}
 // No generic HTTP, filesystem, credential, URL-opening or script-execution bridge.
 export function nativeClient(): VisorNative {
   if (!Capacitor.isNativePlatform()) throw new Error('Open Visor in the mobile app.');
