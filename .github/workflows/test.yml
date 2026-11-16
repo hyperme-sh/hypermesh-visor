@@ -207,6 +207,17 @@ jobs:
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-session-deps.txt"
           cargo tree --locked --manifest-path mobile/core/Cargo.toml --target aarch64-apple-ios -e normal --prefix none > "$RUNNER_TEMP/ios-mobile-deps.txt"
           ! grep -E '^(keyring|secret-service|zbus|x11rb) ' "$RUNNER_TEMP/ios-mobile-deps.txt"
+      - name: Compile optional Apple WireGuard adapter and run unit contracts
+        if: matrix.os == 'macos-latest'
+        run: |
+          swift build --package-path mobile/apple/tunnel --target VisorMeshTunnel
+          swift build --package-path mobile/apple/tunnel --scratch-path "$RUNNER_TEMP/apple-tunnel-ios" \
+            --triple arm64-apple-ios15.0 --sdk "$(xcrun --sdk iphoneos --show-sdk-path)" --target VisorMeshTunnel
+          swift build --package-path mobile/apple/tunnel --scratch-path "$RUNNER_TEMP/apple-tunnel-simulator" \
+            --triple arm64-apple-ios15.0-simulator --sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" --target VisorMeshTunnel
+          swiftc mobile/apple/tunnel/Sources/VisorMeshTunnel/TunnelMonitor.swift \
+            mobile/apple/tunnel/Contracts/main.swift -o "$RUNNER_TEMP/apple-tunnel-contract"
+          "$RUNNER_TEMP/apple-tunnel-contract"
       - name: Build and verify Apple mobile library bundle
         if: matrix.os == 'macos-latest'
         run: |
