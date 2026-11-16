@@ -59,13 +59,13 @@ pub struct SavedSet {
     pub name: String,
     pub members: Vec<Member>,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
     reference: Reference,
     instructions: String,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Data {
     sets: Vec<SavedSet>,
@@ -127,7 +127,6 @@ impl Store {
         }
         let bytes = serde_json::to_vec(&self.data).map_err(|_| Error::Backend)?;
         if bytes.len() as u64 > LIMIT {
-            self.poisoned = true;
             return Err(Error::Capacity);
         }
         let temporary = self.path.with_extension(Uuid::new_v4().to_string());
@@ -145,6 +144,20 @@ impl Store {
             return Err(Error::Backend);
         }
         Ok(())
+    }
+    fn update<T>(
+        &mut self,
+        change: impl FnOnce(&mut Data) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        if self.poisoned {
+            return Err(Error::Backend);
+        }
+        let previous = self.data.clone();
+        let result = change(&mut self.data).and_then(|value| self.save().map(|_| value));
+        if result.is_err() {
+            self.data = previous;
+        }
+        result
     }
     pub fn list(&self) -> Result<Vec<(Uuid, String, usize, bool)>, Error> {
         if self.poisoned {
@@ -187,13 +200,16 @@ impl Store {
             return Err(Error::Capacity);
         }
         let id = Uuid::new_v4();
-        self.data.sets.push(SavedSet { id, name, members });
-        self.save()?;
-        Ok(id)
+        self.update(|data| {
+            data.sets.push(SavedSet { id, name, members });
+            Ok(id)
+        })
     }
     pub fn delete(&mut self, id: Uuid) -> Result<(), Error> {
-        self.data.sets.retain(|s| s.id != id);
-        self.save()
+        self.update(|data| {
+            data.sets.retain(|s| s.id != id);
+            Ok(())
+        })
     }
     pub fn instructions(&self, scope: Scope) -> Result<String, Error> {
         if self.poisoned {
@@ -211,33 +227,44 @@ impl Store {
         if !valid_instructions(&instructions) {
             return Err(Error::Invalid);
         }
-        if let Some(profile) = self
+        self.update(|data| {
+            if let Some(profile) = data
+                .profiles
+                .iter_mut()
+                .find(|p| p.reference.scope() == scope)
+            {
+                profile.instructions = instructions;
+            } else {
+                if data.profiles.len() >= 128 {
+                    return Err(Error::Capacity);
+                }
+                data.profiles.push(Profile {
+                    reference: Reference::new(scope),
+                    instructions,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    pub fn retain(&mut self, scopes: &[Scope]) -> Result<(), Error> {
+        if self
             .data
             .profiles
-            .iter_mut()
-            .find(|p| p.reference.scope() == scope)
+            .iter()
+            .all(|p| scopes.contains(&p.reference.scope()))
         {
-            profile.instructions = instructions;
-        } else {
-            if self.data.profiles.len() >= 128 {
-                return Err(Error::Capacity);
-            }
-            self.data.profiles.push(Profile {
-                reference: Reference::new(scope),
-                instructions,
-            });
+            return if self.poisoned {
+                Err(Error::Backend)
+            } else {
+                Ok(())
+            };
         }
-        self.save()
-    }
-    pub fn retain(&mut self, scopes: &[Scope]) -> Result<(), Error> {
-        let size = self.data.profiles.len();
-        self.data
-            .profiles
-            .retain(|p| scopes.contains(&p.reference.scope()));
-        if size != self.data.profiles.len() {
-            self.save()?;
-        }
-        Ok(())
+        self.update(|data| {
+            data.profiles
+                .retain(|p| scopes.contains(&p.reference.scope()));
+            Ok(())
+        })
     }
 }
 fn valid_name(value: &str) -> bool {
@@ -395,6 +422,46 @@ mod tests {
         assert!(store.create("oversize".into(), vec![invalid]).is_err());
         assert!(store.configure(source, "bad\0text".into()).is_err());
         assert!(store.list().unwrap().is_empty());
+    }
+    #[test]
+    fn capacity_refusal_preserves_existing_sets_and_profiles() {
+        let temp = Temp::new();
+        let mut store = Store::open(&temp.0).unwrap();
+        let source = scope();
+        let mut expanded = member(source);
+        expanded.instructions = "\"".repeat(4096);
+        let mut ids = Vec::new();
+        for i in 0..32 {
+            ids.push(
+                store
+                    .create(format!("set {i}"), vec![expanded.clone(); 3])
+                    .unwrap(),
+            );
+        }
+        let mut accepted = Vec::new();
+        let refused = loop {
+            let target = scope();
+            match store.configure(target, expanded.instructions.clone()) {
+                Ok(()) => accepted.push(target),
+                Err(Error::Capacity) => break target,
+                Err(error) => panic!("unexpected failure: {error:?}"),
+            }
+        };
+        assert!(!accepted.is_empty());
+        assert_eq!(store.instructions(refused).unwrap(), "");
+        assert_eq!(
+            store.instructions(accepted[0]).unwrap(),
+            expanded.instructions
+        );
+        assert_eq!(store.list().unwrap().len(), 32);
+        store.delete(ids[0]).unwrap();
+        store
+            .configure(refused, expanded.instructions.clone())
+            .unwrap();
+        assert_eq!(
+            Store::open(&temp.0).unwrap().instructions(refused).unwrap(),
+            expanded.instructions
+        );
     }
     #[test]
     fn guest_profile_is_bounded_and_bound_to_the_exact_generation() {
