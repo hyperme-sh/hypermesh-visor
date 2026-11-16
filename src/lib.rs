@@ -95,3 +95,6 @@ mod session_key {
 
 #[cfg(target_os = "linux")]
 pub mod host_health;
+
+#[cfg(target_os = "linux")]
+pub mod health_hardware;

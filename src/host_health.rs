@@ -1,6 +1,6 @@
 //! Host-only health worker. The ordinary Visor daemon never selects this policy.
 use crate::{
-    health_consent::Category,
+    health_hardware,
     health_metrics::{self, Metric},
     health_os,
 };
@@ -31,6 +31,8 @@ struct Config {
     owner_socket: PathBuf,
     owner_token_file: PathBuf,
     collector_url: String,
+    #[serde(default)]
+    smart_devices: Vec<PathBuf>,
     collector_authorization_file: Option<PathBuf>,
 }
 #[derive(Deserialize, PartialEq, Eq)]
@@ -232,7 +234,7 @@ fn cycle(
     if !first.valid() {
         return Err(refused());
     }
-    let body = health_metrics::encode(Category::OsHealth, sample()?, "hypermesh-host")?;
+    let body = health_metrics::encode_host(sample()?)?;
     let second = authorize()?;
     if first != second || began.elapsed() >= Duration::from_secs(30) {
         return Err(refused());
@@ -300,7 +302,11 @@ pub fn run(path: &Path, once: bool) -> io::Result<()> {
             collector_url(&config.collector_url)?;
             cycle(
                 || authorize(&config),
-                health_os::sample,
+                || {
+                    let mut samples = health_os::sample().unwrap_or_default();
+                    samples.extend(health_hardware::sample(&config.smart_devices));
+                    Ok(samples)
+                },
                 |body| send(&config, body),
             )
         })();
