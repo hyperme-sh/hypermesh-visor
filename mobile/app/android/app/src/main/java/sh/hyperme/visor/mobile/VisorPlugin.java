@@ -12,6 +12,9 @@ import java.util.UUID;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import uniffi.hypermesh_visor_mobile.MobilePhoneClient;
+import uniffi.hypermesh_visor_mobile.PhonePrompt;
+import uniffi.hypermesh_visor_mobile.PreparedPhonePrompt;
 import uniffi.hypermesh_visor_mobile.MachineStatus;
 import uniffi.hypermesh_visor_mobile.MobileMachine;
 import uniffi.hypermesh_visor_mobile.MobileOwnerSignIn;
@@ -28,18 +31,20 @@ public final class VisorPlugin extends Plugin {
     private static final class NativeState {
         final String binding;
         final MobileMachine machine;
+        final MobilePhoneClient phone;
         final MobileOwnerSignIn owner;
         final String workspaceId;
         final String workspaceName;
         NativeState(android.content.Context context, String issuer, String auth, String plane,
-                    String workspace, String name) throws Exception {
+                    String workspace, String name, String conductor) throws Exception {
             if (!UUID.fromString(workspace).toString().equals(workspace) || name.isBlank() || name.length() > 128)
                 throw new IllegalArgumentException();
-            binding = String.join("\n", issuer, auth, plane, workspace, name);
+            binding = String.join("\n", issuer, auth, plane, workspace, name, conductor == null ? "" : conductor);
             workspaceId = workspace;
             workspaceName = name;
             machine = AndroidSessionStoreKt.androidMachineIdentity(context, "device-owner-v1", plane);
             owner = AndroidSessionStoreKt.androidOwnerSignIn(context, "device-owner-v1", issuer, auth);
+            phone = conductor == null ? null : new MobilePhoneClient(machine, conductor);
         }
     }
 
@@ -50,10 +55,11 @@ public final class VisorPlugin extends Plugin {
             String plane = getConfig().getString("planeOrigin");
             String workspace = getConfig().getString("workspaceId");
             String name = getConfig().getString("workspaceName");
+            String conductor = getConfig().getString("conductorOrigin");
             if (issuer == null || auth == null || plane == null || workspace == null || name == null) return;
-            String binding = String.join("\n", issuer, auth, plane, workspace, name);
+            String binding = String.join("\n", issuer, auth, plane, workspace, name, conductor == null ? "" : conductor);
             synchronized (VisorPlugin.class) {
-                if (shared == null) shared = new NativeState(getContext().getApplicationContext(), issuer, auth, plane, workspace, name);
+                if (shared == null) shared = new NativeState(getContext().getApplicationContext(), issuer, auth, plane, workspace, name, conductor);
                 if (!shared.binding.equals(binding)) return;
                 nativeState = shared;
             }
@@ -78,6 +84,31 @@ public final class VisorPlugin extends Plugin {
         result.put("connection", "disconnected");
         result.put("canConnect", false); // Infra #1747 has not supplied peer provisioning.
         return result;
+    }
+    @PluginMethod public void preparePrompt(PluginCall call) {
+        perform(call, n -> {
+            String bot = call.getString("botId"), assignment = call.getString("assignmentId"), session = call.getString("sessionId");
+            String taskClass = call.getString("taskClass"), destination = call.getString("destination"), prompt = call.getString("prompt");
+            Integer limit = call.getInt("maxOutputTokens");
+            if (n.phone == null || bot == null || assignment == null || session == null || taskClass == null || destination == null || prompt == null || limit == null) throw new IllegalArgumentException();
+            PreparedPhonePrompt prepared = n.phone.prepare(new PhonePrompt(bot, assignment, session, taskClass, destination, prompt, limit));
+            JSObject result = new JSObject(); result.put("operationId", prepared.getOperationId());
+            result.put("taskId", prepared.getTaskId()); result.put("requestSha256", prepared.getRequestSha256()); return result;
+        });
+    }
+    @PluginMethod public void submitPrompt(PluginCall call) {
+        perform(call, n -> {
+            String id = call.getString("operationId");
+            if (n.phone == null || id == null) throw new IllegalArgumentException();
+            JSObject result = new JSObject(); result.put("text", n.phone.submit(id)); return result;
+        });
+    }
+    @PluginMethod public void discardPrompt(PluginCall call) {
+        perform(call, n -> {
+            String id = call.getString("operationId");
+            if (n.phone == null || id == null) throw new IllegalArgumentException();
+            n.phone.discard(id); return new JSObject();
+        });
     }
     @PluginMethod public void status(PluginCall call) { perform(call, this::state); }
     @PluginMethod public void beginSignIn(PluginCall call) {

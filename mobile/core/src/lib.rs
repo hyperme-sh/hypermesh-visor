@@ -5,6 +5,8 @@ use std::sync::Arc;
 uniffi::setup_scaffolding!();
 mod machine;
 mod owner;
+mod phone;
+pub use phone::{MobilePhoneClient, PhonePrompt, PreparedPhonePrompt};
 pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};
 pub use machine::{MachineError, MachineStatus, MobileMachine};
 

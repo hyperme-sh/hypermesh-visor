@@ -51,18 +51,21 @@ private enum PhoneFailure: Error { case unavailable }
 private final class PhoneNativeState {
     let binding: [String]
     let owner: MobileOwnerSignIn
+    let phone: MobilePhoneClient?
     let machine: MobileMachine
     let workspaceId: String
     let workspaceName: String
-    init(issuer: String, auth: String, plane: String, workspace: String, name: String) throws {
+    init(issuer: String, auth: String, plane: String, workspace: String, name: String, conductor: String?) throws {
         guard UUID(uuidString: workspace)?.uuidString.lowercased() == workspace,
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 128 else {
             throw PhoneFailure.unavailable
         }
-        binding = [issuer, auth, plane, workspace, name]
+        binding = [issuer, auth, plane, workspace, name, conductor ?? ""]
         workspaceId = workspace; workspaceName = name
         machine = try appleMachineIdentity(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", planeOrigin: plane)
         owner = try appleOwnerSignIn(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", issuer: issuer, authOrigin: auth)
+        if let conductor { phone = try MobilePhoneClient(machine: machine, conductorOrigin: conductor) }
+        else { phone = nil }
     }
 }
 
@@ -70,7 +73,7 @@ private final class PhoneNativeState {
 final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     let identifier = "VisorPlugin"
     let jsName = "Visor"
-    let pluginMethods: [CAPPluginMethod] = ["status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
+    let pluginMethods: [CAPPluginMethod] = ["preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
         CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)!
     }
     private static var shared: PhoneNativeState?
@@ -85,10 +88,11 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         guard let issuer = config.getString("issuer"), let auth = config.getString("authOrigin"),
               let plane = config.getString("planeOrigin"), let workspace = config.getString("workspaceId"),
               let name = config.getString("workspaceName") else { return }
+        let conductor = config.getString("conductorOrigin")
         Self.stateLock.lock(); defer { Self.stateLock.unlock() }
         do {
-            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name) }
-            guard Self.shared?.binding == [issuer, auth, plane, workspace, name] else { return }
+            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name, conductor: conductor) }
+            guard Self.shared?.binding == [issuer, auth, plane, workspace, name, conductor ?? ""] else { return }
             native = Self.shared
         } catch { /* Missing native storage/configuration never falls back to JS storage. */ }
     }
@@ -163,6 +167,31 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let current = try state.machine.status() else { throw PhoneFailure.unavailable }
             try state.owner.revokeMachine(machine: state.machine, tenantId: current.tenantId)
             return try self.publicState(state)
+        }
+    }
+    @objc func preparePrompt(_ call: CAPPluginCall) {
+        guard let bot = call.getString("botId"), let assignment = call.getString("assignmentId"), let session = call.getString("sessionId"),
+              let taskClass = call.getString("taskClass"), let destination = call.getString("destination"), let prompt = call.getString("prompt"),
+              let limit = call.getInt("maxOutputTokens"), let bounded = Int32(exactly: limit) else { call.reject("Invalid prompt request."); return }
+        run(call) { state in
+            guard let phone = state.phone else { throw PhoneFailure.unavailable }
+            let prepared = try phone.prepare(prompt: PhonePrompt(botId: bot, assignmentId: assignment, sessionId: session,
+                taskClass: taskClass, destination: destination, prompt: prompt, maxOutputTokens: bounded))
+            return ["operationId": prepared.operationId, "taskId": prepared.taskId, "requestSha256": prepared.requestSha256]
+        }
+    }
+    @objc func submitPrompt(_ call: CAPPluginCall) {
+        guard let id = call.getString("operationId") else { call.reject("Invalid prompt request."); return }
+        run(call) { state in
+            guard let phone = state.phone else { throw PhoneFailure.unavailable }
+            return ["text": try phone.submit(operationId: id)]
+        }
+    }
+    @objc func discardPrompt(_ call: CAPPluginCall) {
+        guard let id = call.getString("operationId") else { call.reject("Invalid prompt request."); return }
+        run(call) { state in
+            guard let phone = state.phone else { throw PhoneFailure.unavailable }
+            try phone.discard(operationId: id); return [:]
         }
     }
     @objc func connect(_ call: CAPPluginCall) { call.reject("Mesh provisioning is unavailable.") }

@@ -462,6 +462,7 @@ dependencies = [
  "hypermesh-session",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "uniffi",
  "ureq",

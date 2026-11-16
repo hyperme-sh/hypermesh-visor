@@ -17,3 +17,12 @@ describe('native-only service configuration', () => {
     }
   });
 });
+
+it('keeps Conductor optional and refuses unsafe or incomplete origins', () => {
+  expect(nativeConfig(valid).conductorOrigin).toBeUndefined();
+  expect(nativeConfig({...valid,VISOR_MOBILE_CONDUCTOR_ORIGIN:'https://conductor.example'}).conductorOrigin).toBe('https://conductor.example');
+  expect(() => nativeConfig({VISOR_MOBILE_CONDUCTOR_ORIGIN:'https://conductor.example'})).toThrow();
+  for (const origin of ['http://conductor.example','https://user:secret@conductor.example','https://conductor.example/path','https://conductor.example?token=secret']) {
+    expect(() => nativeConfig({...valid,VISOR_MOBILE_CONDUCTOR_ORIGIN:origin})).toThrow();
+  }
+});
