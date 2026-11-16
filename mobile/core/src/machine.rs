@@ -193,6 +193,9 @@ pub(crate) struct PhoneCredential {
 }
 
 impl MobileMachine {
+    pub(crate) fn plane_origin(&self) -> &str {
+        &self.origin
+    }
     pub(crate) fn phone_credential(&self) -> Result<PhoneCredential, MachineError> {
         let _lock = self.lock.lock().map_err(|_| MachineError::Unavailable)?;
         let mut state = self.read()?.ok_or(MachineError::Refused)?;

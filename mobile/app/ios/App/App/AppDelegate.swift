@@ -73,7 +73,7 @@ private final class PhoneNativeState {
 final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     let identifier = "VisorPlugin"
     let jsName = "Visor"
-    let pluginMethods: [CAPPluginMethod] = ["preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
+    let pluginMethods: [CAPPluginMethod] = ["cancelPhone", "ownedSessions", "sendPrompt", "preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
         CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)!
     }
     private static var shared: PhoneNativeState?
@@ -167,6 +167,27 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let current = try state.machine.status() else { throw PhoneFailure.unavailable }
             try state.owner.revokeMachine(machine: state.machine, tenantId: current.tenantId)
             return try self.publicState(state)
+        }
+    }
+    @objc func cancelPhone(_ call: CAPPluginCall) { native?.owner.cancelPhoneOperations(); call.resolve() }
+    @objc func ownedSessions(_ call: CAPPluginCall) {
+        run(call) { state in
+            guard let phone = state.phone else { throw PhoneFailure.unavailable }
+            return ["sessions": try phone.ownedSessions(owner: state.owner).map { session in
+                ["botId": session.botId, "assignmentId": session.assignmentId,
+                 "sessionId": session.sessionId, "expiresAt": session.expiresAt] as JSObject
+            }]
+        }
+    }
+    @objc func sendPrompt(_ call: CAPPluginCall) {
+        guard let bot = call.getString("botId"), let assignment = call.getString("assignmentId"), let session = call.getString("sessionId"),
+              let taskClass = call.getString("taskClass"), let destination = call.getString("destination"), let prompt = call.getString("prompt"),
+              let limit = call.getInt("maxOutputTokens"), let bounded = Int32(exactly: limit),
+              let expires = call.getInt("expiresAt"), expires > 0 else { call.reject("Invalid prompt request."); return }
+        run(call) { state in
+            guard let phone = state.phone else { throw PhoneFailure.unavailable }
+            return ["text": try phone.sendOwned(owner: state.owner, prompt: PhonePrompt(botId: bot, assignmentId: assignment, sessionId: session,
+                taskClass: taskClass, destination: destination, prompt: prompt, maxOutputTokens: bounded), expiresAt: Int64(expires))]
         }
     }
     @objc func preparePrompt(_ call: CAPPluginCall) {

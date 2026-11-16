@@ -24,7 +24,11 @@ export interface PhonePromptInput {
   taskClass: string; destination: string; prompt: string; maxOutputTokens: number;
 }
 export interface PreparedPhonePrompt { operationId: string; taskId: string; requestSha256: string }
+export interface PhoneSession { botId: string; assignmentId: string; sessionId: string; expiresAt: number }
 export interface VisorPromptNative extends VisorNative {
+  cancelPhone(): Promise<void>;
+  ownedSessions(): Promise<{ sessions: PhoneSession[] }>;
+  sendPrompt(options: PhonePromptInput & { expiresAt: number }): Promise<{ text: string }>;
   preparePrompt(options: PhonePromptInput): Promise<PreparedPhonePrompt>;
   submitPrompt(options: { operationId: string }): Promise<{ text: string }>;
   discardPrompt(options: { operationId: string }): Promise<void>;

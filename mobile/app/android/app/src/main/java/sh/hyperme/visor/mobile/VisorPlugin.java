@@ -85,6 +85,33 @@ public final class VisorPlugin extends Plugin {
         result.put("canConnect", false); // Infra #1747 has not supplied peer provisioning.
         return result;
     }
+    @PluginMethod public void cancelPhone(PluginCall call) {
+        if (nativeState != null) nativeState.owner.cancelPhoneOperations();
+        call.resolve();
+    }
+    @PluginMethod public void ownedSessions(PluginCall call) {
+        perform(call, n -> {
+            if (n.phone == null) throw new IllegalStateException();
+            JSArray sessions = new JSArray();
+            for (var session : n.phone.ownedSessions(n.owner)) {
+                JSObject item = new JSObject(); item.put("botId", session.getBotId());
+                item.put("assignmentId", session.getAssignmentId()); item.put("sessionId", session.getSessionId());
+                item.put("expiresAt", session.getExpiresAt()); sessions.put(item);
+            }
+            JSObject result = new JSObject(); result.put("sessions", sessions); return result;
+        });
+    }
+    @PluginMethod public void sendPrompt(PluginCall call) {
+        perform(call, n -> {
+            String bot = call.getString("botId"), assignment = call.getString("assignmentId"), session = call.getString("sessionId");
+            String taskClass = call.getString("taskClass"), destination = call.getString("destination"), prompt = call.getString("prompt");
+            Integer limit = call.getInt("maxOutputTokens");
+            long expires = call.getData().getLong("expiresAt");
+            if (n.phone == null || bot == null || assignment == null || session == null || taskClass == null || destination == null || prompt == null || limit == null) throw new IllegalArgumentException();
+            JSObject result = new JSObject(); result.put("text", n.phone.sendOwned(n.owner,
+                new PhonePrompt(bot, assignment, session, taskClass, destination, prompt, limit), expires)); return result;
+        });
+    }
     @PluginMethod public void preparePrompt(PluginCall call) {
         perform(call, n -> {
             String bot = call.getString("botId"), assignment = call.getString("assignmentId"), session = call.getString("sessionId");
