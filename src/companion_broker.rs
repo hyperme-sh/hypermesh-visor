@@ -169,6 +169,31 @@ impl Broker {
             .find(|b| b.scope() == scope)
             .ok_or(Error::Stale)
     }
+    pub fn retain(&mut self, scopes: &[Scope]) -> Result<(), Error> {
+        let count = self.bindings.len();
+        self.bindings.retain(|b| scopes.contains(&b.scope()));
+        if self.bindings.len() != count {
+            self.save()?;
+        }
+        Ok(())
+    }
+    pub fn remove(&mut self, scope: Scope) -> Result<(), Error> {
+        let scopes = self
+            .bindings
+            .iter()
+            .filter(|b| b.scope() != scope)
+            .map(Binding::scope)
+            .collect::<Vec<_>>();
+        self.retain(&scopes)
+    }
+    pub fn task_live(status: &Value, task: Uuid) -> bool {
+        status["tasks"]
+            .as_array()
+            .and_then(|tasks| tasks.iter().find(|t| t["id"] == task.to_string()))
+            .is_some_and(|t| {
+                t["status"] == "delivered" && t.get("cancel_requested").is_none_or(|v| v == false)
+            })
+    }
     pub fn disconnect(&mut self, scope: Scope) {
         if let Some(binding) = self.bindings.iter_mut().find(|b| b.scope() == scope) {
             binding.connection = Uuid::new_v4();
@@ -201,10 +226,11 @@ impl Broker {
             "",
             json!({"mode":"container", "platform":"linux", "capabilities":["desktop"]}),
         )?;
-        let bot = parse_id(&reply["bot"]["bot_id"])?;
+        let bot = parse_id(&reply["bot"]["bot_id"]).map_err(|_| Error::Backend)?;
         // Persist the paused identity before the second remote operation. An
         // uncertain assignment can never lose its credential or enroll twice.
-        self.install(scope, service.clone(), tenant, reply.clone())?;
+        self.install(scope, service.clone(), tenant, reply.clone())
+            .map_err(|_| Error::Backend)?;
         let assignment = Uuid::new_v4();
         let assigned = post(
             &service,
@@ -404,7 +430,10 @@ fn post(service: &str, tenant: Uuid, token: &str, path: &str, body: Value) -> Re
         .set("X-Tenant-ID", &tenant.to_string())
         .set("Content-Type", "application/json")
         .send_bytes(&bytes)
-        .map_err(|_| Error::Backend)?;
+        .map_err(|error| match error {
+            ureq::Error::Status(400..=499, _) => Error::Denied,
+            _ => Error::Backend,
+        })?;
     if !matches!(response.status(), 200 | 201) {
         return Err(Error::Backend);
     }
@@ -511,6 +540,57 @@ mod tests {
         bad = current.clone();
         bad["assignment"]["session_id"] = json!(Uuid::new_v4());
         assert!(broker.authorized(scope, &bad).is_err());
+    }
+    #[test]
+    fn cancellation_missing_or_unknown_task_refuses_continued_execution() {
+        let id = Uuid::new_v4();
+        let good = json!({"tasks":[{"id":id,"status":"delivered","cancel_requested":false}]});
+        assert!(Broker::task_live(&good, id));
+        let mut absent = good.clone();
+        absent["tasks"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("cancel_requested");
+        assert!(Broker::task_live(&absent, id));
+        for status in ["unknown", "cancelled", "completed", "queued"] {
+            let mut bad = good.clone();
+            bad["tasks"][0]["status"] = json!(status);
+            assert!(!Broker::task_live(&bad, id));
+        }
+        let mut bad = good.clone();
+        bad["tasks"][0]["cancel_requested"] = json!(true);
+        assert!(!Broker::task_live(&bad, id));
+        assert!(!Broker::task_live(&good, Uuid::new_v4()));
+        assert!(!Broker::task_live(&json!({}), id));
+    }
+    #[test]
+    fn deleting_binding_preserves_other_scope_and_reclaims_persisted_capacity() {
+        let directory = std::env::temp_dir().join(format!("broker-delete-unit-{}", Uuid::new_v4()));
+        storage::create_dir(&directory).unwrap();
+        let mut broker = Broker::open(&directory).unwrap();
+        let first = scope();
+        let second = scope();
+        let tenant = Uuid::new_v4();
+        broker
+            .install(
+                first,
+                "https://plane.test".into(),
+                tenant,
+                reply(first, tenant),
+            )
+            .unwrap();
+        let mut other = reply(second, tenant);
+        other["credential"] = json!(format!("hm_bot_{}", "b".repeat(64)));
+        broker
+            .install(second, "https://plane.test".into(), tenant, other)
+            .unwrap();
+        broker.remove(first).unwrap();
+        let mut reopened = Broker::open(&directory).unwrap();
+        assert!(!reopened.enrolled(first));
+        assert!(reopened.enrolled(second));
+        reopened.retain(&[]).unwrap();
+        assert!(Broker::open(&directory).unwrap().bindings.is_empty());
+        std::fs::remove_dir_all(directory).unwrap();
     }
     #[test]
     fn origins_cannot_redirect_owner_credentials_to_plaintext_or_url_credentials() {

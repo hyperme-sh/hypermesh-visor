@@ -186,6 +186,14 @@ impl Runtime {
         let mut docker = Docker::new(LocalRunner::new(directory.into()), journal.owner(), image)?;
         docker.claim()?;
         journal.recover(&mut docker)?;
+        let mut broker = Broker::open(directory)?;
+        let scopes = journal
+            .active()
+            .iter()
+            .chain(journal.retained())
+            .map(|a| a.scope())
+            .collect::<Vec<_>>();
+        broker.retain(&scopes)?;
         let controls: Controls = Arc::new(Mutex::new(HashMap::new()));
         let backend = DesktopBackend {
             journal,
@@ -215,7 +223,7 @@ impl Runtime {
         let observer = manager.observer();
         let stopped = Arc::new(AtomicBool::new(false));
         let runtime = Arc::new(Self {
-            broker: Mutex::new(Broker::open(directory)?),
+            broker: Mutex::new(broker),
             manager: Mutex::new(manager),
             observer,
             offers: Mutex::new(HashMap::new()),
@@ -300,6 +308,11 @@ impl Runtime {
                         broker.disconnect(scope);
                     }
                     return Ok(());
+                }
+                if let Some((cloud, _)) = active.get(&scope.generation()) {
+                    if !Broker::task_live(&status, *cloud) {
+                        return Err(Error::Stale);
+                    }
                 }
                 let duration = broker.authorized(scope, &status)?;
                 {
@@ -459,6 +472,7 @@ impl Runtime {
             backend
                 .journal
                 .delete_retained(&mut backend.docker, scope)?;
+            broker.remove(scope)?;
             return Ok(json!({}));
         }
         let snapshot = manager
@@ -472,28 +486,27 @@ impl Runtime {
         match action {
             "enroll" => {
                 manager.pause(scope)?;
-                // Require remote grants immediately, including uncertain enrollment.
+                let tenant = body["tenant"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok())
+                    .ok_or(Error::Invalid)?;
+                let result = broker.enroll(
+                    scope,
+                    body["origin"].as_str().ok_or(Error::Invalid)?,
+                    tenant,
+                    body["owner_token"].as_str().ok_or(Error::Invalid)?,
+                );
+                let required = enrollment_requires_remote(broker.enrolled(scope), &result);
                 {
                     let mut controls = manager
                         .backend_mut()
                         .controls
                         .lock()
                         .map_err(|_| Error::Backend)?;
-                    controls
-                        .get_mut(&scope.generation())
-                        .ok_or(Error::Stale)?
-                        .remote = true;
+                    let control = controls.get_mut(&scope.generation()).ok_or(Error::Stale)?;
+                    control.remote |= required;
                 }
-                let tenant = body["tenant"]
-                    .as_str()
-                    .and_then(|s| Uuid::parse_str(s).ok())
-                    .ok_or(Error::Invalid)?;
-                broker.enroll(
-                    scope,
-                    body["origin"].as_str().ok_or(Error::Invalid)?,
-                    tenant,
-                    body["owner_token"].as_str().ok_or(Error::Invalid)?,
-                )?;
+                result?;
                 Ok(json!({}))
             }
             "offer" => {
@@ -519,6 +532,9 @@ impl Runtime {
                 manager.backend_mut().retain =
                     body["retain_home"].as_bool().ok_or(Error::Invalid)?;
                 manager.stop(scope)?;
+                if !manager.backend_mut().retain {
+                    broker.remove(scope)?;
+                }
                 Ok(json!({}))
             }
             "view" => {
@@ -535,6 +551,14 @@ impl Drop for Runtime {
         self.stopped.store(true, Ordering::Release);
         let _ = self.observer.physical_input();
     }
+}
+
+fn enrollment_requires_remote(enrolled: bool, result: &Result<(), Error>) -> bool {
+    enrolled
+        || !matches!(
+            result,
+            Err(Error::Invalid | Error::Capacity | Error::Denied)
+        )
 }
 
 fn request_scope(body: &Value) -> Result<Scope, Error> {
@@ -641,6 +665,15 @@ mod recreation_tests {
         write_lease(&control).unwrap();
         assert!(read().run.is_none());
         std::fs::remove_dir_all(path).unwrap();
+    }
+    #[test]
+    fn definitive_enrollment_refusal_keeps_local_mode_but_uncertainty_does_not() {
+        for error in [Error::Invalid, Error::Capacity, Error::Denied] {
+            assert!(!enrollment_requires_remote(false, &Err(error)));
+            assert!(enrollment_requires_remote(true, &Err(error)));
+        }
+        assert!(enrollment_requires_remote(false, &Err(Error::Backend)));
+        assert!(enrollment_requires_remote(true, &Ok(())));
     }
     fn saved() -> Owned {
         Owned {

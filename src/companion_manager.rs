@@ -18,6 +18,7 @@ const MONITOR_TIMEOUT: Duration = Duration::from_secs(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
     Invalid,
+    Denied,
     Capacity,
     Limit,
     MonitorUnavailable,

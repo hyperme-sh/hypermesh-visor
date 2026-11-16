@@ -464,7 +464,7 @@ elif a=='task':
   result=call('POST','/session/'+session+'/tasks/leased',{'task':body['payload'],'authorized_until_ms':body['until_ms'],'resume_seq':status['resume_seq']})
  elif body['action']=='status':
   task=str(uuid.UUID(body['id']))
-  result=call('GET','/session/'+session+'/tasks/'+task)
+  result=call('GET','/session/'+session+'/tasks/'+task+'/status')
  else: raise RuntimeError('invalid task operation')
 else: raise RuntimeError('invalid operation')
 print(json.dumps(result))

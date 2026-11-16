@@ -825,6 +825,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/session/:id/tasks", post(tasks::submit))
         .route("/session/:id/tasks/leased", post(tasks::submit_leased))
         .route("/session/:id/tasks/:task", get(tasks::status).delete(tasks::cancel))
+        .route("/session/:id/tasks/:task/status", get(tasks::status_only))
         .route("/session/:id/view", post(view))
         .route("/session/:id/watch", get(watch))
         .route("/session/:id/feed/snapshot", get(session_feed_snapshot))
