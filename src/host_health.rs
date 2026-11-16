@@ -110,13 +110,30 @@ fn collector_url(value: &str) -> io::Result<url::Url> {
     }
     Ok(url)
 }
+fn connect_owner(path: &Path, deadline: Duration) -> io::Result<UnixStream> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|_| refused())?;
+    let stream = runtime.block_on(async {
+        tokio::time::timeout(deadline, tokio::net::UnixStream::connect(path))
+            .await
+            .map_err(|_| refused())?
+            .map_err(|_| refused())
+    })?;
+    let stream = stream.into_std().map_err(|_| refused())?;
+    stream.set_nonblocking(false).map_err(|_| refused())?;
+    Ok(stream)
+}
+
 fn authorize(config: &Config) -> io::Result<Authority> {
     root_path(&config.owner_socket)?;
     let meta = std::fs::symlink_metadata(&config.owner_socket)?;
     if !meta.file_type().is_socket() || meta.mode() & 0o077 != 0 {
         return Err(refused());
     }
-    let mut stream = UnixStream::connect(&config.owner_socket).map_err(|_| refused())?;
+    let mut stream = connect_owner(&config.owner_socket, Duration::from_secs(7))?;
     let mut peer: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     let rc = unsafe {
@@ -142,10 +159,22 @@ fn authorize(config: &Config) -> io::Result<Authority> {
         .write_all(request.as_bytes())
         .map_err(|_| refused())?;
     let mut response = Vec::new();
-    stream
-        .take(8193)
-        .read_to_end(&mut response)
-        .map_err(|_| refused())?;
+    let deadline = Instant::now() + Duration::from_secs(7);
+    loop {
+        let left = deadline
+            .checked_duration_since(Instant::now())
+            .ok_or_else(refused)?;
+        stream.set_read_timeout(Some(left)).map_err(|_| refused())?;
+        let mut chunk = [0u8; 1024];
+        let count = stream.read(&mut chunk).map_err(|_| refused())?;
+        if count == 0 {
+            break;
+        }
+        response.extend_from_slice(&chunk[..count]);
+        if response.len() > 8192 {
+            return Err(refused());
+        }
+    }
     let auth = decode_authority(&response)?;
     if auth.device_id != config.device_id || auth.tenant_id != config.tenant_id {
         return Err(refused());
@@ -268,6 +297,13 @@ mod tests {
             terms_version: "test".into(),
             terms_sha256: "a".repeat(64),
         }
+    }
+    #[test]
+    fn missing_owner_socket_fails_within_connection_deadline() {
+        let start = Instant::now();
+        let path = std::env::temp_dir().join(format!("absent-host-owner-{}", Uuid::new_v4()));
+        assert!(connect_owner(&path, Duration::from_millis(100)).is_err());
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn authorization_precedes_sampling_and_revocation_discards_the_sample() {
