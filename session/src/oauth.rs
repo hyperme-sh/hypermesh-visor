@@ -526,11 +526,13 @@ fn post_form(url: &str, fields: &[(&str, &str)]) -> Result<serde_json::Value, Au
     if fields.iter().any(|(name, _)| *name == "client_secret") {
         return Err(AuthError::message("public client refuses a client secret"));
     }
-    match ureq::post(url)
+    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    match agent.post(url)
         .timeout(Duration::from_secs(30))
         .send_form(fields)
     {
-        Ok(response) => parse_json(&read_body(response)),
+        Ok(response) if response.status() == 200 => parse_json(&read_body(response)),
+        Ok(_) => Err(AuthError::message("unexpected token response status")),
         Err(ureq::Error::Status(code, response)) => {
             let body = read_body(response);
             if let Some(error) = oauth_error_code(&body) {
@@ -545,7 +547,11 @@ fn post_form(url: &str, fields: &[(&str, &str)]) -> Result<serde_json::Value, Au
 }
 
 fn read_body(response: ureq::Response) -> String {
-    response.into_string().unwrap_or_default()
+    let mut bytes = Vec::new();
+    if response.into_reader().take(65_537).read_to_end(&mut bytes).is_err() || bytes.len() > 65_536 {
+        return String::new();
+    }
+    String::from_utf8(bytes).unwrap_or_default()
 }
 
 fn parse_json(body: &str) -> Result<serde_json::Value, AuthError> {
@@ -684,6 +690,24 @@ mod tests {
     use crate::store::MemoryStore;
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn token_redirect_does_not_forward_a_refresh_credential() {
+        let origin = TcpListener::bind("127.0.0.1:0").unwrap();
+        let other = TcpListener::bind("127.0.0.1:0").unwrap();
+        other.set_nonblocking(true).unwrap();
+        let target = other.local_addr().unwrap();
+        let address = origin.local_addr().unwrap();
+        let worker = thread::spawn(move || {
+            let (mut socket, _) = origin.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let _ = read_http(&mut socket).unwrap();
+            write!(socket, "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target}/token\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        assert!(post_form(&format!("http://{address}/token"), &[("refresh_token", "secret-canary")]).is_err());
+        worker.join().unwrap();
+        assert!(matches!(other.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock));
+    }
 
     #[test]
     fn redirect_uri_uses_the_bound_ephemeral_port() {
