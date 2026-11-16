@@ -37,6 +37,13 @@ cmake -S "$work/source" -B "$work/build" \
   -DSENTRY_ENABLE_INSTALL=ON -DSENTRY_INTEGRATION_PLATFORM=OFF \
   -DSENTRY_THREAD_STACK_GUARANTEE_AUTO_INIT=OFF
 cmake --build "$work/build" --config Release --parallel 2
+# Exercise the actual patched native writer with synthetic unit-test bytes.
+quota="$work/build/external/crashpad/client/visor-crash-quota-contract"
+if [[ "${RUNNER_OS:-}" == Windows || "${OS:-}" == Windows_NT ]]; then
+  quota="$work/build/external/crashpad/client/Release/visor-crash-quota-contract.exe"
+fi
+mkdir "$work/quota-unit"
+(cd "$work/quota-unit" && "$quota")
 cmake --install "$work/build" --config Release
 if [[ $(uname -s) == Darwin ]]; then
   python3 - "$output/lib" <<'PY'

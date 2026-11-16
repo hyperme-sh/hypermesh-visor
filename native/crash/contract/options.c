@@ -4,7 +4,7 @@
 extern int sentry_visor_capture_policy_version(void);
 
 int main(void) {
-    if (sentry_visor_capture_policy_version() != 1) return 1;
+    if (sentry_visor_capture_policy_version() != 2) return 1;
     sentry_options_t *options = sentry_options_new();
     if (!options) return 1;
     sentry_options_set_dsn(options, "");

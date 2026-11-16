@@ -17,7 +17,7 @@ old = '        arguments.push_back(std::string("--log-file=") + log_path->path);
 if text.count(old) != 1:
     raise SystemExit("unexpected native handler log configuration")
 text = text.replace(old, "        // Visor captures no separate handler log.")
-text += '\nextern "C" SENTRY_API int sentry_visor_capture_policy_version(void) { return 1; }\n'
+text += '\nextern "C" SENTRY_API int sentry_visor_capture_policy_version(void) { return 2; }\n'
 backend.write_text(text)
 
 main = source / "external/crashpad/handler/main.cc"
@@ -59,4 +59,67 @@ elseif(APPLE)
 else()
   target_link_libraries(crashpad_handler PRIVATE pthread dl m)
 endif()
+''')
+
+# Apply write limits in the actual file writer, before any bytes reach disk.
+# Only raw report writers opt in; unrelated SDK metadata keeps its semantics.
+def checked(path, before, after):
+    text = path.read_text()
+    if text.count(before) != 1:
+        raise SystemExit(f"unexpected capture quota patch anchor: {path.name}")
+    path.write_text(text.replace(before, after))
+
+crashpad = source / "external/crashpad"
+writer_h = crashpad / "util/file/file_writer.h"
+checked(writer_h, "  ScopedFileHandle file_;", """  bool visor_bounded_ = false;
+  ScopedFileHandle file_;""")
+checked(writer_h, "  void Close();", """  void Close();
+  void VisorBoundRawDump() { visor_bounded_ = true; }""")
+writer_cc = crashpad / "util/file/file_writer.cc"
+checked(writer_cc, "#include <limits.h>", "#include <limits.h>\n#include <cstdio>")
+checked(writer_cc, "  return weak_file_handle_file_writer_.Write(data, size);", """  if (visor_bounded_) {
+    const auto position = weak_file_handle_file_writer_.Seek(0, SEEK_CUR);
+    if (position < 0 || position > 33554432 || size > 33554432 - position)
+      return false;
+  }
+  return weak_file_handle_file_writer_.Write(data, size);""")
+checked(writer_cc, "  return weak_file_handle_file_writer_.WriteIoVec(iovecs);", """  if (visor_bounded_) {
+    if (iovecs->empty()) return true;
+    size_t total = 0;
+    for (const auto& item : *iovecs) {
+      if (item.iov_len > 33554432 - total) return false;
+      total += item.iov_len;
+    }
+    const auto position = weak_file_handle_file_writer_.Seek(0, SEEK_CUR);
+    if (position < 0 || position > 33554432 || total > 33554432 - position)
+      return false;
+  }
+  return weak_file_handle_file_writer_.WriteIoVec(iovecs);""")
+database = crashpad / "client/crash_report_database.cc"
+checked(database, "#include <sys/stat.h>", "#include <sys/stat.h>\n#include <atomic>")
+checked(database, "  database_ = database;", """  // Conservative reservations never reset within this handler process.
+  // Owner-wide admission and expiry are separate from this writer bound.
+  static std::atomic<unsigned> reservations{0};
+  unsigned count = reservations.load();
+  do {
+    if (count >= 5) return false;
+  } while (!reservations.compare_exchange_weak(count, count + 1));
+  writer_->VisorBoundRawDump();
+  database_ = database;""")
+start = database.read_text().index("FileWriter* CrashReportDatabase::NewReport::AddAttachment(")
+end = database.read_text().index("\nvoid CrashReportDatabase::UploadReport::InitializeAttachments()", start)
+text = database.read_text()
+database.write_text(text[:start] + """FileWriter* CrashReportDatabase::NewReport::AddAttachment(
+    const std::string& name) {
+  // Raw capture has no attachments or auxiliary unbounded output.
+  return nullptr;
+}
+""" + text[end:])
+
+quota = crashpad / "client/visor_quota_contract.cc"
+quota.write_text((Path(__file__).parent / "contract/quota.cpp").read_text())
+cmake = crashpad / "client/CMakeLists.txt"
+cmake.write_text(cmake.read_text() + '''
+add_executable(visor-crash-quota-contract visor_quota_contract.cc)
+target_link_libraries(visor-crash-quota-contract PRIVATE crashpad_client crashpad_interface)
 ''')

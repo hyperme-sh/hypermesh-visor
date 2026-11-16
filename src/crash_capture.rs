@@ -79,7 +79,7 @@ impl Sdk {
     #[cfg(all(target_os = "macos", feature = "native-crash-static"))]
     unsafe fn load(_path: &Path) -> io::Result<Self> {
         use linked::*;
-        if sentry_visor_capture_policy_version() != 1 {
+        if sentry_visor_capture_policy_version() != 2 {
             return Err(refused());
         }
         Ok(Self {
@@ -103,7 +103,7 @@ impl Sdk {
         let library = Library::new(path).map_err(|_| refused())?;
         let policy: unsafe extern "C" fn() -> i32 =
             symbol(&library, b"sentry_visor_capture_policy_version\0")?;
-        if policy() != 1 {
+        if policy() != 2 {
             return Err(refused());
         }
         Ok(Self {
