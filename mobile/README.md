@@ -182,3 +182,16 @@ verification; they cover response loss, stored-key reuse, storage refusal, rotat
 and revocation. Generated Swift/Kotlin contracts construct the new API without
 network access. Native sign-in UI, WireGuard peer provisioning and authenticated
 Conductor operations remain separate app wiring; this does not claim them ready.
+
+
+`MobileOwnerSignIn` connects the existing `hypermesh-native` device grant to this
+API. Native UI calls `begin` off-thread, opens its verified issuer URL in the
+system browser and displays the user code, then calls `finish` off-thread.
+Cancellation fences late results before secure-store writes. `enrollMachine`
+refreshes that stored owner session, obtains the existing `/auth/switch-tenant`
+grant for the explicitly selected tenant, and invokes machine enrollment. The UI
+never receives an access/refresh token. `revokeMachine` uses the same current owner
+flow. `androidOwnerSignIn` and `appleOwnerSignIn` isolate the OAuth entry by account,
+issuer and auth origin. Issuer/auth/Plane URLs come from trusted app configuration.
+These are app-callable flow APIs; signed applications and their view hierarchy are
+not delivered by this library PR.

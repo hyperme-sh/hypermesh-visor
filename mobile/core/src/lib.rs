@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 uniffi::setup_scaffolding!();
 mod machine;
+mod owner;
+pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};
 pub use machine::{MachineError, MachineStatus, MobileMachine};
 
 /// Fixed errors keep native store diagnostics and credentials out of FFI errors.

@@ -36,6 +36,8 @@ func require(_ condition: Bool) {
 
 let machine = try MobileMachine(store: FixtureStore(), planeOrigin: "https://plane.test")
 require(try machine.status() == nil)
+let login = try MobileOwnerSignIn(store: FixtureStore(), issuer: "https://issuer.test/realm", authOrigin: "https://api.test")
+try login.cancel()
 let store = FixtureStore()
 let session = MobileSession(store: store)
 require(try !session.hasStoredSession())

@@ -26,6 +26,9 @@ fun main() {
     uniffi.hypermesh_visor_mobile.MobileMachine(FixtureStore(), "https://plane.test").use { machine ->
         check(machine.status() == null)
     }
+    uniffi.hypermesh_visor_mobile.MobileOwnerSignIn(FixtureStore(), "https://issuer.test/realm", "https://api.test").use { login ->
+        login.cancel()
+    }
     val store = FixtureStore()
     MobileSession(store).use { session ->
         check(!session.hasStoredSession())
