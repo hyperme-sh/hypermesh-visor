@@ -3,7 +3,7 @@ FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149a
 RUN apk add --no-cache curl
 WORKDIR /source
 RUN curl --fail --silent --show-error --location https://codeload.github.com/hyperme-sh/conductor/tar.gz/2552f87ea31a92f932f5cb5c9819484338e6fb02 -o source.tar.gz && \
-    echo 'db45339985fdee8d708e1d3610d8f0e36167d84819927df973d3e9a830cb5009  source.tar.gz' | sha256sum -c - && \
+    echo 'eeeed9a18a66d4f582e27cf05c4bb3636e67bfc93223d06a20bb30c96289dd87  source.tar.gz' | sha256sum -c - && \
     tar xzf source.tar.gz --strip-components=1 && \
     CGO_ENABLED=0 go build -buildvcs=false -mod=readonly -trimpath -o /conductor ./cmd/conductor && \
     /conductor help | grep -F capability-review
