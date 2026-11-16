@@ -111,3 +111,40 @@ capacity failures, cancellation and pause/stop propagation. Display scenarios
 belong only in the central nightly CI batch against main. A nightly failure
 opens a new linked issue. This note closes the research slice when its PR merges
 green; it does not claim that four companions can already control desktops.
+
+## Manager core
+
+`companion_manager::Manager` is the local allocation and revocation core. It
+adopts one already-paused native session, counts it toward the four-slot cap,
+and allocates fresh local companion, session and generation IDs for additional
+container desktops. These IDs are routing scopes, not enrolled bot principals
+or SociACL grants. A trusted controller must still verify assignment before
+issuing work. Each allocation charges an explicit memory/CPU budget; both failed
+starts and incomplete stops retain their allocation until cleanup succeeds.
+
+Starting creates a paused desktop. A trusted local confirmation consumes a
+`ResumeOffer` tied to that exact pause revision. Physical input and observer loss
+invalidate outstanding offers, including offers for an already-paused desktop.
+Resuming creates a new in-memory permit rather than reviving an old one. Every
+backend action and cancellation checkpoint must check the permit against its
+exact scope. Selecting a different view cannot change a permit's target.
+
+The trusted host observer has a one-second lease. A permit refuses an expired
+lease even before the controller's watchdog tick. A late poll revokes the old
+routes before renewing the lease; it never resumes them automatically. Physical
+input revokes all running routes before any backend pause/cancel call, and one
+backend failure does not suppress cancellation of the other companions. Stop
+revokes its route, asks the backend to cancel active work, then stops its desktop.
+Both acknowledgements must succeed before the slot becomes reusable. A failed
+resume or cleanup leaves the allocation quarantined, available only for stop.
+
+Unit contracts use an in-memory backend with injected failures. This core is not
+yet connected to Docker, the daemon or the plus control. Before enabling those
+adapters, #224 still needs durable allocation/recovery and a single manager per
+machine, a restricted container launcher, per-generation private storage/control
+channels, actual host observer/watchdog wiring and desktop/view routing. #88
+still needs native UI confirmation and current assignment checks. Dropping the
+Rust manager revokes its permits but does not prove that OS processes stopped;
+startup must reconcile existing allocations before admitting replacements.
+The original issues remain open, and no concurrent desktop mode is enabled by
+this core alone.

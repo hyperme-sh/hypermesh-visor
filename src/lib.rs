@@ -16,6 +16,7 @@ mod companion_sock;
 #[cfg(windows)]
 #[path = "companion_windows.rs"]
 mod companion_sock;
+pub mod companion_manager;
 mod conductor_socket;
 mod desktop;
 mod harness;
