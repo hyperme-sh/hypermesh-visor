@@ -62,6 +62,13 @@ Each handler reserves at most five reports; failed or discarded attempts also
 consume a reservation. Attachments are refused. The build runs a synthetic-byte
 unit contract against these native methods without starting capture.
 
-These are per-handler bounds. They do not establish a per-user aggregate quota
-or unattended seven-day expiry. Visor #271 remains open until owner-wide
-admission and independent cleanup are implemented and reviewed.
+The owner cleanup service binds these bounds to one registered configuration
+and one active writer per OS account. Consent enablement and capture require a
+held service lease and a fresh heartbeat. Native writes recheck permission after
+sleep or service failure. The helper purges expired or invalid stopped runs and
+coordinates with the writer lock before deletion. Runs expire conservatively
+within seven days of their start, including time while Visor is stopped.
+
+See [service installation and operation](service/README.md). The desktop runtime
+includes the helper; installation and service credentials remain local owner
+operations. Raw capture stays unavailable until the installed service is ready.

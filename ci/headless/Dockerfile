@@ -20,6 +20,7 @@ COPY session session
 COPY local-storage local-storage
 COPY local-transport local-transport
 COPY native/crash/guard native/crash/guard
+COPY native/crash/retention native/crash/retention
 COPY inverse-client inverse-client
 COPY companion companion
 COPY shared shared

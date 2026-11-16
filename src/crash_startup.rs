@@ -65,6 +65,7 @@ fn consent_ui_at(
         }
         match decision["choice"].as_str() {
             Some("enable") if !enabled => {
+                hypermesh_crash_retention::require_service(directory)?;
                 store.enable_crash_if_revision(revision)?;
             }
             Some("disable") => {
@@ -78,7 +79,7 @@ fn consent_ui_at(
         return Err(io::Error::other("invalid crash consent action"));
     }
     Ok(serde_json::json!({"enabled":enabled, "binding":binding,
-        "notice":format!("Crash diagnostics help diagnose Visor failures. Capture is off unless you enable it. Private local minidumps may contain process memory. On the next startup, Visor reduces them to a fixed crash code, version, event ID, time and tenant tag, then deletes raw files before review. Raw dumps are never uploaded. Each sanitized upload to {} requires a separate approval. Reports expire after 24 hours; raw runs are cleaned on startup or successful withdrawal. Enable takes effect after restarting Visor. Disable stops capture and purges local raw runs before it succeeds.", config.destination())}))
+        "notice":format!("Crash diagnostics help diagnose Visor failures. Capture is off unless you enable it. Private local minidumps may contain process memory. On the next startup, Visor reduces them to a fixed crash code, version, event ID, time and tenant tag, then deletes raw files before review. Raw dumps are never uploaded. Each sanitized upload to {} requires a separate approval. Reports expire after 24 hours; raw storage is limited to five dumps and 160 MiB per OS user, with a seven-day maximum. An installed background cleanup service is required before enabling capture; it also runs while Visor is stopped. Startup and withdrawal clean raw runs earlier. Enable takes effect after restarting Visor. Disable stops capture and purges local raw runs before it succeeds.", config.destination())}))
 }
 
 fn set_consent_at(path: &Path, enabled: bool) -> io::Result<()> {
@@ -92,6 +93,7 @@ fn set_consent_at(path: &Path, enabled: bool) -> io::Result<()> {
         .ok_or_else(|| io::Error::other("invalid crash directory"))?;
     let store = Store::open(&directory.join("health-consent"), config.scope)?;
     if enabled {
+        hypermesh_crash_retention::require_service(directory)?;
         store.decide(crate::health_consent::Category::Crashes, true)?;
         Ok(())
     } else {
@@ -145,7 +147,7 @@ mod tests {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!("visor-crash-startup-{}", Uuid::new_v4()));
             storage::create_dir(&path).unwrap();
-            Self(path)
+            Self(fs::canonicalize(path).unwrap())
         }
     }
     impl Drop for Temp {
@@ -183,6 +185,7 @@ mod tests {
         storage::create_dir(&root).unwrap();
         let run = root.join(Uuid::new_v4().to_string());
         storage::create_dir(&run).unwrap();
+        hypermesh_crash_retention::stamp(&run).unwrap();
         write(
             &run.join("ticket.json"),
             &serde_json::to_vec(&store.capture(Category::Crashes).unwrap().unwrap()).unwrap(),
@@ -215,7 +218,7 @@ mod tests {
         (config, store, run)
     }
     #[test]
-    fn fresh_native_preview_defaults_off_with_stable_revision_and_allows_opt_in() {
+    fn fresh_native_preview_defaults_off_and_refuses_opt_in_without_service() {
         let dir = Temp::new();
         let path = dir.0.join("crash.json");
         let scope = Scope {
@@ -246,9 +249,8 @@ mod tests {
             &path,
             "crash-consent-set",
             &serde_json::json!({"choice":"enable","binding":first["binding"]}),
-        )
-        .unwrap();
-        assert!(store.capture(Category::Crashes).unwrap().is_some());
+        ).unwrap_err();
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
         assert!(!dir.0.join("crash-runs").exists());
     }
     #[test]
@@ -297,9 +299,8 @@ mod tests {
             &config,
             "crash-consent-set",
             &serde_json::json!({"choice":"enable","binding":preview["binding"]}),
-        )
-        .unwrap();
-        assert!(store.capture(Category::Crashes).unwrap().is_some());
+        ).unwrap_err();
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
     }
     #[test]
     fn explicit_local_setting_purges_on_withdrawal_without_review() {
@@ -308,8 +309,8 @@ mod tests {
         set_consent_at(&config, false).unwrap();
         assert!(!run.exists());
         assert!(store.capture(Category::Crashes).unwrap().is_none());
-        set_consent_at(&config, true).unwrap();
-        assert!(store.capture(Category::Crashes).unwrap().is_some());
+        assert!(set_consent_at(&config, true).is_err());
+        assert!(store.capture(Category::Crashes).unwrap().is_none());
     }
     #[test]
     fn recovery_precedes_review_and_supplies_only_sanitized_unapproved_report() {

@@ -16,6 +16,7 @@ if args.destination.exists():
     raise SystemExit("Native SDK runtime destination already exists")
 files = [Path("source-revision"), Path("visor-source-revision")]
 files.append(Path("bin/crashpad_handler.exe" if args.platform == "windows" else "bin/crashpad_handler"))
+files.append(Path("bin/hypermesh-crash-retention.exe" if args.platform == "windows" else "bin/hypermesh-crash-retention"))
 if args.platform == "windows":
     files.append(Path("bin/sentry.dll"))
 elif args.platform == "linux":

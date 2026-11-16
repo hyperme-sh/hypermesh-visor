@@ -19,7 +19,7 @@ class StageRuntimeTests(unittest.TestCase):
         for directory in ("bin", "lib", "licenses"):
             (self.source / directory).mkdir(parents=True, exist_ok=True)
         for name in ("bin/crashpad_handler", "bin/crashpad_handler.exe", "bin/sentry.dll",
-                     "bin/crashpad_wer.dll", "lib/libsentry.so", "lib/libvisor_crash_sdk.a",
+                     "bin/hypermesh-crash-retention", "bin/hypermesh-crash-retention.exe", "bin/crashpad_wer.dll", "lib/libsentry.so", "lib/libvisor_crash_sdk.a",
                      "licenses/LICENSE", "source-revision"):
             (self.source / name).write_bytes(b"fixture")
         (self.source / "visor-source-revision").write_text(REVISION + "\n")

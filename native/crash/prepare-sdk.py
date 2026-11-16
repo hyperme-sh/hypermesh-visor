@@ -28,14 +28,19 @@ if text.count(old) != 2:
 text = text.replace(old, "return VisorHandlerMain(argc, argv);")
 hook = r'''
 #include "visor_handler_arguments.h"
+#include "util/file/visor_capture_permission.h"
 extern "C" void* visor_capture_enter(const char* database);
 extern "C" void visor_capture_leave(void* guard);
+extern "C" bool visor_capture_permit_write(void* guard);
 static int VisorHandlerMain(int argc, char* argv[]) {
   const char* database = visor::DatabaseFromArguments(argc, argv);
   if (!database) return 1;
   void* guard = visor_capture_enter(database);
   if (!guard) return 1;
+  visor::capture_owner = guard;
+  visor::capture_permission = visor_capture_permit_write;
   const int result = crashpad::HandlerMain(argc, argv, nullptr);
+  visor::capture_permission = nullptr;
   visor_capture_leave(guard);
   return result;
 }
@@ -70,20 +75,23 @@ def checked(path, before, after):
     path.write_text(text.replace(before, after))
 
 crashpad = source / "external/crashpad"
+(crashpad / "util/file/visor_capture_permission.h").write_text((Path(__file__).parent / "capture-permission.h").read_text())
 writer_h = crashpad / "util/file/file_writer.h"
 checked(writer_h, "  ScopedFileHandle file_;", """  bool visor_bounded_ = false;
   ScopedFileHandle file_;""")
 checked(writer_h, "  void Close();", """  void Close();
   void VisorBoundRawDump() { visor_bounded_ = true; }""")
 writer_cc = crashpad / "util/file/file_writer.cc"
-checked(writer_cc, "#include <limits.h>", "#include <limits.h>\n#include <cstdio>")
+checked(writer_cc, "#include <limits.h>", '#include <limits.h>\n#include <cstdio>\n#include "util/file/visor_capture_permission.h"')
 checked(writer_cc, "  return weak_file_handle_file_writer_.Write(data, size);", """  if (visor_bounded_) {
+    if (!visor::MayWriteRaw()) return false;
     const auto position = weak_file_handle_file_writer_.Seek(0, SEEK_CUR);
     if (position < 0 || position > 33554432 || size > 33554432 - position)
       return false;
   }
   return weak_file_handle_file_writer_.Write(data, size);""")
 checked(writer_cc, "  return weak_file_handle_file_writer_.WriteIoVec(iovecs);", """  if (visor_bounded_) {
+    if (!visor::MayWriteRaw()) return false;
     if (iovecs->empty()) return true;
     size_t total = 0;
     for (const auto& item : *iovecs) {
@@ -96,9 +104,10 @@ checked(writer_cc, "  return weak_file_handle_file_writer_.WriteIoVec(iovecs);",
   }
   return weak_file_handle_file_writer_.WriteIoVec(iovecs);""")
 database = crashpad / "client/crash_report_database.cc"
-checked(database, "#include <sys/stat.h>", "#include <sys/stat.h>\n#include <atomic>")
+checked(database, "#include <sys/stat.h>", '#include <sys/stat.h>\n#include <atomic>\n#include "util/file/visor_capture_permission.h"')
 checked(database, "  database_ = database;", """  // Conservative reservations never reset within this handler process.
   // Owner-wide admission and expiry are separate from this writer bound.
+  if (!visor::MayWriteRaw()) return false;
   static std::atomic<unsigned> reservations{0};
   unsigned count = reservations.load();
   do {

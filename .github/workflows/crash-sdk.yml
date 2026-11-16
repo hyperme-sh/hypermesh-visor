@@ -20,7 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - name: Capture ownership unit contracts
-        run: cargo test --locked -p hypermesh-crash-guard
+        run: cargo test --locked -p hypermesh-crash-guard -p hypermesh-crash-retention
       - name: Runtime staging file contracts
         run: python3 native/crash/test-stage-runtime.py
       - name: Install Linux Crashpad build dependencies

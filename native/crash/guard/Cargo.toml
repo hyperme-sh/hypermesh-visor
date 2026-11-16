@@ -9,6 +9,7 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
+hypermesh-crash-retention = { path = "../retention" }
 hypermesh-local-storage = { path = "../../../local-storage" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -18,7 +18,7 @@ git -C "$work/source" checkout -q --detach FETCH_HEAD
 git -C "$work/source" submodule update --init --recursive --depth=1
 python3 "$repo/native/crash/prepare-sdk.py" "$work/source"
 cargo build --locked --release --manifest-path "$repo/Cargo.toml" \
-  -p hypermesh-crash-guard --target-dir "$work/guard-build"
+  -p hypermesh-crash-guard -p hypermesh-crash-retention --target-dir "$work/guard-build"
 guard="$work/guard-build/release/libhypermesh_crash_guard.a"
 shared=ON
 if [[ $(uname -s) == Darwin ]]; then shared=OFF; fi
@@ -38,13 +38,17 @@ cmake -S "$work/source" -B "$work/build" \
   -DSENTRY_THREAD_STACK_GUARANTEE_AUTO_INIT=OFF
 cmake --build "$work/build" --config Release --parallel 2
 # Exercise the actual patched native writer with synthetic unit-test bytes.
-quota="$work/build/external/crashpad/client/visor-crash-quota-contract"
+quota="$work/build/crashpad_build/client/visor-crash-quota-contract"
 if [[ "${RUNNER_OS:-}" == Windows || "${OS:-}" == Windows_NT ]]; then
-  quota="$work/build/external/crashpad/client/Release/visor-crash-quota-contract.exe"
+  quota="$work/build/crashpad_build/client/Release/visor-crash-quota-contract.exe"
 fi
 mkdir "$work/quota-unit"
 (cd "$work/quota-unit" && "$quota")
 cmake --install "$work/build" --config Release
+helper=hypermesh-crash-retention
+if [[ "${RUNNER_OS:-}" == Windows || "${OS:-}" == Windows_NT ]]; then helper="$helper.exe"; fi
+mkdir -p "$output/bin"
+cp "$work/guard-build/release/$helper" "$output/bin/$helper"
 if [[ $(uname -s) == Darwin ]]; then
   python3 - "$output/lib" <<'PY'
 from pathlib import Path

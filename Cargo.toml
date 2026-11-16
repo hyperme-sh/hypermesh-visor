@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "companion", "session", "inverse-client", "local-storage", "local-transport", "native/crash/guard"]
+members = [".", "companion", "session", "inverse-client", "local-storage", "local-transport", "native/crash/guard", "native/crash/retention"]
 resolver = "2"
 
 [package]
@@ -32,6 +32,7 @@ headless = []
 native-crash-static = []
 
 [dependencies]
+hypermesh-crash-retention = { path = "native/crash/retention" }
 hypermesh-local-storage = { path = "local-storage" }
 hypermesh-local-transport = { path = "local-transport" }
 hypermesh-visor-client = { path = "inverse-client", optional = true }

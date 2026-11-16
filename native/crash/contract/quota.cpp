@@ -1,12 +1,18 @@
 // Unit contract: synthetic bytes only; no native capture or process failure.
 #include "client/crash_report_database.h"
 #include <cstdio>
+#include "util/file/visor_capture_permission.h"
 #include <limits>
 #include <vector>
 int main() {
   using crashpad::CrashReportDatabase;
   auto database = CrashReportDatabase::Initialize(base::FilePath(FILE_PATH_LITERAL("database")));
   if (!database) return 1;
+  std::unique_ptr<CrashReportDatabase::NewReport> denied;
+  if (database->PrepareNewCrashReport(&denied) == CrashReportDatabase::kNoError) return 16;
+  bool allowed = true;
+  visor::capture_owner = &allowed;
+  visor::capture_permission = [](void* value) { return *static_cast<bool*>(value); };
   const char byte = 'x';
   constexpr size_t limit = 32 * 1024 * 1024;
   for (unsigned i = 0; i < 5; ++i) {
@@ -27,6 +33,11 @@ int main() {
     std::vector<crashpad::WritableIoVec> one = {{&byte, 1}};
     if (!writer->WriteIoVec(&one)) return 12;
     if (writer->Seek(0, SEEK_END) != limit) return 13;
+    allowed = false;
+    if (writer->Seek(0, SEEK_SET) != 0 || writer->Write(&byte, 1)) return 17;
+    std::vector<crashpad::WritableIoVec> revoked = {{&byte, 1}};
+    if (writer->WriteIoVec(&revoked)) return 18;
+    allowed = true;
     // Failed or discarded reports consume a reservation too.
   }
   std::unique_ptr<CrashReportDatabase::NewReport> sixth;
