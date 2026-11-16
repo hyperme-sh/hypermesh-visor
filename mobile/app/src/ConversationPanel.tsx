@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Conversation, type ConversationView } from './conversation';
 import { nativePromptClient } from './native';
+import { MessageComposer } from '@s3rch/forum-ui';
 export function ConversationPanel({ connected }: { connected: boolean }) {
   const controller = useRef<Conversation | null>(null);
   const [view, setView] = useState<ConversationView>({ sessions: [], selected: '', messages: [], busy: false, error: '' });
@@ -26,10 +27,10 @@ export function ConversationPanel({ connected }: { connected: boolean }) {
     <label>Purpose<select value={purpose} disabled={view.busy} onChange={e=>setPurpose(e.target.value)}><option value="chat">Conversation</option><option value="coding">Coding</option></select></label>
     <div className="transcript" role="log" aria-label="Conversation" aria-live="polite">{view.messages.map((message,i)=><article key={i} className={message.role}><strong>{message.role==='user'?'You':'Assistant'}</strong><p>{message.text}</p></article>)}</div>
     {!connected && <p>Connect this phone to send a message.</p>}
-    <form onSubmit={e=>{ e.preventDefault(); void controller.current?.send(text,model,purpose,()=>setText('')); }}>
-      <label>Message<textarea value={text} onChange={e=>setText(e.target.value)} disabled={!connected || view.busy} maxLength={65536} rows={4}/></label>
-      <button disabled={!connected || view.busy || !view.selected || !text.trim() || !model.trim()}>Send message</button>
-    </form>
+    <MessageComposer value={text} onChange={setText} rows={4} maxLength={65536}
+      disabled={!connected || !view.selected || !model.trim()} busy={view.busy} sendLabel="Send message"
+      className="phone-compose" fieldClassName="phone-message" buttonClassName="phone-send"
+      onSend={()=>void controller.current?.send(text,model,purpose,()=>setText(''))}/>
     {view.busy && <p role="status">Working…</p>}{view.error && <p role="alert" className="message">{view.error}</p>}
   </section>;
 }

@@ -11,7 +11,8 @@
   "dependencies": {
     "@capacitor/core": "8.6.2",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "@s3rch/forum-ui": "file:vendor/s3rch-forum-ui"
   },
   "devDependencies": {
     "@capacitor/android": "8.6.2",

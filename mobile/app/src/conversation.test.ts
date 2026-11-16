@@ -53,4 +53,12 @@ describe('phone conversation',()=>{
     } finally { clock.mockRestore(); }
   });
 
+  it('accepts named models with digits and refuses control characters',async()=>{
+    const f=fixture(); await f.controller.refresh(); f.controller.select(id); f.controller.connection(true);
+    for (const model of ['gpt-4o','qwen3','flux']) await f.controller.send('Hello',model,'chat');
+    expect(f.native.sendPrompt).toHaveBeenCalledTimes(3);
+    await f.controller.send('Hello','model'+String.fromCharCode(10),'chat');
+    expect(f.native.sendPrompt).toHaveBeenCalledTimes(3); expect(f.view().error).toContain('valid model');
+  });
+
 });
