@@ -25,12 +25,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Windows launcher build failed' }
 } finally { Pop-Location }
 $revision = '71ec23aa1646b4533e42b2d8296871e65d5e93b9'
-$digest = '97737999df403c5a4952cd726ffacea95a6a0b3c4b11901b9c6824b681e1073f'
+$digest = '216153e77d2f823d84430c2ea52e55953a6c9989d4b4c64563da19cc765498b7'
 $source = Join-Path ([IO.Path]::GetTempPath()) ('visor-conductor-' + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $source | Out-Null
 try {
     $archive = Join-Path $source 'source.tar.gz'
-    Invoke-WebRequest -Uri "https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/$revision" -OutFile $archive
+    Invoke-WebRequest -Uri "https://codeload.github.com/hyperme-sh/conductor/tar.gz/$revision" -OutFile $archive
     if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $digest) { throw 'Conductor source checksum mismatch' }
     & tar -xzf $archive --strip-components=1 -C $source
     if ($LASTEXITCODE -ne 0) { throw 'Conductor source extraction failed' }

@@ -23,7 +23,7 @@ conductor_sha256=$(sed -n 's/^conductor_sha256=//p' packaging/package.sh)
 [[ $conductor_revision =~ ^[a-f0-9]{40}$ && $conductor_sha256 =~ ^[a-f0-9]{64}$ ]] || { echo 'Invalid Conductor source pin' >&2; exit 1; }
 source_dir=$(mktemp -d)
 trap 'rm -rf "$source_dir"' EXIT
-curl --fail --silent --show-error --location "https://codeload.github.com/hyperme-sh/hypermesh-conductor/tar.gz/$conductor_revision" -o "$source_dir/source.tar.gz"
+curl --fail --silent --show-error --location "https://codeload.github.com/hyperme-sh/conductor/tar.gz/$conductor_revision" -o "$source_dir/source.tar.gz"
 printf '%s  %s\n' "$conductor_sha256" "$source_dir/source.tar.gz" | shasum -a 256 -c -
 tar -xzf "$source_dir/source.tar.gz" -C "$source_dir" --strip-components=1
 (cd "$source_dir" && CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath -o "$bundle/libexec/conductor" ./cmd/conductor)
