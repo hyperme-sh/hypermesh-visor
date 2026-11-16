@@ -948,7 +948,7 @@ start_visor() {
     args=(--tcp --listen 127.0.0.1:0)
   fi
   # Keep cwd-based discovery fixtures inside harness-owned storage.
-  ( cd "$RUNTIME" && export HYPERMESH_COMPANION_STATE_DIR="${HYPERMESH_COMPANION_STATE_DIR:-$STATE/companions}"; exec "$VISOR_BIN" "${args[@]}" ) \
+  ( cd "$RUNTIME" && export HYPERMESH_COMPANION_STATE_DIR="${HYPERMESH_COMPANION_STATE_DIR:-$STATE/companions}" && exec "$VISOR_BIN" "${args[@]}" ) \
     >"$DISPLAY_LOG_DIR/visor.out" 2>"$DISPLAY_LOG_DIR/visor.err" &
   VISOR_PID=$!
   note_started "$VISOR_PID" "$VISOR_BIN"
