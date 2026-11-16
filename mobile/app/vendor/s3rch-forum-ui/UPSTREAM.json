@@ -1,7 +1,7 @@
 {
   "repository": "FyberLabs/s3r.ch",
-  "source_version": "0.1.246",
-  "revision": "cc68553dae7e21fd421e18212394c875f987ea02",
+  "source_version": "0.1.247",
+  "revision": "6954f3ae6cc11aa7cd7cef3a9307330928ac10d8",
   "package": "@s3rch/forum-ui",
   "files": {
     "README.md": "561f79bf120776e3e5ba78e63ee16c73a6431c24f1858051f1cc17ecd847e329",

@@ -128,6 +128,7 @@ pub struct MobileOwnerSignIn {
     issuer_origin: String,
     pending: Mutex<Option<Pending>>,
     generation: Arc<AtomicU64>,
+    phone_generation: AtomicU64,
     commit: Mutex<()>,
 }
 fn https(value: &str, root: bool) -> Result<url::Url, MachineError> {
@@ -163,6 +164,7 @@ impl MobileOwnerSignIn {
             issuer_origin: issuer_url.origin().ascii_serialization(),
             pending: Mutex::new(None),
             generation: Arc::new(AtomicU64::new(0)),
+            phone_generation: AtomicU64::new(0),
             commit: Mutex::new(()),
         })
     }
@@ -230,7 +232,7 @@ impl MobileOwnerSignIn {
     }
     /// Fence phone admission without blocking the UI on a network request.
     pub fn cancel_phone_operations(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        self.phone_generation.fetch_add(1, Ordering::SeqCst);
     }
     pub fn cancel(&self) -> Result<(), MachineError> {
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -273,13 +275,16 @@ impl MobileOwnerSignIn {
 
 // Internal only: the UI cannot obtain a tenant session or choose an HTTP URL.
 impl MobileOwnerSignIn {
-    pub(crate) fn phone_epoch(&self) -> u64 {
-        self.generation.load(Ordering::SeqCst)
+    pub(crate) fn phone_epoch(&self) -> PhoneEpoch {
+        PhoneEpoch {
+            login: self.generation.load(Ordering::SeqCst),
+            phone: self.phone_generation.load(Ordering::SeqCst),
+        }
     }
     pub(crate) fn with_session<T>(
         &self,
         tenant: &str,
-        expected: u64,
+        expected: PhoneEpoch,
         action: impl FnOnce(&OwnerSession<'_>) -> Result<T, MachineError>,
     ) -> Result<T, MachineError> {
         let _guard = self.commit.lock().map_err(|_| MachineError::Unavailable)?;
@@ -299,15 +304,20 @@ impl MobileOwnerSignIn {
         action(&session)
     }
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PhoneEpoch {
+    login: u64,
+    phone: u64,
+}
 pub(crate) struct OwnerSession<'a> {
     owner: &'a MobileOwnerSignIn,
-    expected: u64,
+    expected: PhoneEpoch,
     token: String,
     tenant: &'a str,
 }
 impl OwnerSession<'_> {
     pub(crate) fn current(&self) -> Result<(), MachineError> {
-        if self.owner.generation.load(Ordering::SeqCst) != self.expected {
+        if self.owner.phone_epoch() != self.expected {
             return Err(MachineError::Refused);
         }
         Ok(())
@@ -406,6 +416,7 @@ pub(crate) fn fixture_owner(
         issuer_origin: "https://issuer.test".into(),
         pending: Mutex::new(None),
         generation: Arc::new(AtomicU64::new(0)),
+        phone_generation: AtomicU64::new(0),
         commit: Mutex::new(()),
     })
 }
@@ -481,6 +492,7 @@ mod tests {
                 issuer_origin: "https://issuer.test".into(),
                 pending: Mutex::new(None),
                 generation,
+                phone_generation: AtomicU64::new(0),
                 commit: Mutex::new(()),
             },
             store,
@@ -562,5 +574,18 @@ mod tests {
         };
         let deadline = clock.now() + Duration::from_secs(180);
         assert!(clock.now() > deadline);
+    }
+    #[test]
+    fn disposing_phone_conversation_does_not_cancel_new_owner_sign_in() {
+        let (login, store) = setup(false, false);
+        let before = login.phone_epoch();
+        login.begin().unwrap();
+        login.cancel_phone_operations();
+        assert!(login.phone_epoch() != before);
+        login.finish().unwrap();
+        assert_eq!(
+            store.read_refresh_token().unwrap().as_deref(),
+            Some("private-refresh-token")
+        );
     }
 }
