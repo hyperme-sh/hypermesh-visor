@@ -46,6 +46,7 @@ mod mcp_resources;
 mod mcp_prompts;
 mod host;
 mod permissions;
+mod acp_machine;
 
 pub struct AppState {
     companions: std::sync::OnceLock<Arc<crate::companion_runtime::Runtime>>,
@@ -844,6 +845,8 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/mcp/sources", get(mcp_sources))
         .route("/mcp/profiles", get(mcp_profiles).post(mcp_profile_edit))
         .route("/permissions/templates", get(permissions::list).post(permissions::save))
+        .route("/acp/context", get(acp_machine::context))
+        .route("/acp/prompt", post(acp_machine::prompt))
         .route("/permissions/context", get(permissions::context))
         .route("/permissions/preview", post(permissions::preview))
         .route("/mcp/servers", get(mcp_servers).post(mcp_server_edit))
