@@ -16,6 +16,11 @@ pub enum Metric {
     TemperatureCelsius(i16),
     PowerWatts(u32),
     ServiceFailures(u32),
+    #[cfg(target_os = "linux")]
+    Hardware(
+        crate::health_hardware::Source,
+        crate::health_hardware::Reading,
+    ),
 }
 impl Metric {
     fn fields(self) -> io::Result<(Category, &'static str, &'static str, i64)> {
@@ -56,6 +61,8 @@ impl Metric {
                 "{failure}",
                 n.into(),
             ),
+            #[cfg(target_os = "linux")]
+            Self::Hardware(source, reading) => source.fields(reading)?,
             _ => return Err(refused()),
         };
         Ok(fields)
@@ -119,7 +126,18 @@ pub(crate) fn encode(
     samples: Vec<Metric>,
     service: &str,
 ) -> io::Result<Vec<u8>> {
-    if samples.is_empty() || samples.len() > 16 {
+    encode_selected(Some(category), samples, service)
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn encode_host(samples: Vec<Metric>) -> io::Result<Vec<u8>> {
+    encode_selected(None, samples, "hypermesh-host")
+}
+fn encode_selected(
+    category: Option<Category>,
+    samples: Vec<Metric>,
+    service: &str,
+) -> io::Result<Vec<u8>> {
+    if samples.is_empty() || samples.len() > if category.is_some() { 16 } else { 32 } {
         return Err(refused());
     }
     let timestamp = SystemTime::now()
@@ -131,7 +149,10 @@ pub(crate) fn encode(
     let mut names = std::collections::HashSet::new();
     for metric in samples {
         let (actual, name, unit, value) = metric.fields()?;
-        if actual != category || !names.insert(name) {
+        if category.is_some_and(|expected| actual != expected)
+            || !names.insert(name)
+            || name.starts_with("host.") && service != "hypermesh-host"
+        {
             return Err(refused());
         }
         metrics.push(json!({"name":name, "unit":unit, "gauge":{"dataPoints":[{"timeUnixNano":timestamp, "asInt":value.to_string()}]}}));
