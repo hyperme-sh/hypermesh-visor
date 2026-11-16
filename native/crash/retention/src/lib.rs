@@ -535,4 +535,33 @@ mod tests {
         symlink(&outside, raw.join("synthetic.dmp")).unwrap();
         assert!(prune_locked(&owner.directory, 100 + MAX_AGE).is_err());
     }
+    #[test]
+    fn rollback_and_stopped_marker_do_not_extend_retention() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 100, 1);
+        owner.tick(99, false).unwrap();
+        assert!(!raw.exists());
+        let raw = run(&owner, 100, 1);
+        request_stop(&raw).unwrap();
+        prune_locked(&owner.directory, 101).unwrap();
+        assert!(!raw.exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn junction_is_refused_without_following_its_target() {
+        let (temp, owner) = fixture();
+        let raw = run(&owner, 100, 1);
+        let outside = temp.0.join("outside");
+        storage::create_dir(&outside).unwrap();
+        let output = std::process::Command::new("cmd")
+            .args(["/d", "/c", "mklink", "/J"])
+            .arg(raw.join("junction"))
+            .arg(&outside)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(prune_locked(&owner.directory, 100 + MAX_AGE).is_err());
+        assert!(outside.exists());
+        fs::remove_dir(raw.join("junction")).unwrap();
+    }
 }
