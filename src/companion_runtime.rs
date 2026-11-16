@@ -262,7 +262,18 @@ impl Runtime {
             })).collect::<Vec<_>>() }),
             );
         }
-        if action == "add" {
+        if matches!(action, "add" | "clone" | "restore") {
+            let resources = if action == "add" {
+                Resources {
+                    memory_mib: 2048,
+                    cpu_millis: 1000,
+                }
+            } else {
+                let scope = request_scope(&body)?;
+                let snapshots = manager.snapshots();
+                let retained = manager.backend_mut().journal.retained();
+                recreation_resources(action, scope, &snapshots, retained)?
+            };
             let memory = std::fs::read_to_string("/proc/meminfo").map_err(|_| Error::Capacity)?;
             let available = memory
                 .lines()
@@ -274,14 +285,13 @@ impl Runtime {
                         .ok()
                 })
                 .ok_or(Error::Capacity)?;
-            if available < 3 * 1024 * 1024 {
+            if available < (u64::from(resources.memory_mib) + 1024) * 1024 {
                 return Err(Error::Capacity);
             }
-            manager.add_container(Resources {
-                memory_mib: 2048,
-                cpu_millis: 1000,
-            })?;
-            return Ok(json!({}));
+            let scope = manager.add_container(resources)?;
+            return Ok(
+                json!({"companion":scope.companion(), "session":scope.session(), "generation":scope.generation()}),
+            );
         }
         if action == "resume" {
             let token = body["offer"]
@@ -300,13 +310,7 @@ impl Runtime {
             manager.resume(offer)?;
             return Ok(json!({}));
         }
-        let parse = |key: &str| {
-            body[key]
-                .as_str()
-                .and_then(|s| Uuid::parse_str(s).ok())
-                .ok_or(Error::Invalid)
-        };
-        let scope = Scope::recovered(parse("companion")?, parse("session")?, parse("generation")?);
+        let scope = request_scope(&body)?;
         if action == "delete_home" {
             let backend = manager.backend_mut();
             backend
@@ -353,5 +357,159 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Release);
         let _ = self.observer.physical_input();
+    }
+}
+
+fn request_scope(body: &Value) -> Result<Scope, Error> {
+    let parse = |key: &str| {
+        body[key]
+            .as_str()
+            .and_then(|s| Uuid::parse_str(s).ok())
+            .ok_or(Error::Invalid)
+    };
+    Ok(Scope::recovered(
+        parse("companion")?,
+        parse("session")?,
+        parse("generation")?,
+    ))
+}
+
+/// Only numeric execution configuration crosses into a new desktop. Homes,
+/// identity, credentials, assignment and running permits never cross this path.
+fn recreation_resources(
+    action: &str,
+    scope: Scope,
+    active: &[crate::companion_manager::Snapshot],
+    retained: &[Owned],
+) -> Result<Resources, Error> {
+    match action {
+        "clone" => active
+            .iter()
+            .find(|s| s.allocation.scope == scope && s.allocation.kind == Kind::Container)
+            .map(|s| s.allocation.resources)
+            .ok_or(Error::Stale),
+        "restore" => retained
+            .iter()
+            .find(|a| a.scope() == scope)
+            .map(|a| Resources {
+                memory_mib: a.memory_mib,
+                cpu_millis: a.cpu_millis,
+            })
+            .ok_or(Error::Stale),
+        _ => Err(Error::Invalid),
+    }
+}
+
+#[cfg(test)]
+mod recreation_tests {
+    use super::*;
+    use crate::companion_manager::{Phase, Snapshot};
+    struct EmptyBackend;
+    impl Backend for EmptyBackend {
+        fn start(&mut self, _: Allocation) -> Result<(), Error> {
+            Ok(())
+        }
+        fn resume(&mut self, _: Scope, _: Permit) -> Result<(), Error> {
+            Ok(())
+        }
+        fn pause(&mut self, _: Scope) -> Result<(), Error> {
+            Ok(())
+        }
+        fn cancel(&mut self, _: Scope) -> Result<(), Error> {
+            Ok(())
+        }
+        fn stop(&mut self, _: Scope) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+    fn saved() -> Owned {
+        Owned {
+            companion: Uuid::new_v4(),
+            session: Uuid::new_v4(),
+            generation: Uuid::new_v4(),
+            memory_mib: 1024,
+            cpu_millis: 1000,
+        }
+    }
+    #[test]
+    fn recreation_copies_only_resources_and_requires_exact_source() {
+        let old = saved();
+        let resources = Resources {
+            memory_mib: old.memory_mib,
+            cpu_millis: old.cpu_millis,
+        };
+        let active = Snapshot {
+            allocation: Allocation {
+                scope: old.scope(),
+                resources,
+                kind: Kind::Container,
+            },
+            phase: Phase::Running,
+        };
+        assert_eq!(
+            recreation_resources("clone", old.scope(), &[active], &[]),
+            Ok(resources)
+        );
+        assert_eq!(
+            recreation_resources("restore", old.scope(), &[], &[old]),
+            Ok(resources)
+        );
+        assert_eq!(
+            recreation_resources("restore", saved().scope(), &[], &[old]),
+            Err(Error::Stale)
+        );
+        assert_eq!(
+            recreation_resources("clone", old.scope(), &[], &[old]),
+            Err(Error::Stale)
+        );
+        let native = Snapshot {
+            allocation: Allocation {
+                kind: Kind::Native,
+                ..active.allocation
+            },
+            ..active
+        };
+        assert_eq!(
+            recreation_resources("clone", old.scope(), &[native], &[]),
+            Err(Error::Stale)
+        );
+    }
+    #[test]
+    fn restored_configuration_starts_paused_and_cannot_reuse_old_authority() {
+        let old = saved();
+        let resources = recreation_resources("restore", old.scope(), &[], &[old]).unwrap();
+        let mut manager = Manager::new(
+            EmptyBackend,
+            Uuid::new_v4(),
+            resources,
+            Resources {
+                memory_mib: 4096,
+                cpu_millis: 4000,
+            },
+        )
+        .unwrap();
+        // A missing/revoked observer authorization cannot create a desktop.
+        assert_eq!(
+            manager.add_container(resources),
+            Err(Error::MonitorUnavailable)
+        );
+        manager.observer_poll(true).unwrap();
+        let new = manager.add_container(resources).unwrap();
+        assert_ne!(new.companion(), old.companion);
+        assert_ne!(new.session(), old.session);
+        assert_ne!(new.generation(), old.generation);
+        assert_eq!(
+            manager
+                .snapshots()
+                .iter()
+                .find(|s| s.allocation.scope == new)
+                .unwrap()
+                .phase,
+            Phase::Paused
+        );
+        let offer = manager.offer_resume(new).unwrap();
+        manager.physical_input().unwrap();
+        assert!(manager.resume(offer).is_err());
+        assert!(manager.offer_resume(old.scope()).is_err());
     }
 }

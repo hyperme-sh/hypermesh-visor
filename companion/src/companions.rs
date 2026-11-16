@@ -60,17 +60,18 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
         }
         if index > companions.len() {
             let entry = &retained[index - companions.len() - 1];
-            if dialog(
-                &args(
-                    "question",
+            let Some(action) = choose(&mut dialog, "Stopped companion", "The saved home stays isolated. Restoring configuration creates an empty, paused desktop with a fresh identity; it does not recover files or credentials.", &["Restore configuration to a new desktop".into(), "Delete retained home".into()])? else { continue; };
+            let (title, message, operation) = if action == 0 {
+                ("Restore companion configuration", "Create a fresh paused desktop using the saved resource limits? No files, secrets, assignments or grants are copied.", "restore")
+            } else {
+                (
                     "Delete retained home",
                     "Permanently delete this stopped companion's private home?",
-                ),
-                None,
-            )?
-            .is_some()
-            {
-                crate::visor::manager_request(scoped(entry, "delete_home")?)?;
+                    "delete_home",
+                )
+            };
+            if dialog(&args("question", title, message), None)?.is_some() {
+                crate::visor::manager_request(scoped(entry, operation)?)?;
             }
             continue;
         }
@@ -88,6 +89,7 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
                 "Resume".into(),
                 "Stop and retain private home".into(),
                 "Stop and delete private home".into(),
+                "Clone configuration to a new desktop".into(),
             ],
         )?
         else {
@@ -106,6 +108,10 @@ pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
             confirmation.wait()?;
             let offer = crate::visor::manager_request(scoped(entry, "offer")?)?;
             crate::visor::manager_request(json!({"action":"resume","offer":offer["offer"]}))?;
+        } else if action == 4 {
+            if dialog(&args("question", "Clone companion configuration", "Create an empty, paused desktop with the same resource limits and a fresh identity? No files, credentials, assignments or grants are copied."), None)?.is_some() {
+                crate::visor::manager_request(scoped(entry, "clone")?)?;
+            }
         } else {
             if dialog(&args("question", "Stop companion", if action == 3 { "Stop this desktop and permanently delete its private home?" } else { "Stop this desktop and retain its private home? Retained homes are never automatically attached to another identity." }), None)?.is_none() { continue; }
             let mut request = scoped(entry, "stop")?;
