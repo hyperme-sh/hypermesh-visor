@@ -14,17 +14,18 @@ The root-owned mode-0600 `/etc/hypermesh/health.json` contains these fields:
 - `owner_socket` and `owner_token_file`: absolute paths to the host's existing
   private owner socket and automatically provisioned owner credential.
 - `collector_url`: provisioned OTLP HTTP endpoint ending in `/v1/metrics`.
-- `collector_authorization_file`: absolute path to a private file containing the
+- `collector_authorization_file`: optional absolute path to a private file containing the
   complete provisioned HTTP Authorization value. Never manually mint a token.
 
-HTTPS is required except for a literal loopback address, which supports a local
-collector or an isolated fixture. No redirects, query credentials or persistent
+Credential-bearing uploads require HTTPS, including on loopback. A literal
+loopback HTTP endpoint is allowed only with no authorization file, for isolated
+fixtures; it cannot authenticate its listener and is not a credentialed collector. No redirects, query credentials or persistent
 payload queue are supported. Remote errors are reduced to a fixed message;
 credential values and response bodies are never printed. Infra #1435 still owns
 provisioning and the receiving collector contract; a configured endpoint does
-not establish collector readiness. This worker's initial transport accepts a
-provisioned Authorization value; mesh-only transport without that header remains
-a follow-up until Infra publishes its exact contract.
+not establish collector readiness. This worker accepts a
+provisioned Authorization value over HTTPS, or no header where the receiving
+contract supplies machine authentication independently.
 
 Install the headless package, provision this configuration through Infra, and
 manage `hypermesh-host-health` with its included systemd or OpenRC service.

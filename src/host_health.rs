@@ -31,7 +31,7 @@ struct Config {
     owner_socket: PathBuf,
     owner_token_file: PathBuf,
     collector_url: String,
-    collector_authorization_file: PathBuf,
+    collector_authorization_file: Option<PathBuf>,
 }
 #[derive(Deserialize, PartialEq, Eq)]
 struct Authority {
@@ -239,19 +239,33 @@ fn cycle(
     }
     send(&body)
 }
+fn collector_authorization(
+    endpoint: &url::Url,
+    path: Option<&Path>,
+) -> io::Result<Option<Zeroizing<String>>> {
+    // Never even read a credential for an unauthenticated TCP listener.
+    match (endpoint.scheme(), path) {
+        ("https", Some(path)) => credential(path).map(Some),
+        ("https", None) => Ok(None),
+        ("http", None) => Ok(None),
+        _ => Err(refused()),
+    }
+}
 fn send(config: &Config, body: &[u8]) -> io::Result<()> {
     let endpoint = collector_url(&config.collector_url)?;
-    let authorization = credential(&config.collector_authorization_file)?;
+    let authorization =
+        collector_authorization(&endpoint, config.collector_authorization_file.as_deref())?;
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
         .timeout(Duration::from_secs(10))
         .build();
-    let response = agent
+    let mut request = agent
         .post(endpoint.as_str())
-        .set("Content-Type", "application/json")
-        .set("Authorization", authorization.as_str())
-        .send_bytes(body)
-        .map_err(|_| refused())?;
+        .set("Content-Type", "application/json");
+    if let Some(value) = authorization.as_ref() {
+        request = request.set("Authorization", value.as_str());
+    }
+    let response = request.send_bytes(body).map_err(|_| refused())?;
     if response.status() != 200 {
         return Err(refused());
     }
@@ -391,6 +405,9 @@ mod tests {
     }
     #[test]
     fn wrong_policy_and_invalid_collector_are_refused() {
+        let local = collector_url("http://127.0.0.1:4318/v1/metrics").unwrap();
+        assert!(collector_authorization(&local, Some(Path::new("/missing/credential"))).is_err());
+        assert!(collector_authorization(&local, None).unwrap().is_none());
         let mut auth = authority();
         auth.policy = "visor-local-consent".into();
         assert!(!auth.valid());
