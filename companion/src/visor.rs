@@ -555,7 +555,7 @@ pub fn trust_request(
 ) -> Result<serde_json::Value, String> {
     if !matches!(
         path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview"
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/allows" | "/acp/context"
     ) {
         return Err("Invalid trust endpoint".into());
     }

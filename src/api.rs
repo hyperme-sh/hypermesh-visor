@@ -46,6 +46,7 @@ mod mcp_resources;
 mod mcp_prompts;
 mod host;
 mod permissions;
+mod local_reads;
 mod acp_machine;
 
 pub struct AppState {
@@ -849,6 +850,8 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/acp/prompt", post(acp_machine::prompt))
         .route("/permissions/context", get(permissions::context))
         .route("/permissions/preview", post(permissions::preview))
+        .route("/permissions/reads", post(local_reads::read))
+        .route("/permissions/allows", get(local_reads::list))
         .route("/mcp/servers", get(mcp_servers).post(mcp_server_edit))
         .route("/session/:id/stream", post(session_stream))
         .route("/session/:id/inbox", get(session_inbox))
