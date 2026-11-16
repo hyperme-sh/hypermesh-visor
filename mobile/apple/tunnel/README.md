@@ -35,3 +35,8 @@ target for macOS, iOS and the simulator and runs deterministic state/parser and
 callback-ordering contracts; those checks do not link
 or start a device VPN. A packaged extension, guarded Conductor/AIuditor requests,
 app cancellation wiring and native nightly scenarios remain in #226/#228.
+
+The dependency uses the last official revision before the upstream minimum-OS
+manifest change, which used platform constants unavailable under its declared
+Swift tools version. The later tunnel-source changes only update copyright years.
+Visor still requires iOS 15 and macOS 12.
