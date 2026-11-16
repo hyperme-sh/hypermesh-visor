@@ -29,6 +29,9 @@ fun tunnelMonitorContract() {
     monitor.begin(1_000_000, 1_000_000)
     check(monitor.sample(true, 1_000_000, 1_100_000, 1_100_000) == TunnelStatus.CONNECTED)
     check(monitor.sample(true, 1_000_000, 1_100_000, 1_180_001) == TunnelStatus.RECONNECTING)
+    monitor.begin(1_000_000, 0)
+    check(monitor.sample(true, 1_600_000, 1_600_000, 1_000) == TunnelStatus.CONNECTED)
+    check(monitor.sample(true, 1_600_000, 1_600_000, 301_000) == TunnelStatus.RECONNECTING)
     monitor.failed()
     check(monitor.sample(false, 0, 700_000, 700_000) == TunnelStatus.UNREACHABLE)
 }
