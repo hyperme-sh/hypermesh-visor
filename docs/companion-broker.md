@@ -29,7 +29,9 @@ The broker claims only desktop tasks for the exact bot, tenant, owner, session,
 assignment and connection. Tasks retain Plane's absolute authorization deadline.
 They pass through anonymous private stdin to fixed bridge code and the existing
 leased task endpoint; no task text enters Docker arguments. Status and completion
-are relayed to Plane. No arbitrary guest command or network endpoint is accepted.
+are relayed to Plane. Local stop cleanup remains available when the guest, login
+session or Plane is unavailable; restoration still requires Plane to confirm a
+stopped source with a current grant. No arbitrary guest command or network endpoint is accepted.
 
 Unit contracts cover private persistence, reconnection identity, scope and grant
 refusals, independent lease expiry, and stdin-only task transport. The existing

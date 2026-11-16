@@ -22,9 +22,20 @@ fn owner_request(mut body: Value) -> Result<Value, String> {
     body["owner_token"] = tokens.access_token.into();
     crate::visor::manager_request(body)
 }
-fn send(entry: &Value, body: Value) -> Result<Value, String> {
+fn send(entry: &Value, mut body: Value) -> Result<Value, String> {
     if entry["enrolled"] == true {
-        owner_request(body)
+        if body["action"] == "stop" {
+            // Local cleanup remains available after logout or service failure.
+            if let Ok(tokens) = hypermesh_session::refresh_session(
+                &hypermesh_session::KeyringStore,
+                &hypermesh_session::Endpoints::panopticon(),
+            ) {
+                body["owner_token"] = tokens.access_token.into();
+            }
+            crate::visor::manager_request(body)
+        } else {
+            owner_request(body)
+        }
     } else {
         crate::visor::manager_request(body)
     }

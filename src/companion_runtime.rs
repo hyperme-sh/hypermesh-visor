@@ -521,13 +521,13 @@ impl Runtime {
                 Ok(json!({"offer":token}))
             }
             "stop" => {
-                manager.pause(scope)?;
+                // Pause revokes permits before attempting guest communication.
+                // Cleanup must still run if that guest or Plane is unavailable.
+                let _ = manager.pause(scope);
                 if broker.enrolled(scope) {
-                    broker.control(
-                        scope,
-                        body["owner_token"].as_str().ok_or(Error::Invalid)?,
-                        "stop",
-                    )?;
+                    if let Some(token) = body["owner_token"].as_str() {
+                        let _ = broker.control(scope, token, "stop");
+                    }
                 }
                 manager.backend_mut().retain =
                     body["retain_home"].as_bool().ok_or(Error::Invalid)?;
