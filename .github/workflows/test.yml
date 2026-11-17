@@ -381,6 +381,19 @@ jobs:
           New-Item -ItemType Directory -Path cmd/visor-credential-contract
           Copy-Item ../../native/windows/credential-contract.go cmd/visor-credential-contract/main.go
           go build -mod=readonly -buildvcs=false -o "$env:RUNNER_TEMP/visor-credential-contract.exe" ./cmd/visor-credential-contract
+      - name: Build isolated crash service contract helper
+        if: matrix.os == 'windows-latest'
+        working-directory: third_party/hypermesh-cli
+        env:
+          CGO_ENABLED: '0'
+          GOWORK: 'off'
+        run: |
+          New-Item -ItemType Directory -Path cmd/visor-crash-service-contract
+          Copy-Item ../../native/windows/crash-service-contract.go cmd/visor-crash-service-contract/main.go
+          go build -mod=readonly -buildvcs=false -o "$env:RUNNER_TEMP/visor-crash-service-contract.exe" ./cmd/visor-crash-service-contract
+      - name: Windows LocalSystem crash transport unit contract
+        if: matrix.os == 'windows-latest'
+        run: ./native/windows/test-crash-service-contract.ps1
       - name: Isolated Windows Credential Manager unit contract
         if: matrix.os == 'windows-latest'
         env:

@@ -216,3 +216,8 @@ mod tests {
         assert!(connect(&fixture.endpoint).await.is_err());
     }
 }
+
+#[cfg(windows)]
+mod windows_crash;
+#[cfg(windows)]
+pub use windows_crash::{connect_crash_registration, WINDOWS_CRASH_PIPE};
