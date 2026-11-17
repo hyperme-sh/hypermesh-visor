@@ -9,6 +9,8 @@ use std::{
 };
 pub mod host;
 pub mod delegation;
+#[cfg(target_os = "linux")]
+pub mod delegation_linux;
 mod ipc;
 pub mod platform;
 pub const MAX_AGE: u64 = 7 * 24 * 60 * 60;
