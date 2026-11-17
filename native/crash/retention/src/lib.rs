@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+mod ipc;
 pub mod platform;
 pub const MAX_AGE: u64 = 7 * 24 * 60 * 60;
 pub const MAX_BYTES: u64 = 160 * 1024 * 1024;
@@ -139,7 +140,8 @@ impl Owner {
         Ok(())
     }
     pub fn require(&self, directory: &Path) -> io::Result<()> {
-        self.require_with(directory, now, platform::verify_service)
+        self.require_with(directory, now, platform::verify_service)?;
+        ipc::request(&self.root, uuid::Uuid::nil())
     }
     fn require_with(
         &self,
@@ -189,16 +191,33 @@ impl Owner {
             last = last.max(prior.time);
             fs::remove_file(&heartbeat)?;
         }
+        let server = ipc::Server::bind(&self.root)?;
+        let mut ages = Ages::default();
+        // Unknown pre-existing runs cannot inherit a new age after restart.
+        while !self.tick_with(now, true)? {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
         loop {
             let time = now()?;
             let stopping = stop() || time < last;
-            if self.tick_with(now, stopping)? && stopping {
+            ages.expire(&self.directory, time)?;
+            let ready = self.tick_ages(now, stopping, Some(&ages))?;
+            if ready && stopping {
                 return Ok(());
             }
             if !stopping {
                 last = time;
             }
-            std::thread::sleep(std::time::Duration::from_millis(250));
+            server.poll(|id| {
+                if !ready || stopping {
+                    return false;
+                }
+                if id.is_nil() {
+                    return true;
+                }
+                ages.admit(&self.directory, id, now().unwrap_or(0)).is_ok()
+            })?;
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 
@@ -207,6 +226,14 @@ impl Owner {
         self.tick_with(|| Ok(time), stopping)
     }
     fn tick_with(&self, clock: impl Fn() -> io::Result<u64>, stopping: bool) -> io::Result<bool> {
+        self.tick_ages(clock, stopping, None)
+    }
+    fn tick_ages(
+        &self,
+        clock: impl Fn() -> io::Result<u64>,
+        stopping: bool,
+        ages: Option<&Ages>,
+    ) -> io::Result<bool> {
         let heartbeat = self.root.join("heartbeat.json");
         match lock(&self.directory.join("health-consent/crash-capture.lock")) {
             Ok(writer) => {
@@ -215,6 +242,19 @@ impl Owner {
                 if stopping {
                     purge(&runs, &self.directory.join("crash-runs"))?;
                 } else {
+                    if let Some(ages) = ages {
+                        for run in &runs {
+                            let id = uuid::Uuid::parse_str(
+                                run.file_name()
+                                    .and_then(|s| s.to_str())
+                                    .ok_or_else(refused)?,
+                            )
+                            .map_err(|_| refused())?;
+                            if !ages.0.contains_key(&id) {
+                                request_stop(run)?;
+                            }
+                        }
+                    }
                     prune_locked(&self.directory, clock()?)?;
                 }
             }
@@ -226,7 +266,10 @@ impl Owner {
                     if !run.join("handler-active").try_exists()? {
                         continue;
                     }
-                    if stopping || !fresh(&run, clock()?) {
+                    if stopping
+                        || !fresh(&run, clock()?)
+                        || run.join("stop-handler").try_exists()?
+                    {
                         request_stop(&run)?;
                         blocked = true;
                     }
@@ -254,6 +297,67 @@ impl Owner {
         Ok(true)
     }
 }
+
+/// First admission is held only in service memory. Mutable disk timestamps can
+/// cause earlier refusal, but cannot reset the authoritative age. Restart purges
+/// all unknown runs before publishing readiness.
+#[derive(Default)]
+struct Ages(std::collections::HashMap<uuid::Uuid, (u64, std::time::Instant)>);
+impl Ages {
+    fn admit(&mut self, directory: &Path, id: uuid::Uuid, time: u64) -> io::Result<()> {
+        let run = directory.join("crash-runs").join(id.to_string());
+        private(&run)?;
+        if run.join("stop-handler").try_exists()? {
+            return Err(refused());
+        }
+        if let Some((started, monotonic)) = self.0.get(&id) {
+            if time
+                .checked_sub(*started)
+                .is_none_or(|age| age >= MAX_AGE - HEARTBEAT_AGE)
+                || monotonic.elapsed().as_secs() >= MAX_AGE - HEARTBEAT_AGE
+            {
+                return Err(refused());
+            }
+        } else {
+            if time == 0
+                || self.0.len() >= MAX_ENTRIES
+                || run.join("handler-active").try_exists()?
+            {
+                return Err(refused());
+            }
+            let (mut entries, mut count, mut bytes) = (0, 0, 0);
+            inventory(&run, 0, &mut entries, &mut count, &mut bytes)?;
+            if count != 0 || bytes != 0 {
+                return Err(refused());
+            }
+            self.0.insert(id, (time, std::time::Instant::now()));
+        }
+        Ok(())
+    }
+    fn expire(&self, directory: &Path, time: u64) -> io::Result<()> {
+        for run in runs(directory)? {
+            let id = uuid::Uuid::parse_str(
+                run.file_name()
+                    .and_then(|v| v.to_str())
+                    .ok_or_else(refused)?,
+            )
+            .map_err(|_| refused())?;
+            let expired = match self.0.get(&id) {
+                Some((started, monotonic)) => {
+                    time.checked_sub(*started)
+                        .is_none_or(|age| age >= MAX_AGE - HEARTBEAT_AGE)
+                        || monotonic.elapsed().as_secs() >= MAX_AGE - HEARTBEAT_AGE
+                }
+                None => run.join("handler-active").try_exists()?,
+            };
+            if expired {
+                request_stop(&run)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 fn contended(error: &io::Error) -> bool {
     #[cfg(windows)]
     {
@@ -377,7 +481,14 @@ pub fn prune_runs_locked(root: &Path, time: u64) -> io::Result<()> {
 /// Called before native entry and every raw write, including after resume.
 pub fn permit(run: &Path) -> io::Result<()> {
     let directory = run.parent().and_then(Path::parent).ok_or_else(refused)?;
-    Owner::open()?.require(directory)?;
+    let owner = Owner::open()?;
+    owner.require(directory)?;
+    let id = run
+        .file_name()
+        .and_then(|v| v.to_str())
+        .and_then(|v| uuid::Uuid::parse_str(v).ok())
+        .ok_or_else(refused)?;
+    ipc::request(&owner.root, id)?;
     let time = now()?;
     if !fresh(run, time) {
         return Err(refused());
@@ -456,6 +567,53 @@ mod tests {
         let file = storage::open(&run.join("synthetic.dmp"), storage::Open::New).unwrap();
         file.set_len(size).unwrap();
         run
+    }
+    #[test]
+    fn rewritten_disk_age_cannot_extend_service_age() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 100, 0);
+        fs::remove_file(raw.join("synthetic.dmp")).unwrap();
+        let id = uuid::Uuid::parse_str(raw.file_name().unwrap().to_str().unwrap()).unwrap();
+        let mut ages = Ages::default();
+        ages.admit(&owner.directory, id, 100).unwrap();
+        write(
+            &raw.join("retention.json"),
+            &Stamp {
+                started: 100 + MAX_AGE,
+            },
+        )
+        .unwrap();
+        assert!(ages.admit(&owner.directory, id, 100 + MAX_AGE).is_err());
+        ages.expire(&owner.directory, 100 + MAX_AGE).unwrap();
+        assert!(raw.join("stop-handler").exists());
+        owner.tick(100 + MAX_AGE, false).unwrap();
+        assert!(!raw.exists());
+    }
+    #[test]
+    fn restart_discards_unknown_raw_before_readiness() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 100, 1);
+        // A freshly rewritten disk timestamp cannot survive the startup purge.
+        write(&raw.join("retention.json"), &Stamp { started: 101 }).unwrap();
+        assert!(owner.tick(101, true).unwrap());
+        assert!(!raw.exists());
+        assert!(!owner.root.join("heartbeat.json").exists());
+    }
+    #[test]
+    fn unknown_stopped_run_is_purged_even_with_fresh_disk_time() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 100, 1);
+        owner
+            .tick_ages(|| Ok(100), false, Some(&Ages::default()))
+            .unwrap();
+        assert!(!raw.exists());
+    }
+    #[test]
+    fn unknown_existing_dump_cannot_gain_a_new_service_age() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 100, 1);
+        let id = uuid::Uuid::parse_str(raw.file_name().unwrap().to_str().unwrap()).unwrap();
+        assert!(Ages::default().admit(&owner.directory, id, 101).is_err());
     }
     #[test]
     fn stopped_app_expiry_and_restart_remove_before_heartbeat() {

@@ -74,15 +74,20 @@ have a loaded, available user profile. Protected files retain owner/System acces
 
 ## Operation and removal
 
-OS service-manager identity, a fresh service heartbeat and a held OS lease are
-all required. Admission verifies the manager's PID and its OS account; local
-files alone cannot satisfy this prerequisite. Successful manager queries are
+OS service-manager identity, a live local nonce response, a fresh service
+heartbeat and a held OS lease are all required. Admission verifies the manager's PID and its OS account; local
+files alone cannot satisfy this prerequisite. Local IPC uses the kernel-reported
+server PID, so a suspended helper cannot be replaced by forged heartbeat files.
+Successful manager queries are
 cached for at most one second while heartbeat and lease checks remain per-write. Losing either
 refuses new raw writes and stops the handler. The helper coordinates deletion
 with the same capture lock as startup and withdrawal. It expires each entire
 run within seven days of its start, conservatively earlier than seven days from
 any capture in that run. Sleep/restart checks run before capture or review;
-malformed, missing or future start times cause stopped runs to be purged.
+malformed, missing or future start times cause stopped runs to be purged. The
+service also keeps each run's first admission time in memory with a monotonic
+clock; rewriting disk timestamps cannot extend it. A helper restart discards
+unknown raw runs before publishing readiness, including otherwise recent dumps.
 
 The single registered directory and one writer prevent independent per-run
 budgets. Each handler reserves at most five reports and each report is bounded
