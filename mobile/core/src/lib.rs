@@ -4,11 +4,13 @@ use std::sync::Arc;
 
 uniffi::setup_scaffolding!();
 mod machine;
+mod mesh;
 mod owner;
 mod phone;
-pub use phone::{MobilePhoneClient, PhonePrompt, PhoneSession, PreparedPhonePrompt};
-pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};
 pub use machine::{MachineError, MachineStatus, MobileMachine};
+pub use mesh::{MobileMeshClient, MobileMeshLease};
+pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};
+pub use phone::{MobilePhoneClient, PhonePrompt, PhoneSession, PreparedPhonePrompt};
 
 /// Fixed errors keep native store diagnostics and credentials out of FFI errors.
 #[derive(Debug, thiserror::Error, uniffi::Error)]

@@ -2,8 +2,9 @@
 
 React/TypeScript UI in a Capacitor application. This directory is in development:
 the UI build and controller unit tests work; the Android and Apple `Visor` plugins wire enrollment through the native core.
-Native SDK qualification runs in PR CI; mesh provisioning, service-call wiring
-and native nightly application acceptance are not complete.
+Native SDK qualification runs in PR CI. The phone obtains a short-lived mesh lease
+from Plane and routes application requests through Conductor and AIuditor.
+Infra deployment configuration and scheduled native qualification are separate.
 Do not interpret a successful web build as a working enrolled phone.
 
 `npm ci`, `npm test`, and `npm run build` qualify the UI. `npm run sync` copies the
@@ -39,13 +40,25 @@ These inputs must not contain credentials. The configured workspace is a candida
 not a membership grant: native owner-session switching and Plane enrollment verify
 current membership. Do not query the administrator-only tenant listing endpoint.
 
-Both platforms use one process-owned native identity/store pair across activity/view recreation.
+Both platforms restore their native identity from the OS secure store. Recreating
+the Android activity stops its previous tunnel and requires an explicit reconnect.
 Device authorization opens the validated issuer URL in the system browser; only the
 short user code returns to React. Cancellation bypasses the polling worker.
 Expired-owner revocation stays locally denied, and signing in again can retry remote
 revocation before generating a replacement identity. `VISOR_MOBILE_AAR` selects the
 locally built, verified library artifact for SDK compilation, not a running service.
-Phone mesh provisioning is tracked in Infra #1747; connect remains unavailable.
+Connect requests a Plane-authorized lease using native owner and machine credentials.
+Android asks for OS VPN permission, then restricts the tunnel to this application.
+iOS embeds a packet-tunnel extension and requests OS VPN permission. Its saved VPN
+preferences contain no WireGuard keys; startup options and refresh messages carry
+configuration only in memory. Both adapters refresh leases every 20 seconds and
+stop on expiry, disconnect, owner change or revocation. Connected status requires a
+fresh peer handshake. No tunnel starts at boot. Infra configuration is tracked in #1747.
+
+`VISOR_TUNNEL_AAR` selects the matching Android adapter artifact. Apple CI builds
+WireGuard's Go archive and embeds the unsigned extension. NetworkExtension
+entitlements declare the required capability but do not supply signing identities
+or authorize a signed release.
 
 Apple SDK CI stages the checksum-verified XCFramework and Swift wrappers from the
 same source revision, then compiles the unsigned simulator app without launching a
@@ -54,15 +67,14 @@ job's native AAR. Neither compile job provisions a peer or performs live sign-in
 
 ## Native prompt operations
 
-Optional `VISOR_MOBILE_CONDUCTOR_ORIGIN` configures the native phone transport.
-It must be a credential-free HTTPS origin and requires the enrollment configuration
-above. Both platform plugins expose `preparePrompt`, `submitPrompt` and
+The lease supplies the native Conductor origin. The legacy optional
+`VISOR_MOBILE_CONDUCTOR_ORIGIN` build input grants no routing authority. Both platform plugins expose `preparePrompt`, `submitPrompt` and
 `discardPrompt`; no per-request origin, bearer token or arbitrary network method
 crosses the JavaScript boundary. Preparing returns public task/operation IDs and
 the exact digest. The owner/session task workflow must authorize that binding
 before submission. A failed submission is uncertain and must not be retried.
-These operations do not claim mesh connectivity or provide the remaining remote
-session picker, task orchestration, or SEA identity adapter.
+Owned sessions can be listed before connecting. Sending requires a currently
+authorized tunnel; the SEA identity adapter remains a separate owner component.
 
 ## Shared s3r.ch presentation
 

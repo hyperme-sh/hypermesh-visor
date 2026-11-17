@@ -1,6 +1,9 @@
 package sh.hyperme.visor.mobile;
 
 import android.content.Intent;
+import android.app.Activity;
+import androidx.activity.result.ActivityResult;
+import com.getcapacitor.annotation.ActivityCallback;
 import android.net.Uri;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
@@ -23,7 +26,6 @@ import uniffi.hypermesh_visor_mobile.OwnerSignInPrompt;
 /** Public state and specific operations only. No JS credential or URL bridge. */
 @CapacitorPlugin(name = "Visor")
 public final class VisorPlugin extends Plugin {
-    private static NativeState shared;
     private NativeState nativeState;
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.SECONDS,
         new ArrayBlockingQueue<>(4), new ThreadPoolExecutor.AbortPolicy());
@@ -31,7 +33,7 @@ public final class VisorPlugin extends Plugin {
     private static final class NativeState {
         final String binding;
         final MobileMachine machine;
-        final MobilePhoneClient phone;
+        final PhoneTunnel tunnel;
         final MobileOwnerSignIn owner;
         final String workspaceId;
         final String workspaceName;
@@ -44,7 +46,7 @@ public final class VisorPlugin extends Plugin {
             workspaceName = name;
             machine = AndroidSessionStoreKt.androidMachineIdentity(context, "device-owner-v1", plane);
             owner = AndroidSessionStoreKt.androidOwnerSignIn(context, "device-owner-v1", issuer, auth);
-            phone = conductor == null ? null : new MobilePhoneClient(machine, conductor);
+            tunnel = new PhoneTunnel(context, machine, owner);
         }
     }
 
@@ -58,11 +60,7 @@ public final class VisorPlugin extends Plugin {
             String conductor = getConfig().getString("conductorOrigin");
             if (issuer == null || auth == null || plane == null || workspace == null || name == null) return;
             String binding = String.join("\n", issuer, auth, plane, workspace, name, conductor == null ? "" : conductor);
-            synchronized (VisorPlugin.class) {
-                if (shared == null) shared = new NativeState(getContext().getApplicationContext(), issuer, auth, plane, workspace, name, conductor);
-                if (!shared.binding.equals(binding)) return;
-                nativeState = shared;
-            }
+            nativeState = new NativeState(getContext().getApplicationContext(), issuer, auth, plane, workspace, name, conductor);
         } catch (Exception ignored) { /* No partial/plaintext fallback or raw diagnostics. */ }
     }
 
@@ -81,8 +79,8 @@ public final class VisorPlugin extends Plugin {
         JSObject result = new JSObject();
         result.put("enrolled", status != null && status.getEnrolled() && !status.getRevoked());
         result.put("revoked", status != null && status.getRevoked());
-        result.put("connection", "disconnected");
-        result.put("canConnect", false); // Infra #1747 has not supplied peer provisioning.
+        result.put("connection", n.tunnel.status());
+        result.put("canConnect", status != null && status.getEnrolled() && !status.getRevoked());
         return result;
     }
     @PluginMethod public void cancelPhone(PluginCall call) {
@@ -91,9 +89,8 @@ public final class VisorPlugin extends Plugin {
     }
     @PluginMethod public void ownedSessions(PluginCall call) {
         perform(call, n -> {
-            if (n.phone == null) throw new IllegalStateException();
             JSArray sessions = new JSArray();
-            for (var session : n.phone.ownedSessions(n.owner)) {
+            for (var session : n.tunnel.mesh.ownedSessions(n.owner)) {
                 JSObject item = new JSObject(); item.put("botId", session.getBotId());
                 item.put("assignmentId", session.getAssignmentId()); item.put("sessionId", session.getSessionId());
                 item.put("expiresAt", session.getExpiresAt()); sessions.put(item);
@@ -107,8 +104,8 @@ public final class VisorPlugin extends Plugin {
             String taskClass = call.getString("taskClass"), destination = call.getString("destination"), prompt = call.getString("prompt");
             Integer limit = call.getInt("maxOutputTokens");
             long expires = call.getData().getLong("expiresAt");
-            if (n.phone == null || bot == null || assignment == null || session == null || taskClass == null || destination == null || prompt == null || limit == null) throw new IllegalArgumentException();
-            JSObject result = new JSObject(); result.put("text", n.phone.sendOwned(n.owner,
+            if (bot == null || assignment == null || session == null || taskClass == null || destination == null || prompt == null || limit == null) throw new IllegalArgumentException();
+            JSObject result = new JSObject(); result.put("text", n.tunnel.client().sendOwned(n.owner,
                 new PhonePrompt(bot, assignment, session, taskClass, destination, prompt, limit), expires)); return result;
         });
     }
@@ -117,8 +114,8 @@ public final class VisorPlugin extends Plugin {
             String bot = call.getString("botId"), assignment = call.getString("assignmentId"), session = call.getString("sessionId");
             String taskClass = call.getString("taskClass"), destination = call.getString("destination"), prompt = call.getString("prompt");
             Integer limit = call.getInt("maxOutputTokens");
-            if (n.phone == null || bot == null || assignment == null || session == null || taskClass == null || destination == null || prompt == null || limit == null) throw new IllegalArgumentException();
-            PreparedPhonePrompt prepared = n.phone.prepare(new PhonePrompt(bot, assignment, session, taskClass, destination, prompt, limit));
+            if (bot == null || assignment == null || session == null || taskClass == null || destination == null || prompt == null || limit == null) throw new IllegalArgumentException();
+            PreparedPhonePrompt prepared = n.tunnel.client().prepare(new PhonePrompt(bot, assignment, session, taskClass, destination, prompt, limit));
             JSObject result = new JSObject(); result.put("operationId", prepared.getOperationId());
             result.put("taskId", prepared.getTaskId()); result.put("requestSha256", prepared.getRequestSha256()); return result;
         });
@@ -126,20 +123,21 @@ public final class VisorPlugin extends Plugin {
     @PluginMethod public void submitPrompt(PluginCall call) {
         perform(call, n -> {
             String id = call.getString("operationId");
-            if (n.phone == null || id == null) throw new IllegalArgumentException();
-            JSObject result = new JSObject(); result.put("text", n.phone.submit(id)); return result;
+            if (id == null) throw new IllegalArgumentException();
+            JSObject result = new JSObject(); result.put("text", n.tunnel.client().submit(id)); return result;
         });
     }
     @PluginMethod public void discardPrompt(PluginCall call) {
         perform(call, n -> {
             String id = call.getString("operationId");
-            if (n.phone == null || id == null) throw new IllegalArgumentException();
-            n.phone.discard(id); return new JSObject();
+            if (id == null) throw new IllegalArgumentException();
+            n.tunnel.client().discard(id); return new JSObject();
         });
     }
     @PluginMethod public void status(PluginCall call) { perform(call, this::state); }
     @PluginMethod public void beginSignIn(PluginCall call) {
         perform(call, n -> {
+            n.tunnel.disconnect();
             OwnerSignInPrompt prompt = n.owner.begin();
             try {
                 Intent browser = new Intent(Intent.ACTION_VIEW, Uri.parse(prompt.getVerificationUrl()));
@@ -159,7 +157,7 @@ public final class VisorPlugin extends Plugin {
     }
     @PluginMethod public void cancelSignIn(PluginCall call) {
         // Do not queue behind the blocking device-grant poll.
-        try { if (nativeState != null) nativeState.owner.cancel(); call.resolve(); }
+        try { if (nativeState != null) { nativeState.tunnel.disconnect(); nativeState.owner.cancel(); } call.resolve(); }
         catch (Exception ignored) { call.reject("Sign-in could not be cancelled."); }
     }
     @PluginMethod public void enroll(PluginCall call) {
@@ -175,16 +173,42 @@ public final class VisorPlugin extends Plugin {
     }
     @PluginMethod public void renew(PluginCall call) { perform(call, n -> { n.machine.renew(); return state(n); }); }
     @PluginMethod public void revoke(PluginCall call) {
+        if (nativeState != null) nativeState.tunnel.disconnect();
         perform(call, n -> {
             MachineStatus current = n.machine.status();
             if (current == null) throw new IllegalStateException();
             n.owner.revokeMachine(n.machine, current.getTenantId()); return state(n);
         });
     }
-    @PluginMethod public void connect(PluginCall call) { call.reject("Mesh provisioning is unavailable."); }
-    @PluginMethod public void disconnect(PluginCall call) { perform(call, this::state); }
+    @PluginMethod public void connect(PluginCall call) {
+        if (nativeState == null) { call.reject("Phone configuration is unavailable."); return; }
+        long pendingConnection = nativeState.tunnel.begin();
+        call.getData().put("nativeConnectionGeneration", pendingConnection);
+        Intent permission = nativeState.tunnel.permissionRequest();
+        if (permission == null) startTunnel(call, pendingConnection);
+        else startActivityForResult(call, permission, "vpnPermission");
+    }
+    @ActivityCallback private void vpnPermission(PluginCall call, ActivityResult result) {
+        if (call == null) return;
+        if (result.getResultCode() != Activity.RESULT_OK) {
+            if (nativeState != null) nativeState.tunnel.disconnect();
+            call.reject("VPN permission was not granted."); return;
+        }
+        startTunnel(call, call.getData().optLong("nativeConnectionGeneration", -1));
+    }
+    private void startTunnel(PluginCall call, long generation) {
+        perform(call, n -> {
+            try { n.tunnel.connect(generation); return state(n); }
+            catch (Exception failure) { n.tunnel.failed(generation); throw failure; }
+        });
+    }
+    @PluginMethod public void disconnect(PluginCall call) {
+        if (nativeState != null) nativeState.tunnel.disconnect();
+        perform(call, this::state);
+    }
     @Override protected void handleOnDestroy() {
-        try { if (nativeState != null) nativeState.owner.cancel(); } catch (Exception ignored) {}
+        try { if (nativeState != null) { nativeState.tunnel.disconnect(); nativeState.owner.cancel(); } } catch (Exception ignored) {}
+        if (nativeState != null) nativeState.tunnel.close();
         worker.shutdownNow();
     }
 }

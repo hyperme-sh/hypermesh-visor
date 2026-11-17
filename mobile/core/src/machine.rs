@@ -193,6 +193,30 @@ pub(crate) struct PhoneCredential {
 }
 
 impl MobileMachine {
+    pub(crate) fn mesh_key(
+        &self,
+        credential: &PhoneCredential,
+    ) -> Result<(String, String), MachineError> {
+        let _lock = self.lock.lock().map_err(|_| MachineError::Unavailable)?;
+        let state = self.read()?.ok_or(MachineError::Refused)?;
+        if state.revoked
+            || !state.bound
+            || state.tenant_id != credential.tenant
+            || state.device_id != credential.device
+            || state.request_id != credential.enrollment
+        {
+            return Err(MachineError::Refused);
+        }
+        Ok((wg_public(&state.wireguard_key)?, state.wireguard_key))
+    }
+    pub(crate) fn mesh_request(
+        &self,
+        tenant: &str,
+        owner: &str,
+        body: &Value,
+    ) -> Result<Value, MachineError> {
+        self.transport.post("/mesh", tenant, Some(owner), body)
+    }
     pub(crate) fn plane_origin(&self) -> &str {
         &self.origin
     }
@@ -638,6 +662,84 @@ mod tests {
             lock: Mutex::new(()),
         };
         (client, store, authority)
+    }
+    #[test]
+    fn mesh_lease_checks_owner_disconnect_revocation_and_late_response() {
+        struct MeshAuthority {
+            store: Arc<Store>,
+            owner: Arc<crate::MobileOwnerSignIn>,
+            cancel: AtomicBool,
+        }
+        impl Transport for MeshAuthority {
+            fn post(
+                &self,
+                path: &str,
+                tenant: &str,
+                owner: Option<&str>,
+                body: &Value,
+            ) -> Result<Value, MachineError> {
+                assert_eq!(path, "/mesh");
+                assert_eq!(owner, Some("owner-session"));
+                let state: Identity =
+                    serde_json::from_str(&self.store.read_refresh_token().unwrap().unwrap())
+                        .unwrap();
+                assert_eq!(tenant, state.tenant_id);
+                assert_eq!(body["access_token"], json!(state.token));
+                assert_eq!(body["device_id"], state.device_id);
+                assert_eq!(body["request_id"], state.request_id);
+                if self.cancel.load(Ordering::SeqCst) {
+                    self.owner.cancel()?;
+                }
+                Ok(
+                    json!({"tenant_id":tenant,"device_id":state.device_id,"request_id":state.request_id,
+                    "wg_public_key":wg_public(&state.wireguard_key)?,"server_public_key":STANDARD.encode([9u8;32]),
+                    "address":"10.90.0.2/32","endpoint":"gateway.test:51821","allowed_ips":["10.77.0.9/32"],
+                    "conductor_origin":"https://10.77.0.9:9443","expires_at":now()?+60}),
+                )
+            }
+        }
+        let (mut machine, store, _) = setup();
+        machine
+            .enroll(
+                uuid::Uuid::new_v4().to_string(),
+                "android".into(),
+                "owner-session".into(),
+            )
+            .unwrap();
+        let owner = crate::owner::fixture_owner(
+            Arc::new(Store::default()),
+            Arc::new(|_, _| panic!("unexpected bot request")),
+        );
+        let authority = Arc::new(MeshAuthority {
+            store: store.clone(),
+            owner: owner.clone(),
+            cancel: AtomicBool::new(false),
+        });
+        machine.transport = authority.clone();
+        let machine = Arc::new(machine);
+        let client = crate::MobileMeshClient::new(machine.clone());
+        let lease = client.prepare(owner.clone()).unwrap();
+        owner.cancel_phone_operations();
+        assert!(
+            lease.valid(),
+            "conversation cancellation must not revoke the tunnel"
+        );
+        client.cancel();
+        assert!(!lease.valid());
+        assert!(lease.wireguard_configuration().is_err());
+        let lease = client.prepare(owner.clone()).unwrap();
+        owner.cancel().unwrap();
+        assert!(!lease.valid());
+        authority.cancel.store(true, Ordering::SeqCst);
+        assert!(
+            client.prepare(owner.clone()).is_err(),
+            "late owner response must not reconnect"
+        );
+        authority.cancel.store(false, Ordering::SeqCst);
+        let lease = client.prepare(owner.clone()).unwrap();
+        machine.revoke_local().unwrap();
+        assert!(!lease.valid());
+        assert!(client.prepare(owner).is_err());
     }
     #[test]
     fn lost_response_reuses_persisted_identity_and_signs_without_owner_session() {

@@ -94,10 +94,12 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				B10000000000000000000007,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				B10000000000000000000012,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -133,12 +135,14 @@
 			);
 			mainGroup = 504EC2FB1FED79650016851F;
 			packageReferences = (
+				B10000000000000000000009,
 				D4C12C0A2AAA248700AAC8A2 /* XCLocalSwiftPackageReference "CapApp-SPM" */,
 			);
 			productRefGroup = 504EC3051FED79650016851F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
+				B1000000000000000000000D,
 				504EC3031FED79650016851F /* App */,
 			);
 		};
@@ -166,6 +170,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
+				B10000000000000000000002,
 				A10000000000000000000002 /* KeychainSessionStore.swift in Sources */,
 				A10000000000000000000001 /* hypermesh_visor_mobile.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
@@ -311,6 +316,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = PhoneTunnel.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -334,6 +340,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				INFOPLIST_FILE = App/Info.plist;
+				CODE_SIGN_ENTITLEMENTS = PhoneTunnel.entitlements;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -386,6 +393,24 @@
 			productName = "CapApp-SPM";
 		};
 /* End XCSwiftPackageProductDependency section */
+		B10000000000000000000001 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/PhoneTunnel.swift; sourceTree = SOURCE_ROOT; };
+		B10000000000000000000002 = { isa = PBXBuildFile; fileRef = B10000000000000000000001; };
+		B10000000000000000000003 = { isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneTunnel/PacketTunnelProvider.swift; sourceTree = SOURCE_ROOT; };
+		B10000000000000000000004 = { isa = PBXBuildFile; fileRef = B10000000000000000000003; };
+		B10000000000000000000005 = { isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; path = PhoneTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B10000000000000000000006 = { isa = PBXBuildFile; fileRef = B10000000000000000000005; settings = { ATTRIBUTES = (RemoveHeadersOnCopy,); }; };
+		B10000000000000000000007 = { isa = PBXCopyFilesBuildPhase; buildActionMask = 2147483647; dstPath = ""; dstSubfolderSpec = 13; files = (B10000000000000000000006,); name = "Embed Phone Tunnel"; runOnlyForDeploymentPostprocessing = 0; };
+		B10000000000000000000008 = { isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (B10000000000000000000004,); runOnlyForDeploymentPostprocessing = 0; };
+		B10000000000000000000009 = { isa = XCLocalSwiftPackageReference; relativePath = ../../../apple/tunnel; };
+		B1000000000000000000000A = { isa = XCSwiftPackageProductDependency; package = B10000000000000000000009; productName = VisorMeshTunnel; };
+		B1000000000000000000000B = { isa = PBXBuildFile; productRef = B1000000000000000000000A; };
+		B1000000000000000000000C = { isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (B1000000000000000000000B,); runOnlyForDeploymentPostprocessing = 0; };
+		B1000000000000000000000D = { isa = PBXNativeTarget; buildConfigurationList = B10000000000000000000010; buildPhases = (B10000000000000000000008, B1000000000000000000000C,); buildRules = (); dependencies = (); name = PhoneTunnel; packageProductDependencies = (B1000000000000000000000A,); productName = PhoneTunnel; productReference = B10000000000000000000005; productType = "com.apple.product-type.app-extension"; };
+		B1000000000000000000000E = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = PhoneTunnel.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; INFOPLIST_FILE = PhoneTunnel/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = sh.hyperme.visor.mobile.tunnel; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Native/WireGuard/$(PLATFORM_NAME)"); OTHER_LDFLAGS = ("$(inherited)", "-lresolv"); LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks"); }; name = Debug; };
+		B1000000000000000000000F = { isa = XCBuildConfiguration; buildSettings = { APPLICATION_EXTENSION_API_ONLY = YES; CODE_SIGN_ENTITLEMENTS = PhoneTunnel.entitlements; CODE_SIGN_STYLE = Automatic; CURRENT_PROJECT_VERSION = 1; INFOPLIST_FILE = PhoneTunnel/Info.plist; IPHONEOS_DEPLOYMENT_TARGET = 15.0; MARKETING_VERSION = 1.0; PRODUCT_BUNDLE_IDENTIFIER = sh.hyperme.visor.mobile.tunnel; PRODUCT_NAME = "$(TARGET_NAME)"; SKIP_INSTALL = YES; SWIFT_VERSION = 5.0; TARGETED_DEVICE_FAMILY = "1,2"; LIBRARY_SEARCH_PATHS = ("$(inherited)", "$(PROJECT_DIR)/Native/WireGuard/$(PLATFORM_NAME)"); OTHER_LDFLAGS = ("$(inherited)", "-lresolv"); LD_RUNPATH_SEARCH_PATHS = ("$(inherited)", "@executable_path/Frameworks", "@executable_path/../../Frameworks"); }; name = Release; };
+		B10000000000000000000010 = { isa = XCConfigurationList; buildConfigurations = (B1000000000000000000000E, B1000000000000000000000F,); defaultConfigurationIsVisible = 0; defaultConfigurationName = Release; };
+		B10000000000000000000011 = { isa = PBXContainerItemProxy; containerPortal = 504EC2FC1FED79650016851F; proxyType = 1; remoteGlobalIDString = B1000000000000000000000D; remoteInfo = PhoneTunnel; };
+		B10000000000000000000012 = { isa = PBXTargetDependency; target = B1000000000000000000000D; targetProxy = B10000000000000000000011; };
 	};
 	rootObject = 504EC2FC1FED79650016851F /* Project object */;
 }

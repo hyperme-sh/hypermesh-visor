@@ -35,7 +35,7 @@ pub struct PhoneSession {
     pub session_id: String,
     pub expires_at: i64,
 }
-fn sessions(value: &Value, current: u64) -> Result<Vec<PhoneSession>, MachineError> {
+pub(crate) fn sessions(value: &Value, current: u64) -> Result<Vec<PhoneSession>, MachineError> {
     let bots = value["bots"]
         .as_array()
         .filter(|v| v.len() <= 100)
