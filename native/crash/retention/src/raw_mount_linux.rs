@@ -26,8 +26,13 @@ fn location(run: &Path) -> io::Result<(String, String)> {
         return Err(refused());
     }
     let database = run.join("database");
-    if fs::canonicalize(&database)? != database {
-        return Err(refused());
+    // A prior purge may already have removed the database directory.
+    // Retain strict symlink/path checks whenever it still exists.
+    match fs::symlink_metadata(&database) {
+        Ok(_) if fs::canonicalize(&database)? != database => return Err(refused()),
+        Ok(_) => {},
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {},
+        Err(error) => return Err(error),
     }
     Ok((
         database.to_str().ok_or_else(refused)?.into(),
