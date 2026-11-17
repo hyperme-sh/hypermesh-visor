@@ -597,7 +597,37 @@ func nativeMcpConnectionFields(_ target: NativeMcpTarget, reconnect: Bool) -> [S
     ["action": reconnect ? "mcp-reconnect" : "mcp-refresh", "session": target.session, "server": target.server]
 }
 
+struct NativeFeedbackDraft {
+    private(set) var optedIn = false
+    private(set) var preview = ""
+    mutating func consent(_ enabled: Bool) { optedIn = enabled; invalidate() }
+    mutating func invalidate() { preview = "" }
+    static func validText(_ text: String, allowBlank: Bool = false) -> Bool {
+        text.utf8.count <= 4096 && (allowBlank || !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) &&
+        !text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains($0.value) }
+    }
+    mutating func review(category: String, text: String) -> Bool {
+        invalidate()
+        guard optedIn, ["Problem", "Idea"].contains(category), Self.validText(text) else { return false }
+        preview = "Local preview — nothing has been sent.\nCategory: \(category)\n\n\(text)"
+        return true
+    }
+}
+
 func selfTest() throws {
+    var feedback = NativeFeedbackDraft()
+    try verifyNativeUnit(!feedback.review(category: "Problem", text: "hello"))
+    feedback.consent(true)
+    try verifyNativeUnit(feedback.review(category: "Idea", text: String(repeating: "é", count: 2048)))
+    try verifyNativeUnit(!feedback.review(category: "Idea", text: String(repeating: "é", count: 2049)) && feedback.preview.isEmpty)
+    try verifyNativeUnit(feedback.review(category: "Problem", text: String(repeating: "a", count: 4096)))
+    for invalid in ["", " \n", "bad\u{0}text", "bad\u{1b}text", String(repeating: "a", count: 4097)] {
+        try verifyNativeUnit(!feedback.review(category: "Problem", text: invalid))
+    }
+    try verifyNativeUnit(!feedback.review(category: "Other", text: "hello"))
+    try verifyNativeUnit(feedback.review(category: "Idea", text: "<script>plain text</script>\n\t$()"))
+    feedback.invalidate(); try verifyNativeUnit(feedback.preview.isEmpty)
+    feedback.consent(false); try verifyNativeUnit(!feedback.review(category: "Idea", text: "hello"))
     let defaults = nativeStartupDirectories(home: "/Users/test", environment: [:])
     try verifyNativeUnit(defaults.runtime == "/Users/test/.local/state/hypermesh/native-run")
     try verifyNativeUnit(defaults.config == "/Users/test/.config/hypermesh")
@@ -817,6 +847,10 @@ func selfTest() throws {
         if arguments == ["--self-test"] {
             do {
                 try selfTest()
+                #if EMBEDDED_ENGINE
+                _ = NSApplication.shared
+                try NativeFeedbackController.checkContracts()
+                #endif
                 var delivered = [Int]()
                 do {
                     try await pacedInput([1, 2, 3], checkpoint: {

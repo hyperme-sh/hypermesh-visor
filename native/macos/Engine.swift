@@ -49,6 +49,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private var usageSummary: String?
     private var engineConnected = false
     private var trustController: NativeMcpTrustController?
+    private var feedbackController: NativeFeedbackController?
     private var connectionsController: NativeMcpConnectionsController?
     private var menuAllow: NSMenuItem?
     private var destinationItems: [NSMenuItem] = []
@@ -115,6 +116,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         trust.target = self; menu.addItem(trust)
         let sessions = NSMenuItem(title: "Choose session", action: #selector(chooseSession), keyEquivalent: "")
         sessions.target = self; menu.addItem(sessions)
+        let feedback = NSMenuItem(title: "Human feedback", action: #selector(openFeedback), keyEquivalent: "")
+        feedback.target = self; menu.addItem(feedback)
         let crashes = NSMenuItem(title: "Crash diagnostics", action: #selector(crashDiagnostics), keyEquivalent: "")
         crashes.target = self; menu.addItem(crashes)
         let connections = NSMenuItem(title: "MCP connections", action: #selector(openMcpConnections), keyEquivalent: "")
@@ -137,6 +140,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         update()
     }
     func applicationWillTerminate(_ notification: Notification) {
+        feedbackController?.close()
         allowed = false; idleResume = nil; pendingApproval = false; epoch &+= 1; releaseHeld()
         NativePointerOverlay.shared.hide()
         NativeCompanionPanel.shared.hide()
@@ -201,9 +205,9 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         label?.stringValue = "\(readiness)\nSession: \(currentSession ?? "none") · Engine: \(currentPhase)\nControl socket: \(runtimePath)/control.sock"
         let access = desktopAccessControl(started: started, sessionOpen: sessionOpen, allowed: allowed,
                                           paused: currentPhase == "paused", restartRequired: restartRequired)
-        allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil
+        allowButton?.isEnabled = access.enabled && !pendingApproval && trustController == nil && connectionsController == nil && feedbackController == nil
         allowButton?.title = access.title
-        menuAllow?.isEnabled = access.enabled && !selectingSession && !pendingApproval && trustController == nil && connectionsController == nil
+        menuAllow?.isEnabled = access.enabled && !selectingSession && !pendingApproval && trustController == nil && connectionsController == nil && feedbackController == nil
         menuAllow?.title = access.title
         for item in destinationItems { item.isEnabled = engineConnected && sessionOpen && currentSession != nil }
         let state = nativeMascotState(connected: engineConnected && !restartRequired, allowed: allowed, phase: currentPhase)
@@ -337,6 +341,14 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             }
         }
     }
+    @objc func openFeedback() {
+        guard started else { return }
+        pause("Paused for human feedback; close the form before allowing desktop access")
+        if feedbackController == nil {
+            feedbackController = NativeFeedbackController { [weak self] in self?.feedbackController = nil; self?.update() }
+        }
+        feedbackController?.show(); update()
+    }
     @objc func openMcpTrust() {
         guard started else { return }
         pause("Paused for MCP trust review; close the review before allowing desktop access")
@@ -369,7 +381,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         return body
     }
     @objc func allow() {
-        guard !selectingSession && trustController == nil && connectionsController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
+        guard !selectingSession && trustController == nil && connectionsController == nil && feedbackController == nil && started && sessionOpen && !restartRequired && !allowed && !pendingApproval, let selected = currentSession else { return }
         idleResume = nil
         installMonitor()
         let missing = [("Screen Recording", CGPreflightScreenCaptureAccess()),
@@ -716,5 +728,86 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
             guard !self.closing else { return }
             self.clear(); self.message.stringValue = "Connection action completed. Read status to see updated catalogs and matching. Desktop access remains paused."
         }
+    }
+}
+
+@MainActor final class NativeFeedbackController: NSObject, NSWindowDelegate, NSTextViewDelegate {
+    private let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 620), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    private let consent = NSButton(checkboxWithTitle: "I choose to draft human feedback on this device", target: nil, action: nil)
+    private let category = NSPopUpButton()
+    private let editor = NSTextView(), preview = NSTextView()
+    private let review = NSButton(title: "Preview locally", target: nil, action: nil)
+    private let message = NSTextField(wrappingLabelWithString: "Nothing has been sent.")
+    private var draft = NativeFeedbackDraft()
+    private let closed: () -> Void
+    init(closed: @escaping () -> Void) {
+        self.closed = closed
+        super.init()
+        window.title = "Human feedback — local draft"; window.isReleasedWhenClosed = false; window.delegate = self; window.center()
+        guard let content = window.contentView else { return }
+        let info = NSTextField(wrappingLabelWithString: "Draft up to 4096 UTF-8 bytes. Do not include secrets or private documents. Nothing is collected automatically. Sending is unavailable; closing or withdrawing consent discards the draft.")
+        info.frame = NSRect(x: 16, y: 536, width: 668, height: 68)
+        consent.frame = NSRect(x: 16, y: 502, width: 668, height: 28); consent.target = self; consent.action = #selector(consentChanged)
+        category.frame = NSRect(x: 16, y: 466, width: 180, height: 28); category.addItems(withTitles: ["Problem", "Idea"])
+        category.target = self; category.action = #selector(invalidatePreview)
+        for (view, y) in [(editor, 266), (preview, 56)] {
+            let scroll = NSScrollView(frame: NSRect(x: 16, y: CGFloat(y), width: 668, height: 190))
+            scroll.hasVerticalScroller = true
+            view.isRichText = false; view.importsGraphics = false; view.allowsUndo = false
+            view.isAutomaticSpellingCorrectionEnabled = false; view.isContinuousSpellCheckingEnabled = false
+            view.isGrammarCheckingEnabled = false; view.isAutomaticTextReplacementEnabled = false
+            view.isAutomaticLinkDetectionEnabled = false; view.isAutomaticDataDetectionEnabled = false
+            view.isVerticallyResizable = true; view.autoresizingMask = [.width]
+            view.frame = scroll.contentView.bounds; view.textContainer?.widthTracksTextView = true
+            view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+            scroll.documentView = view; content.addSubview(scroll)
+        }
+        editor.delegate = self; preview.isEditable = false
+        review.frame = NSRect(x: 16, y: 230, width: 180, height: 32); review.target = self; review.action = #selector(reviewClicked)
+        let discard = NSButton(title: "Discard and close", target: self, action: #selector(close))
+        discard.frame = NSRect(x: 210, y: 230, width: 180, height: 32)
+        message.frame = NSRect(x: 16, y: 10, width: 668, height: 40)
+        for view in [info, consent, category, review, discard, message] as [NSView] { content.addSubview(view) }
+        consentChanged()
+    }
+    func show() { window.makeKeyAndOrderFront(nil); NSApplication.shared.activate(ignoringOtherApps: true) }
+    @objc func close() { clear(); window.close() }
+    func windowWillClose(_ notification: Notification) { clear(); closed() }
+    private func clear() { draft.consent(false); editor.string = ""; editor.undoManager?.removeAllActions(); preview.string = "" }
+    @objc private func consentChanged() {
+        let enabled = consent.state == .on
+        draft.consent(enabled)
+        if !enabled { clear(); category.selectItem(at: 0) }
+        editor.isEditable = enabled; category.isEnabled = enabled; review.isEnabled = enabled
+        invalidatePreview()
+    }
+    @objc private func invalidatePreview() { draft.invalidate(); preview.string = ""; message.stringValue = "Nothing has been sent." }
+    func textDidChange(_ notification: Notification) { invalidatePreview() }
+    func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+        guard draft.optedIn, let replacementString,
+              let range = Range(affectedCharRange, in: textView.string) else { return false }
+        return NativeFeedbackDraft.validText(textView.string.replacingCharacters(in: range, with: replacementString), allowBlank: true)
+    }
+    @objc private func reviewClicked() {
+        let valid = draft.review(category: category.titleOfSelectedItem ?? "", text: editor.string)
+        preview.string = draft.preview
+        message.stringValue = valid ? "Edit above to replace this preview. Nothing has been sent." : "Enter nonblank text within 4096 UTF-8 bytes, without unsupported control characters."
+    }
+    static func checkContracts() throws {
+        let form = NativeFeedbackController(closed: {})
+        defer { form.close() }
+        try verifyNativeUnit(!form.editor.isEditable && !form.review.isEnabled)
+        form.consent.state = .on; form.consentChanged()
+        form.editor.string = "first"; form.reviewClicked()
+        try verifyNativeUnit(form.preview.string.contains("first"))
+        form.editor.string = "replacement"; form.textDidChange(Notification(name: NSText.didChangeNotification))
+        try verifyNativeUnit(form.preview.string.isEmpty)
+        form.reviewClicked(); form.category.selectItem(at: 1); form.invalidatePreview()
+        try verifyNativeUnit(form.preview.string.isEmpty)
+        try verifyNativeUnit(!form.textView(form.editor, shouldChangeTextIn: NSRange(location: 0, length: 0), replacementString: String(repeating: "é", count: 2049)))
+        form.consent.state = .off; form.consentChanged()
+        try verifyNativeUnit(form.editor.string.isEmpty && form.preview.string.isEmpty && !form.editor.isEditable)
+        form.consent.state = .on; form.consentChanged(); form.editor.string = "discard"; form.reviewClicked(); form.clear()
+        try verifyNativeUnit(!form.draft.optedIn && form.editor.string.isEmpty && form.preview.string.isEmpty)
     }
 }
