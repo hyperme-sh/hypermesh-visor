@@ -8,6 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 pub mod host;
+pub mod delegation;
 mod ipc;
 pub mod platform;
 pub const MAX_AGE: u64 = 7 * 24 * 60 * 60;
