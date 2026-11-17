@@ -8,15 +8,23 @@ not grant access to other users' crash directories.
 
 The packaged `hypermesh-crash-retention` executable accepts:
 
-- `register ABSOLUTE_PRIVATE_CONFIG_DIRECTORY`, run as the Visor account.
+- `register`, run as the Visor account.
 - `service`, invoked only by the OS service manager.
 
-Registration binds one configuration directory to the OS account profile's
-`.hypermesh-crash-retention` directory, independent of HOME/USERPROFILE overrides.
-Use a real absolute path without symlink/junction aliases. Existing unsafe paths
-are refused. A second configuration directory cannot reset the account quota.
-Register only the parent of the private crash configuration file; do not pass a
-DSN or any secret on the command line. Registration creates no consent grant.
+Registration creates the fixed OS-account profile directory
+`.hypermesh-crash-retention/config` with private storage permissions. Place the
+private crash configuration file there and point `HYPERMESH_CRASH_CONFIG` to its
+absolute path. HOME/USERPROFILE overrides do not change the account location.
+Registration does not accept an alternate directory: rewriting its account-owned
+record cannot redirect the running service's cleanup scope or reset the quota.
+Existing unsafe paths are refused. Never pass a DSN or secret on the command
+line. Registration creates no consent grant.
+
+Before moving an existing configuration, successfully disable capture and purge
+its old raw runs using the old configuration. Keep its configuration contents
+private during the move, then explicitly enable consent only after service
+installation. Legacy directories remain readable for startup cleanup but cannot
+start new raw capture.
 
 Install the helper in a stable executable location before registering the OS
 service. Keep the service executable and service definition administrator-owned.
@@ -57,7 +65,9 @@ exact account-scoped name `HypermeshCrashRetention-ACCOUNT-SID`, substituting
 that account's SID. In the
 Services management console, configure Log On as the Visor account and enter
 credentials there; never put passwords in a command, config file or issue.
-Configure recovery to restart the service after failure with a one-second delay.
+Configure recovery to restart the service after failure with a one-second delay,
+and enable recovery actions for stops with errors (the Windows
+`SERVICE_CONFIG_FAILURE_ACTIONS_FLAG` setting).
 Start it before enabling consent. The binary enters through the Service Control
 Manager dispatcher and refuses interactive `service` execution. Its account must
 have a loaded, available user profile. Protected files retain owner/System access.

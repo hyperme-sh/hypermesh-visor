@@ -93,6 +93,11 @@ impl Owner {
     fn at(root: PathBuf) -> io::Result<Self> {
         private(&root)?;
         let registration: Registration = read(&root.join("directory.json"))?;
+        // The OS-profile location is the authority. Account-owned registration
+        // bytes cannot redirect admission away from the running service's root.
+        if registration.directory != root.join("config") {
+            return Err(refused());
+        }
         private(&registration.directory)?;
         Ok(Self {
             root,
@@ -100,10 +105,17 @@ impl Owner {
         })
     }
     /// Registration cannot silently move the quota to another directory.
-    pub fn register(directory: &Path) -> io::Result<()> {
-        Self::register_at(root()?, directory)
+    pub fn register() -> io::Result<()> {
+        let root = root()?;
+        storage::create_dir(&root)?;
+        let directory = root.join("config");
+        storage::create_dir(&directory)?;
+        Self::register_at(root, &directory)
     }
     fn register_at(root: PathBuf, directory: &Path) -> io::Result<()> {
+        if directory != root.join("config") {
+            return Err(refused());
+        }
         private(directory)?;
         storage::create_dir(&directory.join("health-consent"))?;
         storage::create_dir(&root)?;
@@ -428,9 +440,10 @@ mod tests {
         storage::create_dir(&temp.0).unwrap();
         // macOS's temporary directory can have an OS-provided alias.
         temp.0 = fs::canonicalize(&temp.0).unwrap();
-        let directory = temp.0.join("config");
-        storage::create_dir(&directory).unwrap();
         let root = temp.0.join("owner");
+        storage::create_dir(&root).unwrap();
+        let directory = root.join("config");
+        storage::create_dir(&directory).unwrap();
         Owner::register_at(root.clone(), &directory).unwrap();
         (temp, Owner::at(root).unwrap())
     }
@@ -641,5 +654,23 @@ mod tests {
         assert!(owner.tick_with(|| Ok(101), false).unwrap());
         assert!(!raw.join("stop-handler").exists());
         drop(storage::UnlockOnDrop(&writer));
+    }
+    #[test]
+    fn rewritten_registration_cannot_redirect_admission_or_cleanup() {
+        let (temp, owner) = fixture();
+        let second = temp.0.join("redirected");
+        storage::create_dir(&second).unwrap();
+        write(
+            &owner.root.join("directory.json"),
+            &Registration {
+                directory: second.clone(),
+            },
+        )
+        .unwrap();
+        assert!(Owner::at(owner.root.clone()).is_err());
+        assert!(owner.require_with(&second, || Ok(100), |_| Ok(())).is_err());
+        let raw = run(&owner, 100, 1);
+        owner.tick(100 + MAX_AGE, false).unwrap();
+        assert!(!raw.exists());
     }
 }
