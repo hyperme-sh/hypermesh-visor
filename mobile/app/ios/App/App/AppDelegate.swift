@@ -187,7 +187,6 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
     @objc private func clearFeedback() { native?.feedback?.cancelAll() }
-    deinit { NotificationCenter.default.removeObserver(self); native?.feedback?.cancelAll() }
     @objc func feedbackStatus(_ call: CAPPluginCall) { call.resolve(["configured": native?.feedback != nil]) }
     private func feedback(_ state: PhoneNativeState) throws -> MobileFeedbackClient {
         guard let client = state.feedback else { throw PhoneFailure.unavailable }; return client
@@ -274,5 +273,10 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func connect(_ call: CAPPluginCall) { run(call) { state in try state.tunnel.connect(); return try self.publicState(state) } }
     @objc func disconnect(_ call: CAPPluginCall) { native?.tunnel.disconnect(); run(call, publicState) }
-    deinit { native?.tunnel.disconnect(); try? native?.owner.cancel() }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        native?.feedback?.cancelAll()
+        native?.tunnel.disconnect()
+        try? native?.owner.cancel()
+    }
 }
