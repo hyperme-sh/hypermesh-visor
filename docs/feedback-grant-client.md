@@ -1,11 +1,16 @@
-# Unix feedback grant client
+# Native feedback grant client
 
 The native library exposes `feedback_grant::FeedbackGrantClient` for the
 Host broker contract introduced in Host #235. Its default has no socket and
 cannot connect. An explicit configured absolute socket path and a true local
 human-reports opt-in assertion are required for a request.
 
-The client authenticates the Unix peer as root before writing HTTP. It sends
+On Unix, the client authenticates the peer as root before writing HTTP. On
+Windows it accepts only `\\.\pipe\hypermesh-feedback-grant-v1` and verifies
+that the server PID belongs to the configured LocalSystem
+`HypermeshFeedbackGrant` SCM service before writing. The crash-registration
+endpoint is not accepted as a feedback endpoint. Both transports refuse
+untrusted peers before disclosing the opt-in request. It sends
 only version 1 and the opt-in assertion to the fixed `/feedback-grant` path.
 It supplies no tenant, device, intake destination or general machine credential.
 Replies are limited to 4096 bytes, require status 200 and the exact version-1
@@ -19,10 +24,11 @@ made by callers. Use it immediately with the configured intake, never as a
 cached credential or general authority. Errors expose a fixed refusal, and the
 client does not retry, persist, log, collect text or submit reports.
 
-This is a callable library prerequisite, not a connected form or a new local
-HTTP/MCP route. Existing phone and desktop forms still cannot send. OS-level
-Windows feedback transport, form consent/confirmation, intake composition and
-configured membership/destinations remain Hypermesh #79 work. No configuration,
+The macOS and Windows in-process form handlers use this client with the shared
+intake controller. No external HTTP/MCP route exposes form commands. The Host
+broker must be separately installed and configured for the current platform;
+client support alone does not install that service. Phone submission and configured
+membership/destinations remain Hypermesh #79 work. No configuration,
 provisioning or collection is enabled.
 
 CI unit contracts substitute a local Unix broker and the expected peer UID.
