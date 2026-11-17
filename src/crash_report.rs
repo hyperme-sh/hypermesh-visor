@@ -116,9 +116,20 @@ impl PendingCrash {
         let destination = destination_url(destination)?;
         let id = Uuid::new_v4();
         let tenant = ticket.crash_tenant().ok_or_else(denied)?;
+        let seconds = i64::try_from(
+            captured_at
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| denied())?
+                .as_secs(),
+        )
+        .map_err(|_| denied())?;
+        let timestamp = time::OffsetDateTime::from_unix_timestamp(seconds)
+            .map_err(|_| denied())?
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| denied())?;
         let body = serde_json::to_vec(&json!({
             "event_id": id.simple().to_string(),
-            "timestamp": captured_at.duration_since(UNIX_EPOCH).map_err(|_| denied())?.as_secs(),
+            "timestamp": timestamp,
             "platform": "native", "level": "fatal",
             "release": concat!("hypermesh-visor@", env!("CARGO_PKG_VERSION")),
             "message": "Visor terminated unexpectedly",
@@ -251,6 +262,33 @@ mod tests {
                 &report.digest.clone(),
                 &report.destination.clone(),
             )
+            .unwrap();
+    }
+    #[test]
+    fn capture_timestamp_uses_original_utc_time_in_approved_bytes() {
+        let (_dir, store) = fixture();
+        store.decide(Category::Crashes, true).unwrap();
+        let captured = SystemTime::now() - Duration::from_secs(3600);
+        let ticket = store.capture(Category::Crashes).unwrap().unwrap();
+        let mut report =
+            PendingCrash::from_code_at(ticket, DEST, "native_crash", captured).unwrap();
+        let original = report.preview().sanitized_json.to_vec();
+        let event: Value = serde_json::from_slice(&original).unwrap();
+        let timestamp = event["timestamp"].as_str().unwrap();
+        assert!(timestamp.ends_with('Z'));
+        let expected = time::OffsetDateTime::from_unix_timestamp(
+            captured.duration_since(UNIX_EPOCH).unwrap().as_secs() as i64,
+        )
+        .unwrap()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+        assert_eq!(timestamp, expected);
+        approve(&mut report);
+        report
+            .send_once(&store, |_, body| {
+                assert_eq!(body, original);
+                Ok(())
+            })
             .unwrap();
     }
     #[test]
