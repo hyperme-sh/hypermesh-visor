@@ -36,7 +36,7 @@ fn protected(path: &Path, directory: bool) -> io::Result<File> {
     }
     let file = OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)?;
     let meta = file.metadata()?;
     let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
@@ -170,6 +170,16 @@ mod tests {
         let path = std::env::temp_dir().join(format!("delegation-public-{}", uuid::Uuid::new_v4()));
         fs::write(&path, b"public").unwrap();
         assert!(protected(&path, false).is_err());
+        fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn fifo_configuration_refuses_without_waiting_for_a_writer() {
+        let path = std::env::temp_dir().join(format!("delegation-fifo-{}", uuid::Uuid::new_v4()));
+        let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let start = Instant::now();
+        assert!(protected(&path, false).is_err());
+        assert!(start.elapsed() < CHALLENGE_TIMEOUT);
         fs::remove_file(path).unwrap();
     }
     #[test]
