@@ -93,3 +93,29 @@ floating source dependency is needed to build the phone.
 The composer owns no credentials, navigation or transport. Native owner and
 machine authorization stay in Rust. This presentation reuse does not connect
 a SEA identity or create a Squad/forum membership.
+
+## Human reports (off by default)
+
+Phone feedback uses the enrolled machine already held by native secure storage.
+Native code exchanges that credential only with the configured Plane feedback
+endpoint, then sends the short-lived feedback-only grant to the configured intake.
+JavaScript receives interaction/operation handles and the manually entered preview,
+never a machine token, owner token or feedback grant. Intake still checks membership,
+consent, spam filtering and review policy; no client can publish a GitHub issue.
+
+The app build remains unconfigured unless `VISOR_MOBILE_FEEDBACK_ENABLED=true`
+and `VISOR_MOBILE_FEEDBACK_INTAKE_ORIGIN` is a complete HTTPS origin alongside the
+existing native phone configuration. This change supplies no destination or keys
+and enables no deployed service. Plane's existing feedback switches and signing
+key, intake membership/destination and a real enrolled phone are prerequisites for
+use. No separate manual JWT or new OIDC identity claim is introduced.
+
+Users explicitly opt in, enable server consent, review the manually entered text,
+and confirm each send. There are no attachments, automatic sends or automatic
+retries. Native code retains the exact confirmed bytes/idempotency after an uncertain
+send; only an explicit unchanged retry can reuse them. Edits, discard, navigation,
+backgrounding and account/enrollment changes invalidate local authorization.
+Cancellation cannot recall an HTTP request already sent. Unchecking consent clears
+local drafts immediately and attempts server withdrawal; failure is shown rather
+than reported as successful withdrawal. Discard/backgrounding clears local state
+without asserting server consent was changed. Raw report text is not persisted.

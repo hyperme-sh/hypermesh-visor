@@ -35,3 +35,12 @@ it('accepts public Conductor CA configuration and refuses private keys', () => {
     expect(() => nativeConfig({...valid,VISOR_MOBILE_CONDUCTOR_CA_PEM:bad})).toThrow();
   }
 });
+
+it('keeps phone feedback disabled without an explicit complete native destination', () => {
+  expect(nativeConfig(valid).feedbackEnabled).toBeUndefined();
+  const enabled = {...valid,VISOR_MOBILE_FEEDBACK_ENABLED:'true',VISOR_MOBILE_FEEDBACK_INTAKE_ORIGIN:'https://intake.example'};
+  expect(nativeConfig(enabled).feedbackEnabled).toBe(true);
+  expect(() => nativeConfig({...valid,VISOR_MOBILE_FEEDBACK_ENABLED:'true'})).toThrow();
+  expect(() => nativeConfig({...valid,VISOR_MOBILE_FEEDBACK_INTAKE_ORIGIN:'https://intake.example'})).toThrow();
+  for (const origin of ['http://intake.example','https://u:p@intake.example','https://intake.example/path','https://intake.example?secret=x']) expect(() => nativeConfig({...enabled,VISOR_MOBILE_FEEDBACK_INTAKE_ORIGIN:origin})).toThrow();
+});

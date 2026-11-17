@@ -3,10 +3,14 @@ use hypermesh_session::{AuthError, SessionStore};
 use std::sync::Arc;
 
 uniffi::setup_scaffolding!();
+mod feedback;
+#[path = "../../../src/feedback_intake.rs"]
+mod feedback_intake;
 mod machine;
 mod mesh;
 mod owner;
 mod phone;
+pub use feedback::{FeedbackError, FeedbackPreview, MobileFeedbackClient};
 pub use machine::{MachineError, MachineStatus, MobileMachine};
 pub use mesh::{MobileMeshClient, MobileMeshLease};
 pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};

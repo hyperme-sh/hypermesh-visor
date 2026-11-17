@@ -1,9 +1,18 @@
-export function nativeConfig(env: Record<string, string | undefined>): Partial<Record<'issuer' | 'authOrigin' | 'planeOrigin' | 'workspaceId' | 'workspaceName' | 'conductorOrigin' | 'conductorCaPem', string>> {
+export function nativeConfig(env: Record<string, string | undefined>): Partial<Record<'issuer' | 'authOrigin' | 'planeOrigin' | 'workspaceId' | 'workspaceName' | 'conductorOrigin' | 'conductorCaPem' | 'feedbackIntakeOrigin', string>> & { feedbackEnabled?: boolean } {
+  const feedbackEnabled = env.VISOR_MOBILE_FEEDBACK_ENABLED;
+  const intake = env.VISOR_MOBILE_FEEDBACK_INTAKE_ORIGIN;
+  if (feedbackEnabled && !['true','false'].includes(feedbackEnabled)) throw new Error('Invalid feedback switch.');
+  if (intake && feedbackEnabled !== 'true') throw new Error('Feedback destination requires explicit enablement.');
+  if (feedbackEnabled === 'true' && !intake) throw new Error('Feedback destination is required.');
+  if (intake) {
+    const url = new URL(intake);
+    if (intake.length > 2048 || /\s/.test(intake) || url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw new Error('Feedback requires an HTTPS origin.');
+  }
   const names = ['issuer', 'authOrigin', 'planeOrigin', 'workspaceId', 'workspaceName'] as const;
   const keys = ['VISOR_MOBILE_ISSUER', 'VISOR_MOBILE_AUTH_ORIGIN', 'VISOR_MOBILE_PLANE_ORIGIN', 'VISOR_MOBILE_WORKSPACE_ID', 'VISOR_MOBILE_WORKSPACE_NAME'];
   const values = keys.map(key => env[key]);
   if (values.every(value => !value)) {
-    if (env.VISOR_MOBILE_CONDUCTOR_ORIGIN || env.VISOR_MOBILE_CONDUCTOR_CA_PEM) throw new Error('Complete native phone configuration is required.');
+    if (feedbackEnabled === 'true' || env.VISOR_MOBILE_CONDUCTOR_ORIGIN || env.VISOR_MOBILE_CONDUCTOR_CA_PEM) throw new Error('Complete native phone configuration is required.');
     return {};
   }
   if (values.some(value => !value || /[\x00-\x1f\x7f]/.test(value))) throw new Error('Complete native phone configuration is required.');
@@ -28,5 +37,5 @@ export function nativeConfig(env: Record<string, string | undefined>): Partial<R
   if (ca && (ca.length > 16384 || !/^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*$/.test(ca))) {
     throw new Error('Conductor trust must contain one public CA certificate.');
   }
-  return { ...config, ...(ca ? { conductorCaPem: ca } : {}), ...(conductor ? { conductorOrigin: conductor } : {}) };
+  return { ...config, ...(feedbackEnabled === 'true' ? { feedbackEnabled: true, feedbackIntakeOrigin: intake } : {}), ...(ca ? { conductorCaPem: ca } : {}), ...(conductor ? { conductorOrigin: conductor } : {}) };
 }
