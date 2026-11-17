@@ -4,6 +4,7 @@ import { Controller, disconnected, type View } from './controller';
 import { nativeClient } from './native';
 import './style.css';
 import { ConversationPanel } from './ConversationPanel';
+import { FeedbackPanel } from './FeedbackPanel';
 function App() {
   const [view, setView] = useState<View>({ state: disconnected, busy: true, userCode: '', workspaces: [], message: '' });
   const controller = useRef<Controller | null>(null);
@@ -30,7 +31,7 @@ function App() {
       : <><p>Sign in with your account, then choose a workspace. Your private keys stay on this device.</p><button disabled={view.busy || !controller.current} onClick={()=>void controller.current?.signIn()}>Sign in</button></>}
       {view.busy && <p role="status">Working…</p>}
       {view.message && <p className="message" role="alert">{view.message}</p>}
-    </section>{state.enrolled && !state.revoked && !view.busy && !view.userCode && !view.workspaces.length && <ConversationPanel connected={state.connection==='connected'}/> }<footer>Private by default. Connected on your terms.</footer>
+    </section>{state.enrolled && !state.revoked && !view.busy && !view.userCode && !view.workspaces.length && <ConversationPanel connected={state.connection==='connected'}/> }{state.enrolled && !state.revoked && !view.busy && !view.userCode && !view.workspaces.length && <FeedbackPanel key={state.connection}/> }<footer>Private by default. Connected on your terms.</footer>
   </main>;
 }
 createRoot(document.getElementById('root')!).render(<App/>);
