@@ -75,8 +75,9 @@ mod transport {
     use std::{
         fs,
         os::{
-            fd::AsRawFd,
+            fd::{AsRawFd, FromRawFd},
             unix::{
+                ffi::OsStrExt,
                 fs::PermissionsExt,
                 net::{UnixListener, UnixStream},
             },
@@ -90,7 +91,57 @@ mod transport {
         Ok(s)
     }
     pub fn connect(root: &Path) -> io::Result<Stream> {
-        setup(UnixStream::connect(root.join("service.sock"))?)
+        let path = root.join("service.sock");
+        let bytes = path.as_os_str().as_bytes();
+        unsafe {
+            let mut address: libc::sockaddr_un = std::mem::zeroed();
+            if bytes.len() >= address.sun_path.len() || bytes.contains(&0) {
+                return Err(refused());
+            }
+            address.sun_family = libc::AF_UNIX as _;
+            for (out, byte) in address.sun_path.iter_mut().zip(bytes) {
+                *out = *byte as _;
+            }
+            let fd = libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let stream = UnixStream::from_raw_fd(fd);
+            stream.set_nonblocking(true)?;
+            let result = libc::connect(
+                fd,
+                (&address as *const libc::sockaddr_un).cast(),
+                std::mem::size_of_val(&address) as _,
+            );
+            if result != 0 {
+                if io::Error::last_os_error().raw_os_error() != Some(libc::EINPROGRESS) {
+                    return Err(refused());
+                }
+                let mut poll = libc::pollfd {
+                    fd,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                if libc::poll(&mut poll, 1, TIMEOUT.as_millis() as _) != 1 {
+                    return Err(refused());
+                }
+                let mut error: libc::c_int = 0;
+                let mut len = std::mem::size_of_val(&error) as libc::socklen_t;
+                if libc::getsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_ERROR,
+                    (&mut error as *mut libc::c_int).cast(),
+                    &mut len,
+                ) != 0
+                    || error != 0
+                {
+                    return Err(refused());
+                }
+            }
+            stream.set_nonblocking(false)?;
+            setup(stream)
+        }
     }
     pub fn bind(root: &Path) -> io::Result<Listener> {
         let path = root.join("service.sock");

@@ -130,7 +130,7 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
 
 /// Consult the OS manager at admission, independently of account-writable files.
 /// Cache only successful checks for at most one second; the lease and heartbeat
-/// are still checked on every write. A different PID never uses a cached result.
+/// and live IPC are still checked on every write. A different PID never uses a cached result.
 pub fn verify_service(pid: u32) -> io::Result<()> {
     use std::{
         sync::Mutex,
