@@ -279,6 +279,9 @@ pub(crate) fn start(store: Store, directory: &Path) -> io::Result<()> {
     ticket.write_all(&serde_json::to_vec(lease.ticket()).map_err(|_| refused())?)?;
     ticket.sync_all()?;
     storage::sync_dir(&run)?;
+    // Reserve immutable service age while the application still owns the
+    // capture lease, before handler-ready can expose the handoff lock gap.
+    hypermesh_crash_retention::permit(&run)?;
     // Native OS callbacks may survive sentry_close. Retain the loaded library
     // until process exit even if initialization or later capture fails.
     let sdk = Box::leak(Box::new(sdk));

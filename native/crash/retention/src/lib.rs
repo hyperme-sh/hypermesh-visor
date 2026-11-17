@@ -569,6 +569,25 @@ mod tests {
         run
     }
     #[test]
+    fn registered_run_survives_the_application_to_handler_lock_gap() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 100, 0);
+        fs::remove_file(raw.join("synthetic.dmp")).unwrap();
+        let id = uuid::Uuid::parse_str(raw.file_name().unwrap().to_str().unwrap()).unwrap();
+        let application = lock(&owner.directory.join("health-consent/crash-capture.lock")).unwrap();
+        let mut ages = Ages::default();
+        ages.admit(&owner.directory, id, 100).unwrap();
+        drop(storage::UnlockOnDrop(&application));
+        // Cleanup wins the lock before the handler. A reserved run survives.
+        owner.tick_ages(|| Ok(101), false, Some(&ages)).unwrap();
+        assert!(raw.exists());
+        assert!(!raw.join("stop-handler").exists());
+        let handler = lock(&owner.directory.join("health-consent/crash-capture.lock")).unwrap();
+        ages.admit(&owner.directory, id, 101).unwrap();
+        assert_eq!(ages.0[&id].0, 100);
+        drop(storage::UnlockOnDrop(&handler));
+    }
+    #[test]
     fn rewritten_disk_age_cannot_extend_service_age() {
         let (_temp, owner) = fixture();
         let raw = run(&owner, 100, 0);
