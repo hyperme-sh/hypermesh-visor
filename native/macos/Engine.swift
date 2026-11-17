@@ -731,7 +731,7 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
 }
 
-@MainActor final class NativeFeedbackController: NSObject, NSWindowDelegate, NSTextViewDelegate {
+@MainActor final class NativeFeedbackController: NSObject, NSWindowDelegate, NSTextViewDelegate, NSTextFieldDelegate {
     private let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 700, height: 620), styleMask: [.titled, .closable], backing: .buffered, defer: false)
     private let consent = NSButton(checkboxWithTitle: "I choose to draft human feedback on this device", target: nil, action: nil)
     private let category = NSPopUpButton()
@@ -739,15 +739,26 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private let review = NSButton(title: "Preview locally", target: nil, action: nil)
     private let message = NSTextField(wrappingLabelWithString: "Nothing has been sent.")
     private var draft = NativeFeedbackDraft()
+    private let titleField = NSTextField(string: "")
+    private let send = NSButton(title: "Send report", target: nil, action: nil)
+    private let withdraw = NSButton(title: "Withdraw saved consent", target: nil, action: nil)
+    private static let sharedWorker = DispatchQueue(label: "sh.hyperme.visor.feedback")
+    private let worker = NativeFeedbackController.sharedWorker
+    private let formID = UUID().uuidString
+    private let configured: Bool
+    private var connected = false, busy = false, retry = false, ended = false
+    private var generation = 0
     private let closed: () -> Void
-    init(closed: @escaping () -> Void) {
-        self.closed = closed
+    init(closed: @escaping () -> Void, configured: Bool = ProcessInfo.processInfo.environment["HYPERMESH_FEEDBACK_ENABLED"] == "true") {
+        self.closed = closed; self.configured = configured
         super.init()
-        window.title = "Human feedback — local draft"; window.isReleasedWhenClosed = false; window.delegate = self; window.center()
+        window.title = "Human feedback"; window.isReleasedWhenClosed = false; window.delegate = self; window.center()
         guard let content = window.contentView else { return }
-        let info = NSTextField(wrappingLabelWithString: "Draft up to 4096 UTF-8 bytes. Do not include secrets or private documents. Nothing is collected automatically. Sending is unavailable; closing or withdrawing consent discards the draft.")
+        let info = NSTextField(wrappingLabelWithString: "Draft up to 4096 UTF-8 bytes. Do not include secrets or private documents. Nothing is collected automatically. Sending requires configured intake access, saved consent and a separate confirmation. Closing discards the local draft.")
         info.frame = NSRect(x: 16, y: 536, width: 668, height: 68)
         consent.frame = NSRect(x: 16, y: 502, width: 668, height: 28); consent.target = self; consent.action = #selector(consentChanged)
+        titleField.placeholderString = "Report title (4–160 characters)"; titleField.frame = NSRect(x: 210, y: 466, width: 474, height: 28)
+        titleField.delegate = self
         category.frame = NSRect(x: 16, y: 466, width: 180, height: 28); category.addItems(withTitles: ["Problem", "Idea"])
         category.target = self; category.action = #selector(invalidatePreview)
         for (view, y) in [(editor, 266), (preview, 56)] {
@@ -767,21 +778,108 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         let discard = NSButton(title: "Discard and close", target: self, action: #selector(close))
         discard.frame = NSRect(x: 210, y: 230, width: 180, height: 32)
         message.frame = NSRect(x: 16, y: 10, width: 668, height: 40)
-        for view in [info, consent, category, review, discard, message] as [NSView] { content.addSubview(view) }
+        send.frame = NSRect(x: 404, y: 230, width: 120, height: 32); send.target = self; send.action = #selector(sendClicked)
+        withdraw.frame = NSRect(x: 526, y: 230, width: 160, height: 32); withdraw.target = self; withdraw.action = #selector(withdrawClicked)
+        for view in [info, consent, category, titleField, review, discard, send, withdraw, message] as [NSView] { content.addSubview(view) }
         consentChanged()
     }
     func show() { window.makeKeyAndOrderFront(nil); NSApplication.shared.activate(ignoringOtherApps: true) }
-    @objc func close() { clear(); window.close() }
-    func windowWillClose(_ notification: Notification) { clear(); closed() }
-    private func clear() { draft.consent(false); editor.string = ""; editor.undoManager?.removeAllActions(); preview.string = "" }
+    @objc func close() { finish(); window.close() }
+    func windowWillClose(_ notification: Notification) { finish(); closed() }
+    private func finish() {
+        guard !ended else { return }; ended = true; generation += 1
+        request("feedback-close") { _ in }; clear()
+    }
+    private func clear() { draft.consent(false); editor.string = ""; titleField.stringValue = ""; editor.undoManager?.removeAllActions(); preview.string = ""; retry = false }
+    private func updateControls() {
+        let enabled = draft.optedIn && !busy && !ended
+        editor.isEditable = enabled; titleField.isEnabled = enabled; category.isEnabled = enabled; review.isEnabled = enabled
+        send.isEnabled = enabled && connected && !draft.preview.isEmpty
+        send.title = retry ? "Retry same report" : "Send report"
+        withdraw.isEnabled = enabled && connected
+    }
+    private func request(_ action: String, extra: [String:Any] = [:], completion: @escaping @MainActor ([String:Any]?) -> Void) {
+        var fields = extra; fields["action"] = action; fields["session"] = formID
+        guard let data = try? JSONSerialization.data(withJSONObject: fields) else { completion(nil); return }
+        worker.async {
+            var output: UnsafeMutablePointer<UInt8>?, size = 0
+            let code = data.withUnsafeBytes { raw in hypermesh_native_control(raw.bindMemory(to: UInt8.self).baseAddress, data.count, &output, &size) }
+            var reply: [String:Any]?
+            if let output {
+                defer { free(output) }
+                if code == 0 && size > 0 && size < 16384 { reply = (try? JSONSerialization.jsonObject(with: Data(bytes: output, count: size))) as? [String:Any] }
+            }
+            let result = reply; Task { @MainActor in completion(result) }
+        }
+    }
+    private func approve(_ text: String, button: String) -> Bool {
+        let alert = NSAlert(); alert.messageText = text; alert.addButton(withTitle: button); alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+    private func beginSubmission() {
+        guard configured && !ended else { updateControls(); return }
+        busy = true; updateControls(); let stamp = generation
+        request("feedback-open", extra: ["opt_in":true]) { [weak self] reply in
+            guard let self, !self.ended, self.generation == stamp else { return }
+            self.busy = false
+            guard reply?["status"] as? Int == 200 else { self.message.stringValue = "Sending unavailable. Your draft remains local."; self.updateControls(); return }
+            self.connected = true
+            if (reply?["body"] as? [String:Any])?["enabled"] as? Bool == true { self.updateControls(); return }
+            guard self.approve("Enable saved human-report consent for this account?", button: "Enable consent") else { self.updateControls(); return }
+            self.busy = true; self.updateControls()
+            self.request("feedback-enable", extra:["opt_in":true]) { [weak self] result in
+                guard let self, !self.ended, self.generation == stamp else { return }
+                self.busy = false; self.message.stringValue = result?["status"] as? Int == 200 ? "Consent saved. Preview before sending." : "Consent change unconfirmed. Nothing sent."
+                self.updateControls()
+            }
+        }
+    }
+    @objc private func withdrawClicked() {
+        guard !busy, connected, approve("Withdraw saved human-report consent and discard this draft?", button: "Withdraw") else { return }
+        busy = true; clear(); updateControls(); let stamp = generation
+        request("feedback-withdraw") { [weak self] reply in
+            self?.finishWithdrawal(reply, generation: stamp)
+        }
+    }
+    private func finishWithdrawal(_ reply: [String:Any]?, generation stamp: Int) {
+        guard !ended, generation == stamp else { return }
+        busy = false; consent.state = .off
+        message.stringValue = reply?["status"] as? Int == 200 ? "Saved consent withdrawn." : "Withdrawal unconfirmed. No automatic retry was made."
+        request("feedback-close") { _ in }; connected = false; updateControls()
+    }
+    @objc private func sendClicked() {
+        guard !busy, connected, draft.optedIn, !draft.preview.isEmpty else { return }
+        if retry { guard approve("Retry the exact previously confirmed report?", button:"Retry same report") else { return }; submit(); return }
+        busy = true; updateControls(); let stamp = generation
+        request("feedback-prepare", extra:["opt_in":true,"category":category.titleOfSelectedItem ?? "", "title":titleField.stringValue,"body":editor.string]) { [weak self] reply in
+            guard let self, !self.ended, self.generation == stamp else { return }
+            self.busy = false
+            guard reply?["status"] as? Int == 200 else { self.message.stringValue = "Report refused. Check consent and title/body limits."; self.updateControls(); return }
+            guard self.approve("Send the report shown in this preview to intake?", button:"Send this report") else { self.request("feedback-discard") { _ in }; self.updateControls(); return }
+            self.submit()
+        }
+    }
+    private func submit() {
+        guard !ended, draft.optedIn, connected, !draft.preview.isEmpty else { return }
+        busy = true; updateControls(); let stamp = generation
+        request("feedback-submit", extra:["opt_in":true]) { [weak self] reply in
+            guard let self, !self.ended, self.generation == stamp else { return }
+            self.busy = false
+            if reply?["status"] as? Int == 200 { self.editor.string = ""; self.titleField.stringValue = ""; self.draft.invalidate(); self.preview.string = ""; self.retry = false; self.message.stringValue = "Report submitted." }
+            else { self.retry = (reply?["body"] as? [String:Any])?["unknown"] as? Bool == true; self.message.stringValue = self.retry ? "Outcome unknown. You may explicitly retry the same report." : "Report refused. Nothing was automatically retried." }
+            self.updateControls()
+        }
+    }
     @objc private func consentChanged() {
         let enabled = consent.state == .on
         draft.consent(enabled)
-        if !enabled { clear(); category.selectItem(at: 0) }
-        editor.isEditable = enabled; category.isEnabled = enabled; review.isEnabled = enabled
+        generation += 1
+        if !enabled { request("feedback-close") { _ in }; connected = false; busy = false; clear(); category.selectItem(at: 0) }
         invalidatePreview()
+        if enabled { beginSubmission() }; updateControls()
     }
-    @objc private func invalidatePreview() { draft.invalidate(); preview.string = ""; message.stringValue = "Nothing has been sent." }
+    @objc private func invalidatePreview() { draft.invalidate(); preview.string = ""; retry = false; if connected { request("feedback-discard") { _ in } }; message.stringValue = "Nothing has been sent."; updateControls() }
+    func controlTextDidChange(_ notification: Notification) { invalidatePreview() }
     func textDidChange(_ notification: Notification) { invalidatePreview() }
     func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
         guard draft.optedIn, let replacementString,
@@ -790,12 +888,28 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     @objc private func reviewClicked() {
         let valid = draft.review(category: category.titleOfSelectedItem ?? "", text: editor.string)
-        preview.string = draft.preview
+        preview.string = draft.preview.isEmpty ? "" : titleField.stringValue + "\n\n" + draft.preview
+        updateControls()
         message.stringValue = valid ? "Edit above to replace this preview. Nothing has been sent." : "Enter nonblank text within 4096 UTF-8 bytes, without unsupported control characters."
     }
     static func checkContracts() throws {
-        let form = NativeFeedbackController(closed: {})
+        let form = NativeFeedbackController(closed: {}, configured: false)
         defer { form.close() }
+        let reopened = NativeFeedbackController(closed: {}, configured: false)
+        defer { reopened.close() }
+        let entered = DispatchSemaphore(value: 0), unblock = DispatchSemaphore(value: 0)
+        let oldClosed = DispatchSemaphore(value: 0), newOpened = DispatchSemaphore(value: 0)
+        defer { unblock.signal() }
+        // Reopening must not overtake an in-flight request and its queued close.
+        form.worker.async { entered.signal(); _ = unblock.wait(timeout: .now() + 5) }
+        try verifyNativeUnit(entered.wait(timeout: .now() + 5) == .success)
+        form.worker.async { oldClosed.signal() }
+        reopened.worker.async { newOpened.signal() }
+        let overtook = newOpened.wait(timeout: .now() + 0.2) == .success
+        unblock.signal()
+        try verifyNativeUnit(!overtook)
+        try verifyNativeUnit(oldClosed.wait(timeout: .now() + 5) == .success)
+        try verifyNativeUnit(newOpened.wait(timeout: .now() + 5) == .success)
         try verifyNativeUnit(!form.editor.isEditable && !form.review.isEnabled)
         form.consent.state = .on; form.consentChanged()
         form.editor.string = "first"; form.reviewClicked()
@@ -809,5 +923,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         try verifyNativeUnit(form.editor.string.isEmpty && form.preview.string.isEmpty && !form.editor.isEditable)
         form.consent.state = .on; form.consentChanged(); form.editor.string = "discard"; form.reviewClicked(); form.clear()
         try verifyNativeUnit(!form.draft.optedIn && form.editor.string.isEmpty && form.preview.string.isEmpty)
+        form.generation += 1; form.connected = true; form.consent.state = .on
+        form.finishWithdrawal(["status":200], generation: form.generation - 1)
+        try verifyNativeUnit(form.connected && form.consent.state == .on)
     }
 }

@@ -220,4 +220,4 @@ mod tests {
 #[cfg(windows)]
 mod windows_crash;
 #[cfg(windows)]
-pub use windows_crash::{connect_crash_registration, WINDOWS_CRASH_PIPE};
+pub use windows_crash::{connect_crash_registration, WINDOWS_CRASH_PIPE, connect_feedback_grant, WINDOWS_FEEDBACK_PIPE};

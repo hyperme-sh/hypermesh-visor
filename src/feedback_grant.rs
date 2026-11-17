@@ -1,4 +1,4 @@
-//! Explicit Unix Host grant acquisition; no report sending or automatic configuration.
+//! Explicit authenticated Host grant acquisition; no report sending or automatic configuration.
 use crate::host_bridge::Bridge;
 use serde::Deserialize;
 use std::{fmt, path::PathBuf};
@@ -21,6 +21,8 @@ impl std::error::Error for GrantUnavailable {}
 
 impl FeedbackGrantClient {
     pub fn configured(socket: PathBuf) -> Result<Self, GrantUnavailable> {
+        #[cfg(windows)]
+        if socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_FEEDBACK_PIPE) { return Err(GrantUnavailable); }
         Ok(Self { bridge: Some(Bridge::new(socket).map_err(|_| GrantUnavailable)?) })
     }
 
@@ -71,9 +73,15 @@ mod tests {
     #[tokio::test]
     async fn default_and_no_opt_in_refuse_without_connecting() {
         assert_eq!(FeedbackGrantClient::default().request(true).await.unwrap_err(), GrantUnavailable);
-        let client = FeedbackGrantClient::configured("/nonexistent/host.sock".into()).unwrap();
+        #[cfg(unix)]
+        let path = "/nonexistent/host.sock";
+        #[cfg(windows)]
+        let path = hypermesh_local_transport::WINDOWS_FEEDBACK_PIPE;
+        let client = FeedbackGrantClient::configured(path.into()).unwrap();
         assert_eq!(client.request(false).await.unwrap_err(), GrantUnavailable);
         assert!(FeedbackGrantClient::configured("relative.sock".into()).is_err());
+        #[cfg(windows)]
+        assert!(FeedbackGrantClient::configured(hypermesh_local_transport::WINDOWS_CRASH_PIPE.into()).is_err());
     }
     #[test]
     fn exact_envelope_scoped_token_and_redaction() {

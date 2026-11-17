@@ -111,7 +111,9 @@ pub unsafe extern "C" fn hypermesh_native_control(
         let Ok(value) = serde_json::from_slice::<serde_json::Value>(std::slice::from_raw_parts(request, length)) else { return 1; };
         let action = value["action"].as_str().unwrap_or("");
         if engine.failed.load(Ordering::Acquire) && !matches!(action, "crash-consent-status" | "crash-consent-set") { return 1; }
-        let result = if matches!(action, "crash-consent-status" | "crash-consent-set") {
+        let result = if action.starts_with("feedback-") {
+            Some(crate::feedback_session::control(value.clone()))
+        } else if matches!(action, "crash-consent-status" | "crash-consent-set") {
             Some(match crate::crash_startup::consent_ui(action, &value["decision"]) {
                 Ok(body) => serde_json::json!({"status":200,"body":body}),
                 Err(_) => serde_json::json!({"status":409,"body":null}),

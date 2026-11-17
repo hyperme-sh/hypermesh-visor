@@ -14,8 +14,7 @@ not interpreted as HTML or Markdown. No prompt, document, clipboard, attachment
 or diagnostic is read automatically.
 
 Sending stays disabled by default. The Linux dialog has an optional connection
-to the native Host grant broker and intake client; the phone and native
-Windows/macOS forms below remain independent local surfaces.
+to the native Host grant broker and intake client; the phone form remains an independent local surface.
 
 ## Optional Linux submission
 
@@ -64,9 +63,19 @@ form discards the draft; reopening requires fresh consent. This is process-local
 clearing, not a promise of secure erasure from operating-system memory.
 
 Opening this form pauses desktop access and blocks new desktop approval while
-it is open. It has no engine calls, file writes, transport, attachments or automatic
-collection. Sending remains unavailable. Windows self-test contracts check the
-form's consent/reset/edit controls and strict UTF-8 draft validation in CI.
+it is open. Sending is default-off. Explicit settings use the same enable/origin
+keys as Linux, with `HYPERMESH_HOST_BRIDGE_SOCKET` fixed to
+`\\.\pipe\hypermesh-feedback-grant-v1`. The separately installed
+`HypermeshFeedbackGrant` LocalSystem service must be configured for this user's
+SID. The client verifies the pipe's service PID and LocalSystem configuration
+before sending bytes; this is separate from crash registration.
+
+Saved consent, plain title/body preview, explicit send/withdrawal and same-report
+retry follow the macOS flow below. Credentials remain in the native engine and
+network calls run off the form thread. No service installation, destination,
+credential, consent or collection is enabled by this change. Windows unit
+contracts cover form controls, stale callbacks and refusal of an impostor pipe
+before writing bytes.
 
 ## macOS
 
@@ -79,7 +88,21 @@ consent. Undo, rich text, spell-checking and automatic replacement are disabled.
 Clearing process-local text does not guarantee secure operating-system memory erasure.
 
 Desktop access pauses while the form is open and requires fresh approval after
-closing. There is no transport, persistence, attachment or automatic collection.
-Sending remains unavailable. Native macOS CI unit contracts cover consent,
-preview invalidation, reset, byte boundaries and invalid text without showing
-the form or opening a shared desktop session.
+closing. With the same explicit settings as Linux, the form can acquire a grant
+from the root-owned Unix Host broker and submit to intake. Without those settings
+it remains local-only. No destination, credential or membership is provisioned.
+
+Opting in reads saved consent; enabling it requires a separate confirmation.
+Enter a report title and body, preview them as plain text, and confirm sending.
+The native engine retains confirmed bytes, consent revision and identity. An
+unknown response allows only an explicit retry of that same report. Edits discard
+the pending confirmation. Withdrawal clears the draft and explicitly updates saved
+consent, reporting a failed update as unconfirmed. Closing clears local work; it
+cannot recall a request already dispatched. Grant refresh must preserve identity.
+
+Requests run on a dedicated background worker through the in-process engine
+interface, not the desktop event loop or an external API. Tokens never enter Swift
+form state. There is no automatic retry, attachment, persistence or collection.
+Native macOS unit contracts cover consent, preview invalidation, reset, byte
+boundaries and invalid text. Rust unit contracts cover the form/session binding,
+confirmation, withdrawal and refusal/unknown-result handling with a fake backend.

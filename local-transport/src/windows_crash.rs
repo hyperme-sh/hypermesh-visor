@@ -19,6 +19,8 @@ use windows_sys::Win32::{
 
 pub const WINDOWS_CRASH_PIPE: &str = r"\\.\pipe\hypermesh-crash-registration-v1";
 const SERVICE: &str = "HypermeshCrashRegistration";
+pub const WINDOWS_FEEDBACK_PIPE: &str = r"\\.\pipe\hypermesh-feedback-grant-v1";
+const FEEDBACK_SERVICE: &str = "HypermeshFeedbackGrant";
 // Specific data/attribute rights; FILE_APPEND_DATA would permit server creation.
 const CLIENT_ACCESS: u32 = 0x12019b;
 struct Service(SC_HANDLE);
@@ -116,7 +118,7 @@ fn system_configuration(service: SC_HANDLE) -> io::Result<()> {
     }
     Ok(())
 }
-fn verify(pipe: &NamedPipeClient) -> io::Result<()> {
+fn verify(pipe: &NamedPipeClient, service_name: &str) -> io::Result<()> {
     unsafe {
         let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
         if manager.is_null() {
@@ -125,7 +127,7 @@ fn verify(pipe: &NamedPipeClient) -> io::Result<()> {
         let manager = Service(manager);
         let service = OpenServiceW(
             manager.0,
-            wide(SERVICE).as_ptr(),
+            wide(service_name).as_ptr(),
             SERVICE_QUERY_CONFIG | SERVICE_QUERY_STATUS,
         );
         if service.is_null() {
@@ -165,6 +167,12 @@ fn verify(pipe: &NamedPipeClient) -> io::Result<()> {
 /// Connect only to the fixed local endpoint and authenticate its SCM owner before
 /// any request bytes are sent. The client permits identification, not delegation.
 pub async fn connect_crash_registration() -> io::Result<NamedPipeClient> {
+    connect_service(WINDOWS_CRASH_PIPE, SERVICE).await
+}
+pub async fn connect_feedback_grant() -> io::Result<NamedPipeClient> {
+    connect_service(WINDOWS_FEEDBACK_PIPE, FEEDBACK_SERVICE).await
+}
+async fn connect_service(pipe_name: &str, service_name: &str) -> io::Result<NamedPipeClient> {
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             let file = match OpenOptions::new()
@@ -173,7 +181,7 @@ pub async fn connect_crash_registration() -> io::Result<NamedPipeClient> {
                 .access_mode(CLIENT_ACCESS)
                 .custom_flags(FILE_FLAG_OVERLAPPED)
                 .security_qos_flags(SECURITY_IDENTIFICATION)
-                .open(WINDOWS_CRASH_PIPE)
+                .open(pipe_name)
             {
                 Ok(file) => file,
                 Err(err) if err.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
@@ -183,7 +191,7 @@ pub async fn connect_crash_registration() -> io::Result<NamedPipeClient> {
                 Err(_) => return Err(refused()),
             };
             let pipe = unsafe { NamedPipeClient::from_raw_handle(file.into_raw_handle()) }?;
-            verify(&pipe)?;
+            verify(&pipe, service_name)?;
             return Ok(pipe);
         }
     })
@@ -224,6 +232,20 @@ mod tests {
         });
         assert!(connect_crash_registration().await.is_err());
         task.await.unwrap();
+    }
+    #[tokio::test]
+    async fn feedback_pipe_impostor_is_refused_before_write() {
+        let mut server = ServerOptions::new().first_pipe_instance(true)
+            .reject_remote_clients(true).create(WINDOWS_FEEDBACK_PIPE).unwrap();
+        let task = tokio::spawn(async move {
+            server.connect().await.unwrap();
+            let mut raw = [0u8;1];
+            match tokio::time::timeout(Duration::from_secs(3),server.read(&mut raw)).await {
+                Ok(Ok(0)) | Ok(Err(_)) => (),
+                other => panic!("unexpected bytes sent to feedback impostor: {other:?}"),
+            }
+        });
+        assert!(connect_feedback_grant().await.is_err()); task.await.unwrap();
     }
     #[tokio::test]
     #[ignore = "requires disposable CI LocalSystem service fixture"]
