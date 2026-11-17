@@ -86,6 +86,8 @@ mod transport {
     pub type Stream = UnixStream;
     pub struct Listener(UnixListener);
     fn setup(s: Stream) -> io::Result<Stream> {
+        // macOS accepted sockets inherit the nonblocking listener flag.
+        s.set_nonblocking(false)?;
         s.set_read_timeout(Some(TIMEOUT))?;
         s.set_write_timeout(Some(TIMEOUT))?;
         Ok(s)
