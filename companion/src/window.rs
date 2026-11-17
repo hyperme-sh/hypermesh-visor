@@ -859,13 +859,15 @@ fn on_click(
                 *app.status.lock().unwrap() = err;
             }
         }
-        Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections | Action::ChooseSession | Action::ManageCompanions => {
+        Action::Feedback | Action::McpTrust | Action::McpServers | Action::McpStatus | Action::McpConnections | Action::ChooseSession | Action::ManageCompanions => {
             app.menu = false;
             let status = Arc::clone(&app.status);
             let action = hit.action;
             let confirmation = app.poller.confirmation();
             std::thread::spawn(move || {
-                let result = if action == Action::ManageCompanions {
+                let result = if action == Action::Feedback {
+                    crate::feedback::run()
+                } else if action == Action::ManageCompanions {
                     crate::companions::run(confirmation)
                 } else if action == Action::ChooseSession {
                     crate::session_selection::run()
