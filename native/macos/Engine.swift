@@ -742,7 +742,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     private let titleField = NSTextField(string: "")
     private let send = NSButton(title: "Send report", target: nil, action: nil)
     private let withdraw = NSButton(title: "Withdraw saved consent", target: nil, action: nil)
-    private let worker = DispatchQueue(label: "sh.hyperme.visor.feedback")
+    private static let sharedWorker = DispatchQueue(label: "sh.hyperme.visor.feedback")
+    private let worker = NativeFeedbackController.sharedWorker
     private let formID = UUID().uuidString
     private let configured: Bool
     private var connected = false, busy = false, retry = false, ended = false
@@ -894,6 +895,21 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     static func checkContracts() throws {
         let form = NativeFeedbackController(closed: {}, configured: false)
         defer { form.close() }
+        let reopened = NativeFeedbackController(closed: {}, configured: false)
+        defer { reopened.close() }
+        let entered = DispatchSemaphore(value: 0), unblock = DispatchSemaphore(value: 0)
+        let oldClosed = DispatchSemaphore(value: 0), newOpened = DispatchSemaphore(value: 0)
+        defer { unblock.signal() }
+        // Reopening must not overtake an in-flight request and its queued close.
+        form.worker.async { entered.signal(); _ = unblock.wait(timeout: .now() + 5) }
+        try verifyNativeUnit(entered.wait(timeout: .now() + 5) == .success)
+        form.worker.async { oldClosed.signal() }
+        reopened.worker.async { newOpened.signal() }
+        let overtook = newOpened.wait(timeout: .now() + 0.2) == .success
+        unblock.signal()
+        try verifyNativeUnit(!overtook)
+        try verifyNativeUnit(oldClosed.wait(timeout: .now() + 5) == .success)
+        try verifyNativeUnit(newOpened.wait(timeout: .now() + 5) == .success)
         try verifyNativeUnit(!form.editor.isEditable && !form.review.isEnabled)
         form.consent.state = .on; form.consentChanged()
         form.editor.string = "first"; form.reviewClicked()
