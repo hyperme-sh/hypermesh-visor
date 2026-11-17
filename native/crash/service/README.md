@@ -52,8 +52,9 @@ Store the helper outside an app bundle that may move during an update.
 
 As the Visor account, register the directory with the packaged `.exe`. A local
 administrator creates an automatic-start, own-process Windows service whose
-binary command is the quoted stable helper path followed by `service`. Use a
-unique name per account, such as `HypermeshCrashRetention-ACCOUNT-SID`. In the
+binary command is the quoted stable helper path followed by `service`. Use the
+exact account-scoped name `HypermeshCrashRetention-ACCOUNT-SID`, substituting
+that account's SID. In the
 Services management console, configure Log On as the Visor account and enter
 credentials there; never put passwords in a command, config file or issue.
 Configure recovery to restart the service after failure with a one-second delay.
@@ -63,7 +64,10 @@ have a loaded, available user profile. Protected files retain owner/System acces
 
 ## Operation and removal
 
-A fresh service heartbeat and a held OS lease are both required. Losing either
+OS service-manager identity, a fresh service heartbeat and a held OS lease are
+all required. Admission verifies the manager's PID and its OS account; local
+files alone cannot satisfy this prerequisite. Successful manager queries are
+cached for at most one second while heartbeat and lease checks remain per-write. Losing either
 refuses new raw writes and stops the handler. The helper coordinates deletion
 with the same capture lock as startup and withdrawal. It expires each entire
 run within seven days of its start, conservatively earlier than seven days from

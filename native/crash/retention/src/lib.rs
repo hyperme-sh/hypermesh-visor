@@ -70,6 +70,7 @@ struct Registration {
 #[serde(deny_unknown_fields)]
 struct Pulse {
     time: u64,
+    pid: u32,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -125,7 +126,15 @@ impl Owner {
         }
         Ok(())
     }
-    pub fn require(&self, directory: &Path, time: u64) -> io::Result<()> {
+    pub fn require(&self, directory: &Path) -> io::Result<()> {
+        self.require_with(directory, now, platform::verify_service)
+    }
+    fn require_with(
+        &self,
+        directory: &Path,
+        clock: impl Fn() -> io::Result<u64>,
+        verify: impl Fn(u32) -> io::Result<()>,
+    ) -> io::Result<()> {
         private(&self.root)?;
         private(directory)?;
         if directory != self.directory {
@@ -145,7 +154,8 @@ impl Owner {
             Err(_) => return Err(refused()),
         }
         let pulse: Pulse = read(&self.root.join("heartbeat.json"))?;
-        if time
+        verify(pulse.pid)?;
+        if clock()?
             .checked_sub(pulse.time)
             .filter(|age| *age <= HEARTBEAT_AGE)
             .is_none()
@@ -170,7 +180,7 @@ impl Owner {
         loop {
             let time = now()?;
             let stopping = stop() || time < last;
-            if self.tick(time, stopping)? && stopping {
+            if self.tick_with(now, stopping)? && stopping {
                 return Ok(());
             }
             if !stopping {
@@ -179,25 +189,37 @@ impl Owner {
             std::thread::sleep(std::time::Duration::from_millis(250));
         }
     }
+
+    #[cfg(test)]
     fn tick(&self, time: u64, stopping: bool) -> io::Result<bool> {
+        self.tick_with(|| Ok(time), stopping)
+    }
+    fn tick_with(&self, clock: impl Fn() -> io::Result<u64>, stopping: bool) -> io::Result<bool> {
         let heartbeat = self.root.join("heartbeat.json");
-        let runs = runs(&self.directory)?;
-        for run in &runs {
-            if stopping || !fresh(run, time) {
-                request_stop(run)?;
-            }
-        }
         match lock(&self.directory.join("health-consent/crash-capture.lock")) {
             Ok(writer) => {
                 let _unlock = storage::UnlockOnDrop(&writer);
+                let runs = runs(&self.directory)?;
                 if stopping {
                     purge(&runs, &self.directory.join("crash-runs"))?;
                 } else {
-                    prune_locked(&self.directory, time)?;
+                    prune_locked(&self.directory, clock()?)?;
                 }
             }
             Err(e) if contended(&e) => {
-                if stopping || runs.iter().any(|run| !fresh(run, time)) {
+                // Initialization holds the writer lock before publishing its
+                // stamp. Only a ready handler can be expired on this path.
+                let mut blocked = stopping;
+                for run in runs(&self.directory)? {
+                    if !run.join("handler-active").try_exists()? {
+                        continue;
+                    }
+                    if stopping || !fresh(&run, clock()?) {
+                        request_stop(&run)?;
+                        blocked = true;
+                    }
+                }
+                if blocked {
                     if heartbeat.try_exists()? {
                         fs::remove_file(&heartbeat)?;
                     }
@@ -207,7 +229,13 @@ impl Owner {
             Err(e) => return Err(e),
         }
         if !stopping {
-            write(&heartbeat, &Pulse { time })?;
+            write(
+                &heartbeat,
+                &Pulse {
+                    time: clock()?,
+                    pid: std::process::id(),
+                },
+            )?;
         } else if heartbeat.try_exists()? {
             fs::remove_file(&heartbeat)?;
         }
@@ -231,7 +259,7 @@ fn lock(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 pub fn require_service(directory: &Path) -> io::Result<()> {
-    Owner::open()?.require(directory, now()?)
+    Owner::open()?.require(directory)
 }
 pub fn stamp(run: &Path) -> io::Result<()> {
     private(run)?;
@@ -337,8 +365,8 @@ pub fn prune_runs_locked(root: &Path, time: u64) -> io::Result<()> {
 /// Called before native entry and every raw write, including after resume.
 pub fn permit(run: &Path) -> io::Result<()> {
     let directory = run.parent().and_then(Path::parent).ok_or_else(refused)?;
+    Owner::open()?.require(directory)?;
     let time = now()?;
-    Owner::open()?.require(directory, time)?;
     if !fresh(run, time) {
         return Err(refused());
     }
@@ -479,6 +507,7 @@ mod tests {
     fn active_writer_stops_before_expiry_or_withdrawal_purge() {
         let (_temp, owner) = fixture();
         let raw = run(&owner, 100, 1);
+        drop(storage::open(&raw.join("handler-active"), storage::Open::New).unwrap());
         let writer = lock(&owner.directory.join("health-consent/crash-capture.lock")).unwrap();
         assert!(!owner.tick(100 + MAX_AGE, false).unwrap());
         assert!(raw.exists());
@@ -494,13 +523,25 @@ mod tests {
     #[test]
     fn service_lease_and_fresh_pulse_are_both_required() {
         let (_temp, owner) = fixture();
-        write(&owner.root.join("heartbeat.json"), &Pulse { time: 100 }).unwrap();
+        write(
+            &owner.root.join("heartbeat.json"),
+            &Pulse { time: 100, pid: 42 },
+        )
+        .unwrap();
         let lease = lock(&owner.root.join("service.lock")).unwrap();
-        owner.require(&owner.directory, 100).unwrap();
-        assert!(owner.require(&owner.directory, 99).is_err());
-        assert!(owner.require(&owner.directory, 103).is_err());
+        owner
+            .require_with(&owner.directory, || Ok(100), |_| Ok(()))
+            .unwrap();
+        assert!(owner
+            .require_with(&owner.directory, || Ok(99), |_| Ok(()))
+            .is_err());
+        assert!(owner
+            .require_with(&owner.directory, || Ok(103), |_| Ok(()))
+            .is_err());
         drop(storage::UnlockOnDrop(&lease));
-        assert!(owner.require(&owner.directory, 100).is_err());
+        assert!(owner
+            .require_with(&owner.directory, || Ok(100), |_| Ok(()))
+            .is_err());
     }
     #[test]
     fn second_configuration_cannot_reset_owner_quota() {
@@ -508,7 +549,7 @@ mod tests {
         let second = temp.0.join("second");
         storage::create_dir(&second).unwrap();
         assert!(Owner::register_at(owner.root.clone(), &second).is_err());
-        assert!(owner.require(&second, 100).is_err());
+        assert!(owner.require_with(&second, || Ok(100), |_| Ok(())).is_err());
     }
     #[test]
     fn linked_raw_files_fail_closed_without_touching_the_target() {
@@ -563,5 +604,42 @@ mod tests {
         assert!(prune_locked(&owner.directory, 100 + MAX_AGE).is_err());
         assert!(outside.exists());
         fs::remove_dir(raw.join("junction")).unwrap();
+    }
+    #[test]
+    fn forged_heartbeat_cannot_replace_os_service_identity() {
+        let (_temp, owner) = fixture();
+        let lease = lock(&owner.root.join("service.lock")).unwrap();
+        write(
+            &owner.root.join("heartbeat.json"),
+            &Pulse { time: 100, pid: 42 },
+        )
+        .unwrap();
+        assert!(owner
+            .require_with(&owner.directory, || Ok(100), |_| Err(refused()))
+            .is_err());
+        assert!(owner
+            .require_with(
+                &owner.directory,
+                || Ok(100),
+                |pid| if pid == 7 { Ok(()) } else { Err(refused()) }
+            )
+            .is_err());
+        drop(storage::UnlockOnDrop(&lease));
+    }
+    #[test]
+    fn initializing_writer_is_not_mistaken_for_an_invalid_run() {
+        let (_temp, owner) = fixture();
+        let raw = run(&owner, 101, 1);
+        fs::remove_file(raw.join("retention.json")).unwrap();
+        let writer = lock(&owner.directory.join("health-consent/crash-capture.lock")).unwrap();
+        assert!(owner.tick(100, false).unwrap());
+        assert!(!raw.join("stop-handler").exists());
+        write(&raw.join("retention.json"), &Stamp { started: 101 }).unwrap();
+        assert!(owner.tick(100, false).unwrap());
+        assert!(!raw.join("stop-handler").exists());
+        drop(storage::open(&raw.join("handler-active"), storage::Open::New).unwrap());
+        assert!(owner.tick_with(|| Ok(101), false).unwrap());
+        assert!(!raw.join("stop-handler").exists());
+        drop(storage::UnlockOnDrop(&writer));
     }
 }

@@ -86,7 +86,7 @@ checked(writer_cc, "#include <limits.h>", '#include <limits.h>\n#include <cstdio
 checked(writer_cc, "  return weak_file_handle_file_writer_.Write(data, size);", """  if (visor_bounded_) {
     if (!visor::MayWriteRaw()) return false;
     const auto position = weak_file_handle_file_writer_.Seek(0, SEEK_CUR);
-    if (position < 0 || position > 33554432 || size > 33554432 - position)
+    if (position < 0 || position > 33554432 || size > static_cast<size_t>(33554432 - position))
       return false;
   }
   return weak_file_handle_file_writer_.Write(data, size);""")
@@ -99,7 +99,7 @@ checked(writer_cc, "  return weak_file_handle_file_writer_.WriteIoVec(iovecs);",
       total += item.iov_len;
     }
     const auto position = weak_file_handle_file_writer_.Seek(0, SEEK_CUR);
-    if (position < 0 || position > 33554432 || total > 33554432 - position)
+    if (position < 0 || position > 33554432 || total > static_cast<size_t>(33554432 - position))
       return false;
   }
   return weak_file_handle_file_writer_.WriteIoVec(iovecs);""")

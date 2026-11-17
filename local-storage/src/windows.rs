@@ -57,9 +57,12 @@ unsafe fn sid_text(sid: PSID) -> io::Result<String> {
     String::from_utf16(std::slice::from_raw_parts(text, count)).map_err(|_| refused())
 }
 fn current_user() -> io::Result<String> {
+    process_user(unsafe { GetCurrentProcess() })
+}
+fn process_user(process: HANDLE) -> io::Result<String> {
     unsafe {
         let mut token = null_mut();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+        if OpenProcessToken(process, TOKEN_QUERY, &mut token) == 0 {
             return Err(io::Error::last_os_error());
         }
         let token = Handle(token);
@@ -391,4 +394,24 @@ pub fn private_attributes<T>(create: impl FnOnce(*mut c_void) -> io::Result<T>) 
 /// Verify an opened local kernel object before exchanging application data.
 pub fn check_private_object(object: &impl AsRawHandle) -> io::Result<()> {
     check_security(object.as_raw_handle(), SE_KERNEL_OBJECT, true)
+}
+
+/// Read the OS token owner of an existing process; no caller-supplied identity.
+pub fn process_user_sid(pid: u32) -> io::Result<String> {
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    let process = Handle(process);
+    process_user(process.0)
+}
+
+#[cfg(test)]
+#[test]
+fn process_owner_matches_current_os_token() {
+    assert_eq!(
+        process_user_sid(std::process::id()).unwrap(),
+        user_sid().unwrap()
+    );
+    assert!(process_user_sid(0).is_err());
 }
