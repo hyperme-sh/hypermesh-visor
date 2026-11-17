@@ -12,7 +12,7 @@ const OPTIONS: &str = "size=167772160,nr_inodes=4096,mode=0700,uid=0,gid=0";
 fn location(run: &Path) -> io::Result<(String, String)> {
     crate::host::require_root()?;
     if Owner::open()?.authority() != Authority::Host
-        || run.parent().and_then(Path::parent) != Some(crate::root()?.join("config").as_path())
+        || run.parent() != Some(crate::root()?.join("config/crash-runs").as_path())
     {
         return Err(refused());
     }
