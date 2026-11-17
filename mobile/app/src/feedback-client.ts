@@ -49,11 +49,11 @@ export class FeedbackClient {
     let result: { submitted: boolean; retryable: boolean };
     try { result = await this.native().feedbackSubmit({ sessionId, operationId: report.operationId }); }
     catch { throw new FeedbackSendError(true); } // Lost bridge response: do not create a new report.
+    if (generation !== this.generation) throw new Error('Feedback action cancelled.');
     if (!result.submitted) {
       if (!result.retryable) this.confirmed = null;
       throw new FeedbackSendError(result.retryable === true);
     }
-    if (generation !== this.generation) throw new Error('Feedback action cancelled.');
     this.confirmed = null;
   }
 }

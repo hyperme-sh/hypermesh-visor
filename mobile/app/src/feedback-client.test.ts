@@ -45,3 +45,19 @@ it('requires a new preview after native refusal and retains only retryable opera
   await expect(client.submit()).rejects.toThrow('Preview the report again.');
   expect(bridge.feedbackSubmit).toHaveBeenCalledTimes(2);
 });
+
+it('late refusal from an old send cannot clear a newly prepared report', async () => {
+  const bridge=native(),client=new FeedbackClient(()=>bridge);
+  let finish!: (s:{submitted:boolean;retryable:boolean})=>void;
+  vi.mocked(bridge.feedbackSubmit).mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+  await client.prepare(report);
+  const old=client.submit();
+  client.cancel();
+  vi.mocked(bridge.feedbackStart).mockResolvedValueOnce({sessionId:'new'});
+  vi.mocked(bridge.feedbackPrepare).mockResolvedValueOnce({...report,operationId:'new-op'});
+  await client.prepare(report);
+  finish({submitted:false,retryable:false});
+  await expect(old).rejects.toThrow('cancelled');
+  await client.submit();
+  expect(bridge.feedbackSubmit).toHaveBeenLastCalledWith({sessionId:'new',operationId:'new-op'});
+});
