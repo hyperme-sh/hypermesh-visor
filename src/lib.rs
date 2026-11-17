@@ -29,6 +29,8 @@ mod harness;
 mod host_bridge;
 #[cfg(unix)]
 pub mod feedback_grant;
+#[cfg(all(unix, any(target_os = "macos", test)))]
+mod feedback_session;
 mod input;
 #[cfg(unix)]
 mod local_peer;

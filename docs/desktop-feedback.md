@@ -15,7 +15,7 @@ or diagnostic is read automatically.
 
 Sending stays disabled by default. The Linux dialog has an optional connection
 to the native Host grant broker and intake client; the phone and native
-Windows/macOS forms below remain independent local surfaces.
+Windows forms below remain independent local surfaces.
 
 ## Optional Linux submission
 
@@ -79,7 +79,21 @@ consent. Undo, rich text, spell-checking and automatic replacement are disabled.
 Clearing process-local text does not guarantee secure operating-system memory erasure.
 
 Desktop access pauses while the form is open and requires fresh approval after
-closing. There is no transport, persistence, attachment or automatic collection.
-Sending remains unavailable. Native macOS CI unit contracts cover consent,
-preview invalidation, reset, byte boundaries and invalid text without showing
-the form or opening a shared desktop session.
+closing. With the same explicit settings as Linux, the form can acquire a grant
+from the root-owned Unix Host broker and submit to intake. Without those settings
+it remains local-only. No destination, credential or membership is provisioned.
+
+Opting in reads saved consent; enabling it requires a separate confirmation.
+Enter a report title and body, preview them as plain text, and confirm sending.
+The native engine retains confirmed bytes, consent revision and identity. An
+unknown response allows only an explicit retry of that same report. Edits discard
+the pending confirmation. Withdrawal clears the draft and explicitly updates saved
+consent, reporting a failed update as unconfirmed. Closing clears local work; it
+cannot recall a request already dispatched. Grant refresh must preserve identity.
+
+Requests run on a dedicated background worker through the in-process engine
+interface, not the desktop event loop or an external API. Tokens never enter Swift
+form state. There is no automatic retry, attachment, persistence or collection.
+Native macOS unit contracts cover consent, preview invalidation, reset, byte
+boundaries and invalid text. Rust unit contracts cover the form/session binding,
+confirmation, withdrawal and refusal/unknown-result handling with a fake backend.
