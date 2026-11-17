@@ -26,18 +26,22 @@ fn location(run: &Path) -> io::Result<(String, String)> {
         return Err(refused());
     }
     let database = run.join("database");
-    // A prior purge may already have removed the database directory.
-    // Retain strict symlink/path checks whenever it still exists.
-    match fs::symlink_metadata(&database) {
-        Ok(_) if fs::canonicalize(&database)? != database => return Err(refused()),
-        Ok(_) => {},
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {},
-        Err(error) => return Err(error),
-    }
+    validate_database(&database)?;
     Ok((
         database.to_str().ok_or_else(refused)?.into(),
         format!("hypermesh-crash-{id}"),
     ))
+}
+fn validate_database(database: &Path) -> io::Result<()> {
+    // A prior purge may already have removed the database directory.
+    // Retain strict symlink/path checks whenever it still exists.
+    match fs::symlink_metadata(database) {
+        Ok(_) if fs::canonicalize(database)? != database => return Err(refused()),
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(())
 }
 fn escaped(text: &str) -> String {
     text.replace('\\', "\\134")
@@ -162,6 +166,21 @@ pub fn remove(run: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn partial_removal_allows_missing_database_but_refuses_symlinks() {
+        let run = std::env::temp_dir().join(format!("raw-mount-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&run).unwrap();
+        let database = run.join("database");
+        assert!(validate_database(&database).is_ok());
+        fs::create_dir(&database).unwrap();
+        assert!(validate_database(&database).is_ok());
+        fs::remove_dir(&database).unwrap();
+        assert!(validate_database(&database).is_ok());
+        std::os::unix::fs::symlink(run.join("absent"), &database).unwrap();
+        assert!(validate_database(&database).is_err());
+        fs::remove_file(&database).unwrap();
+        fs::remove_dir(run).unwrap();
+    }
     #[test]
     fn only_owned_bounded_mount_is_removable() {
         let valid = "40 20 0:9 / /private/database rw,nosuid,nodev,noexec - tmpfs hypermesh-crash-test rw,size=163840k,nr_inodes=4096,mode=700";
