@@ -1,4 +1,4 @@
-# Linux desktop feedback draft
+# Desktop feedback drafts
 
 The Linux companion menu offers **Human feedback** using the existing Zenity
 desktop dialog dependency. Opt in before entering a problem or idea, type up to
@@ -16,8 +16,21 @@ or diagnostic is read automatically.
 Sending is unavailable: this slice has no intake transport, identity conversion,
 credential prompt, persistence or direct GitHub action. Native issuer/device
 authentication and intake authorization remain in Hypermesh #79. The phone form
-is independent. Windows and native macOS desktop controls are separate surfaces;
-this change adds the Linux companion menu entry only.
+is independent. Native macOS desktop controls remain a separate surface.
 
 Validation uses offline companion unit contracts with injected dialog responses.
 No desktop session or shared service is opened by those tests.
+
+## Windows
+
+The native tray menu offers **Human feedback**. Check the explicit opt-in box
+before entering a Problem or Idea. **Preview locally** shows plain text; editing
+the draft or category clears that preview. The same 4096 UTF-8 byte limit applies.
+Unchecking opt-in clears the editor, its undo buffer, and the preview. Closing the
+form discards the draft; reopening requires fresh consent. This is process-local
+clearing, not a promise of secure erasure from operating-system memory.
+
+Opening this form pauses desktop access and blocks new desktop approval while
+it is open. It has no engine calls, file writes, transport, attachments or automatic
+collection. Sending remains unavailable. Windows self-test contracts check the
+form's consent/reset/edit controls and strict UTF-8 draft validation in CI.

@@ -11,6 +11,24 @@ internal static class Contracts
     {
         try
         {
+            FeedbackWindow.CheckContracts();
+            var feedback = new FeedbackDraft();
+            Require(!feedback.Review("Problem", "hello"));
+            feedback.Consent(true);
+            Require(feedback.Review("Problem", new string('a', 4096)));
+            Require(!feedback.Review("Problem", new string('a', 4097)) && feedback.Preview == "");
+            Require(feedback.Review("Idea", new string('é', 2048)));
+            Require(!feedback.Review("Idea", new string('é', 2049)));
+            foreach (string invalid in new[] { "", " \r\n", "bad\0text", "bad\u001btext", "\ud800" })
+                Require(!feedback.Review("Problem", invalid));
+            Require(!feedback.Review("Other", "text"));
+            Require(feedback.Review("Idea", "<script>plain text</script>\r\n\t$()"));
+            Require(feedback.Preview.Contains("<script>plain text</script>"));
+            feedback.Invalidate(); Require(feedback.Preview == "");
+            Require(feedback.Review("Problem", "replacement"));
+            feedback.Consent(false);
+            Require(feedback.Preview == "" && !feedback.Review("Problem", "replacement"));
+            feedback.Consent(true); Require(feedback.Preview == "");
             string[] unicodeProfiles = ["caf\u00e9", "cafe\u0301"];
             Require(McpTrustWindow.ProfileNames(null, unicodeProfiles).Length == 2);
             Require(McpTrustWindow.ProfileNames(null, ["approved-profile"]).SequenceEqual(["approved-profile"]));
