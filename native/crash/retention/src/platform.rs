@@ -64,6 +64,9 @@ extern "C" fn stopped(_: i32) {
 }
 #[cfg(unix)]
 pub fn serve() -> io::Result<()> {
+    if Owner::open()?.authority() != crate::Authority::Visor {
+        return Err(refused());
+    }
     verify_service(std::process::id())?;
     unsafe {
         libc::signal(libc::SIGTERM, stopped as *const () as usize);
@@ -263,4 +266,89 @@ fn manager_output(command: &mut std::process::Command) -> io::Result<std::proces
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Separate Host service identity; the Visor verifier still refuses root.
+pub fn verify_host_service(pid: u32) -> io::Result<()> {
+    crate::host::require_root()?;
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+    static CHECK: Mutex<Option<(u32, Instant)>> = Mutex::new(None);
+    let mut checked = CHECK.lock().map_err(|_| refused())?;
+    if checked
+        .as_ref()
+        .is_some_and(|(old, at)| *old == pid && at.elapsed() < Duration::from_secs(1))
+    {
+        return Ok(());
+    }
+    *checked = None;
+    verify_host_uncached(pid)?;
+    *checked = Some((pid, Instant::now()));
+    Ok(())
+}
+#[cfg(unix)]
+fn verify_host_uncached(pid: u32) -> io::Result<()> {
+    use std::process::Command;
+    if pid == 0 {
+        return Err(refused());
+    }
+    #[cfg(target_os = "linux")]
+    let valid = {
+        use std::os::unix::fs::MetadataExt;
+        let result = manager_output(Command::new("/usr/bin/systemctl").args([
+            "show",
+            "hypermesh-host-crash-retention.service",
+            "--property=MainPID",
+            "--value",
+        ]))?;
+        result.status.success()
+            && String::from_utf8_lossy(&result.stdout).trim() == pid.to_string()
+            && std::fs::metadata(format!("/proc/{pid}"))?.uid() == 0
+    };
+    #[cfg(target_os = "macos")]
+    let valid = {
+        let result = manager_output(
+            Command::new("/bin/launchctl")
+                .args(["print", "system/sh.hyperme.host.crash-retention"]),
+        )?;
+        let owner =
+            manager_output(Command::new("/bin/ps").args(["-o", "uid=", "-p", &pid.to_string()]))?;
+        result.status.success()
+            && String::from_utf8_lossy(&result.stdout)
+                .lines()
+                .any(|line| line.trim() == format!("pid = {pid}"))
+            && owner.status.success()
+            && String::from_utf8_lossy(&owner.stdout).trim() == "0"
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let valid = false;
+    if valid {
+        Ok(())
+    } else {
+        Err(refused())
+    }
+}
+#[cfg(not(unix))]
+fn verify_host_uncached(_: u32) -> io::Result<()> {
+    Err(refused())
+}
+#[cfg(unix)]
+pub fn serve_host() -> io::Result<()> {
+    crate::host::require_root()?;
+    let owner = Owner::open()?;
+    if owner.authority() != crate::Authority::Host {
+        return Err(refused());
+    }
+    verify_host_service(std::process::id())?;
+    unsafe {
+        libc::signal(libc::SIGTERM, stopped as *const () as usize);
+        libc::signal(libc::SIGINT, stopped as *const () as usize);
+    }
+    owner.service(|| STOP.load(std::sync::atomic::Ordering::Acquire))
+}
+#[cfg(not(unix))]
+pub fn serve_host() -> io::Result<()> {
+    Err(refused())
 }

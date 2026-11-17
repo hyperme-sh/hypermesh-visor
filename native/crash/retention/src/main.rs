@@ -2,6 +2,8 @@ fn main() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     let result = match args.as_slice() {
         [action] if action == "register" => hypermesh_crash_retention::Owner::register(),
+        [action] if action == "register-host" => hypermesh_crash_retention::Owner::register_host(),
+        [action] if action == "service-host" => hypermesh_crash_retention::platform::serve_host(),
         [action] if action == "service" => hypermesh_crash_retention::platform::serve(),
         _ => Err(hypermesh_crash_retention::refused()),
     };
