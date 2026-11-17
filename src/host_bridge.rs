@@ -83,7 +83,7 @@ impl Bridge {
             if response.status() != StatusCode::OK {
                 return Err(());
             }
-            let raw = Limited::new(response.into_body(), WIRE_MAX)
+            let raw = Limited::new(response.into_body(), if path == "/feedback-grant" { 4096 } else { WIRE_MAX })
                 .collect()
                 .await
                 .map_err(|_| ())?
@@ -111,6 +111,13 @@ impl Bridge {
             let raw = Limited::new(response.into_body(), 4096).collect().await.map_err(|_| ())?.to_bytes();
             serde_json::from_slice(&raw).map_err(|_| ())
         }).await.map_err(|_| ())?
+    }
+    #[cfg(unix)]
+    pub(crate) async fn feedback_grant(&self, opted_in: bool) -> Result<crate::feedback_grant::FeedbackGrant, ()> {
+        if !opted_in { return Err(()); }
+        let value = self.request("POST", "/feedback-grant",
+            br#"{"version":1,"human_reports_opt_in":true}"#.to_vec()).await?;
+        crate::feedback_grant::FeedbackGrant::from_response(value)
     }
     pub async fn crash_register(&self, body: Value) -> Result<Value, ()> {
         let raw = serde_json::to_vec(&body).map_err(|_| ())?;
@@ -279,4 +286,57 @@ mod tests {
         server.abort();
         std::fs::remove_file(path).unwrap();
     }
+    #[tokio::test]
+    async fn feedback_uses_fixed_contract_and_never_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for (status, reply, accepted) in [
+            (StatusCode::OK, r#"{"version":1,"expires_in":60,"grant":"hm_feedback_header.payload.signature"}"#.to_owned(), true),
+            (StatusCode::FORBIDDEN, "private upstream refusal".to_owned(), false),
+            (StatusCode::FOUND, "redirect".to_owned(), false),
+            (StatusCode::OK, "not json".to_owned(), false),
+            (StatusCode::OK, "x".repeat(4097), false),
+            (StatusCode::OK, r#"{"version":1,"expires_in":60,"grant":"hm_msi_secret"}"#.to_owned(), false),
+        ] {
+            let path = std::env::temp_dir().join(format!("v-{}.s", uuid::Uuid::new_v4().simple()));
+            let listener = tokio::net::UnixListener::bind(&path).unwrap();
+            let count = Arc::new(AtomicUsize::new(0));
+            let seen = count.clone();
+            let server = tokio::spawn(async move {
+                loop {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    let seen = seen.clone();
+                    let reply = reply.clone();
+                    tokio::spawn(async move {
+                        let service = hyper::service::service_fn(move |request: Request<hyper::body::Incoming>| {
+                            let seen = seen.clone();
+                            let reply = reply.clone();
+                            async move {
+                                seen.fetch_add(1, Ordering::SeqCst);
+                                assert_eq!(request.method(), "POST");
+                                assert_eq!(request.uri().path(), "/feedback-grant");
+                                assert!(request.headers().get("Authorization").is_none());
+                                let raw = request.into_body().collect().await.unwrap().to_bytes();
+                                assert_eq!(&raw[..], br#"{"version":1,"human_reports_opt_in":true}"#);
+                                Ok::<_, std::convert::Infallible>(hyper::Response::builder().status(status)
+                                    .body(Full::new(Bytes::from(reply))).unwrap())
+                            }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(TokioIo::new(stream), service).await;
+                    });
+                }
+            });
+            let mut bridge = Bridge::new(path.clone()).unwrap();
+            bridge.uid = unsafe { libc::geteuid() };
+            assert!(bridge.feedback_grant(false).await.is_err());
+            assert_eq!(count.load(Ordering::SeqCst), 0);
+            let result = bridge.feedback_grant(true).await;
+            assert_eq!(result.is_ok(), accepted);
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+            server.abort();
+            let _ = server.await;
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
 }
