@@ -275,6 +275,35 @@ impl MobileOwnerSignIn {
 
 // Internal only: the UI cannot obtain a tenant session or choose an HTTP URL.
 impl MobileOwnerSignIn {
+    pub(crate) fn login_epoch(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+    pub(crate) fn with_mesh_session<T>(
+        &self,
+        tenant: &str,
+        expected: u64,
+        action: impl FnOnce(&OwnerSession<'_>) -> Result<T, MachineError>,
+    ) -> Result<T, MachineError> {
+        let guard = self.commit.lock().map_err(|_| MachineError::Unavailable)?;
+        if self.login_epoch() != expected {
+            return Err(MachineError::Refused);
+        }
+        let tokens = self.flow.refresh(&AppStore(self.store.clone()))?;
+        let token = self.flow.tenant_session(&tokens.access_token, tenant)?;
+        let session = OwnerSession {
+            owner: self,
+            expected: PhoneEpoch {
+                login: expected,
+                phone: 0,
+            },
+            phone_scope: false,
+            token,
+            tenant,
+        };
+        session.current()?;
+        drop(guard);
+        action(&session)
+    }
     pub(crate) fn phone_epoch(&self) -> PhoneEpoch {
         PhoneEpoch {
             login: self.generation.load(Ordering::SeqCst),
@@ -296,6 +325,7 @@ impl MobileOwnerSignIn {
         let session = OwnerSession {
             owner: self,
             expected,
+            phone_scope: true,
             token,
             tenant,
         };
@@ -310,14 +340,27 @@ pub(crate) struct PhoneEpoch {
     phone: u64,
 }
 pub(crate) struct OwnerSession<'a> {
+    phone_scope: bool,
     owner: &'a MobileOwnerSignIn,
     expected: PhoneEpoch,
     token: String,
     tenant: &'a str,
 }
 impl OwnerSession<'_> {
+    pub(crate) fn mesh_request(
+        &self,
+        machine: &MobileMachine,
+        body: &Value,
+    ) -> Result<Value, MachineError> {
+        self.current()?;
+        let result = machine.mesh_request(self.tenant, &self.token, body)?;
+        self.current()?;
+        Ok(result)
+    }
     pub(crate) fn current(&self) -> Result<(), MachineError> {
-        if self.owner.phone_epoch() != self.expected {
+        if self.owner.login_epoch() != self.expected.login
+            || (self.phone_scope && self.owner.phone_epoch() != self.expected)
+        {
             return Err(MachineError::Refused);
         }
         Ok(())

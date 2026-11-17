@@ -13,6 +13,31 @@ function setup() {
   return {native,controller,view:()=>view!};
 }
 describe('native UI contract',()=>{
+  it('preserves a connected conversation when native polling is busy', async()=>{
+    const s=setup();
+    s.native.status=vi.fn(async()=>({...disconnected,enrolled:true,canConnect:true,connection:'connected' as const}));
+    await s.controller.refresh();
+    s.native.status=vi.fn(async()=>{throw Object.assign(new Error('occupied'),{code:'BUSY'});});
+    await s.controller.poll();
+    expect(s.view().state.connection).toBe('connected');
+    expect(s.view().busy).toBe(false);
+    s.native.status=vi.fn(async()=>({...disconnected,enrolled:true,canConnect:true,connection:'unreachable' as const}));
+    await s.controller.poll();
+    expect(s.view().state.connection).toBe('unreachable');
+  });
+
+  it('polls without hiding the conversation and ignores stale status after disconnect', async()=>{
+    const s=setup(); await s.controller.refresh();
+    let release!:(value:typeof disconnected)=>void;
+    s.native.status=vi.fn(()=>new Promise<typeof disconnected>(resolve=>{release=resolve;}));
+    const poll=s.controller.poll();
+    expect(s.view().busy).toBe(false);
+    await s.controller.disconnect();
+    release({...disconnected,enrolled:true,canConnect:true,connection:'connected' as const});
+    await poll;
+    expect(s.view().state.connection).toBe('disconnected');
+  });
+
   it('refuses connection and arbitrary workspace selection without authority',async()=>{
     const s=setup();await s.controller.refresh();await s.controller.connect();await s.controller.enroll('unknown');
     expect(s.native.connect).not.toHaveBeenCalled();expect(s.native.enroll).not.toHaveBeenCalled();

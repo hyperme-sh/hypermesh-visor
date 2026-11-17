@@ -305,6 +305,7 @@ jobs:
       - name: Compile Android library consumer and check both native dependencies
         if: matrix.os == 'ubuntu-latest'
         run: |
+          export VISOR_TUNNEL_AAR="$PWD/mobile/android/tunnel/build/outputs/aar/hypermesh-visor-tunnel-release.aar"
           export VISOR_MOBILE_AAR="$PWD/mobile/android/library/build/outputs/aar/hypermesh-visor-mobile-release.aar"
           gradle --no-daemon -p mobile/android/consumer assembleRelease
           apk=mobile/android/consumer/build/outputs/apk/release/visor-mobile-consumer-contract-release-unsigned.apk
@@ -328,6 +329,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - uses: actions/setup-go@v6
+        if: matrix.os == 'macos-latest'
+        with:
+          go-version: '1.25.x'
+          cache: false
       - name: Build unsigned Capacitor Apple enrollment app
         if: matrix.os == 'macos-latest'
         shell: bash
@@ -338,14 +344,20 @@ jobs:
           npm test
           npm run build
           npx cap sync ios
-          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
-            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
+          bash build-apple-tunnel.sh
+          for sdk in iphonesimulator iphoneos; do
+            destination='generic/platform=iOS'
+            if [[ "$sdk" == iphonesimulator ]]; then destination='generic/platform=iOS Simulator'; fi
+            xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+              -sdk "$sdk" -destination "$destination" \
+              -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple-$sdk" \
+              ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
+          done
       - name: Build unsigned Capacitor Android enrollment app
         if: matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
+          export VISOR_TUNNEL_AAR="$PWD/mobile/android/tunnel/build/outputs/aar/hypermesh-visor-tunnel-release.aar"
           export VISOR_MOBILE_AAR="$PWD/mobile/android/library/build/outputs/aar/hypermesh-visor-mobile-release.aar"
           cd mobile/app
           npm ci

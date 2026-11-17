@@ -22,6 +22,20 @@ export class Controller {
     }
     finally { if (stamp === this.generation) this.publish({ busy: false }); }
   }
+  private polling = false;
+  async poll() {
+    if (this.view.busy || this.polling) return;
+    const stamp = this.generation;
+    this.polling = true;
+    try {
+      const state = checkedState(await this.native.status());
+      if (stamp === this.generation) this.publish({ state });
+    } catch (error) {
+      // A bounded native worker can be occupied by a prompt; that says nothing about the tunnel.
+      const busy = typeof error === 'object' && error !== null && 'code' in error && error.code === 'BUSY';
+      if (!busy && stamp === this.generation) this.publish({ state: { ...this.view.state, connection: 'unreachable' } });
+    } finally { this.polling = false; }
+  }
   refresh() { return this.operation(async () => ({ state: checkedState(await this.native.status()) })); }
   signIn() { return this.operation(async () => {
     const result = await this.native.beginSignIn();

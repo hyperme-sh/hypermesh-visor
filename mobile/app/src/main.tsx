@@ -10,9 +10,11 @@ function App() {
   useEffect(() => {
     try { controller.current = new Controller(nativeClient(), setView); void controller.current.refresh(); }
     catch { setView(v=>({...v,busy:false,message:'Open Visor in the mobile app.'})); }
-    return () => { controller.current?.dispose(); controller.current=null; };
+    const timer = window.setInterval(() => void controller.current?.poll(), 2000);
+    return () => { window.clearInterval(timer); controller.current?.dispose(); controller.current=null; };
   }, []);
   const state=view.state;
+  const active = ['connected', 'connecting', 'reconnecting'].includes(state.connection);
   return <main>
     <header><span className="brand">VISOR</span><span className={`status ${state.connection}`}><i/>{state.connection}</span></header>
     <section className="intro"><p className="eyebrow">YOUR NETWORK, WITH YOU</p><h1>A place for<br/>your assistants.</h1><p>Connect this phone to your Hypermesh workspace.</p></section>
@@ -21,8 +23,8 @@ function App() {
       {view.userCode ? <><p>Complete sign-in in your browser using this code.</p><output className="code">{view.userCode}</output><button disabled={view.busy} onClick={()=>void controller.current?.finishSignIn()}>I’ve signed in</button><button className="secondary" onClick={()=>void controller.current?.cancel()}>Cancel</button></>
       : view.workspaces.length ? <><p>Choose your workspace.</p>{view.workspaces.map(w=><button className="workspace" key={w.id} disabled={view.busy} onClick={()=>void controller.current?.enroll(w.id)}>{w.name}<span aria-hidden>→</span></button>)}<button className="secondary" disabled={view.busy} onClick={()=>void controller.current?.cancel()}>Back to sign in</button></>
       : state.enrolled ? <><p>{state.connection==='connected'?'Connected to your network.':'Your device identity is stored securely on this phone.'}</p>
-        <button disabled={view.busy || (!state.canConnect && state.connection!=='connected')} onClick={()=>void (state.connection==='connected'?controller.current?.disconnect():controller.current?.connect())}>{state.connection==='connected'?'Disconnect':'Connect'}</button>
-        {!state.canConnect && state.connection!=='connected' && <p className="note">Connection is currently unavailable.</p>}
+        <button disabled={view.busy || (!state.canConnect && !active)} onClick={()=>void (active?controller.current?.disconnect():controller.current?.connect())}>{active?'Disconnect':'Connect'}</button>
+        {!state.canConnect && !active && <p className="note">Connection is currently unavailable.</p>}
         <button className="secondary" disabled={view.busy} onClick={()=>void controller.current?.signIn()}>Sign in again</button>
         <button className="secondary" disabled={view.busy} onClick={()=>{ if(window.confirm('Revoke this phone’s network access?')) void controller.current?.revoke(); }}>Remove this phone</button></>
       : <><p>Sign in with your account, then choose a workspace. Your private keys stay on this device.</p><button disabled={view.busy || !controller.current} onClick={()=>void controller.current?.signIn()}>Sign in</button></>}
