@@ -835,13 +835,16 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
     }
     @objc private func withdrawClicked() {
         guard !busy, connected, approve("Withdraw saved human-report consent and discard this draft?", button: "Withdraw") else { return }
-        busy = true; clear(); updateControls()
+        busy = true; clear(); updateControls(); let stamp = generation
         request("feedback-withdraw") { [weak self] reply in
-            guard let self, !self.ended else { return }
-            self.busy = false; self.consent.state = .off
-            self.message.stringValue = reply?["status"] as? Int == 200 ? "Saved consent withdrawn." : "Withdrawal unconfirmed. No automatic retry was made."
-            self.request("feedback-close") { _ in }; self.connected = false; self.updateControls()
+            self?.finishWithdrawal(reply, generation: stamp)
         }
+    }
+    private func finishWithdrawal(_ reply: [String:Any]?, generation stamp: Int) {
+        guard !ended, generation == stamp else { return }
+        busy = false; consent.state = .off
+        message.stringValue = reply?["status"] as? Int == 200 ? "Saved consent withdrawn." : "Withdrawal unconfirmed. No automatic retry was made."
+        request("feedback-close") { _ in }; connected = false; updateControls()
     }
     @objc private func sendClicked() {
         guard !busy, connected, draft.optedIn, !draft.preview.isEmpty else { return }
@@ -904,5 +907,8 @@ private func desktopCallback(_ bytes: UnsafePointer<UInt8>?, _ count: Int, _ out
         try verifyNativeUnit(form.editor.string.isEmpty && form.preview.string.isEmpty && !form.editor.isEditable)
         form.consent.state = .on; form.consentChanged(); form.editor.string = "discard"; form.reviewClicked(); form.clear()
         try verifyNativeUnit(!form.draft.optedIn && form.editor.string.isEmpty && form.preview.string.isEmpty)
+        form.generation += 1; form.connected = true; form.consent.state = .on
+        form.finishWithdrawal(["status":200], generation: form.generation - 1)
+        try verifyNativeUnit(form.connected && form.consent.state == .on)
     }
 }

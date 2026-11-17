@@ -85,30 +85,31 @@ struct Command {
     #[serde(default)] title: String,
     #[serde(default)] body: String,
 }
-struct Form<B> { id: Uuid, backend: B, enabled: bool, prepared: bool }
+struct Form<B> { id: Uuid, backend: B, enabled: bool, prepared: bool, uncertain: bool }
 impl<B: Backend> Form<B> {
     fn command(&mut self, request: &Command) -> Result<Value, IntakeError> {
         if request.session != self.id { return Err(IntakeError::Refused); }
         if request.action == "feedback-discard" {
-            self.backend.discard(); self.prepared = false; return Ok(json!({}));
+            self.backend.discard(); self.prepared = false; self.uncertain = false; return Ok(json!({}));
         }
         if request.action == "feedback-withdraw" {
-            self.prepared = false; self.enabled = false;
+            self.prepared = false; self.uncertain = false; self.enabled = false;
             self.backend.withdraw()?; return Ok(json!({"enabled":false}));
         }
         if !request.opt_in { return Err(IntakeError::Refused); }
         match request.action.as_str() {
             "feedback-enable" => { self.backend.enable()?; self.enabled = true; Ok(json!({"enabled":true})) }
             "feedback-prepare" if self.enabled => {
-                self.prepared = false; self.backend.discard();
+                self.prepared = false; self.uncertain = false; self.backend.discard();
                 let category = match request.category.as_str() { "Problem" => Category::Bug, "Idea" => Category::Feature, _ => return Err(IntakeError::Refused) };
                 self.backend.prepare(category,&request.title,&request.body)?;
                 self.prepared = true; Ok(json!({"prepared":true}))
             }
             "feedback-submit" if self.enabled && self.prepared => {
                 match self.backend.submit() {
-                    Ok(()) => { self.prepared = false; Ok(json!({"sent":true})) }
-                    Err(IntakeError::Unknown) => Err(IntakeError::Unknown),
+                    Ok(()) => { self.prepared = false; self.uncertain = false; Ok(json!({"sent":true})) }
+                    Err(IntakeError::Unknown) => { self.uncertain = true; Err(IntakeError::Unknown) },
+                    Err(_) if self.uncertain => Err(IntakeError::Unknown),
                     Err(error) => { self.prepared = false; self.backend.discard(); Err(error) }
                 }
             }
@@ -130,7 +131,7 @@ pub(crate) fn control(value: Value) -> Value {
             if !request.opt_in || slot.is_some() { return Err(IntakeError::Refused); }
             let mut backend = Native::configured()?;
             let enabled = backend.consent()?;
-            *slot = Some(Form { id: request.session, backend, enabled, prepared: false });
+            *slot = Some(Form { id: request.session, backend, enabled, prepared: false, uncertain: false });
             return Ok(json!({"enabled":enabled}));
         }
         slot.as_mut().ok_or(IntakeError::Refused)?.command(&request)
@@ -155,7 +156,7 @@ mod tests {
         fn submit(&mut self) -> Result<(), IntakeError> { self.calls.push("submit"); self.failure.map_or(Ok(()),Err) }
         fn discard(&mut self) { self.calls.push("discard"); }
     }
-    fn form() -> Form<Fake> { Form { id:Uuid::new_v4(),backend:Fake::default(),enabled:true,prepared:false } }
+    fn form() -> Form<Fake> { Form { id:Uuid::new_v4(),backend:Fake::default(),enabled:true,prepared:false,uncertain:false } }
     fn command(form: &Form<Fake>, action: &str) -> Command {
         Command { action:action.into(),session:form.id,opt_in:true,category:"Problem".into(),title:"A title".into(),body:"Manual description".into() }
     }
@@ -180,6 +181,17 @@ mod tests {
         assert_eq!(f.command(&command(&f,"feedback-submit")),Err(IntakeError::Unknown));
         assert!(f.prepared); assert_eq!(f.backend.calls.iter().filter(|x| **x=="submit").count(),1);
         f.backend.failure=None; f.command(&command(&f,"feedback-submit")).unwrap(); assert!(!f.prepared);
+    }
+    #[test] fn failed_refresh_after_unknown_does_not_replace_request() {
+        let mut f=form(); f.command(&command(&f,"feedback-prepare")).unwrap();
+        f.backend.failure=Some(IntakeError::Unknown);
+        assert!(f.command(&command(&f,"feedback-submit")).is_err());
+        f.backend.failure=Some(IntakeError::Refused);
+        assert_eq!(f.command(&command(&f,"feedback-submit")),Err(IntakeError::Unknown));
+        assert!(f.prepared && f.uncertain);
+        assert_eq!(f.backend.calls,vec!["discard","prepare","submit","submit"]);
+        f.backend.failure=None; f.command(&command(&f,"feedback-submit")).unwrap();
+        assert!(!f.prepared && !f.uncertain);
     }
     #[test] fn refusal_discards_pending_report() {
         let mut f=form(); f.prepared=true; f.backend.failure=Some(IntakeError::Refused);
