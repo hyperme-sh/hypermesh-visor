@@ -34,7 +34,8 @@ pub(crate) struct Call {
 }
 impl Bridge {
     pub fn new(socket: PathBuf) -> Result<Self, ()> {
-        if cfg!(windows) { return Err(()); }
+        #[cfg(windows)]
+        if socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_CRASH_PIPE) { return Err(()); }
         if !socket.is_absolute()
             || socket
                 .components()
@@ -93,7 +94,24 @@ impl Bridge {
         .map_err(|_| ())?
     }
     #[cfg(windows)]
-    async fn request(&self, _: &str, _: &str, _: Vec<u8>) -> Result<Value, ()> { Err(()) }
+    async fn request(&self, method: &str, path: &str, body: Vec<u8>) -> Result<Value, ()> {
+        if method != "POST" || path != "/crash-register" || body.len() > 2048 { return Err(()); }
+        let _permit = self.slots.try_acquire().map_err(|_| ())?;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            let stream = hypermesh_local_transport::connect_crash_registration().await.map_err(|_| ())?;
+            let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.map_err(|_| ())?;
+            struct Driver(tokio::task::JoinHandle<()>);
+            impl Drop for Driver { fn drop(&mut self) { self.0.abort(); } }
+            let _driver = Driver(tokio::spawn(async move { let _ = connection.await; }));
+            let request = Request::builder().method("POST").uri("/crash-register")
+                .header("Host", "localhost").header("Content-Type", "application/json")
+                .header("Connection", "close").body(Full::new(Bytes::from(body))).map_err(|_| ())?;
+            let response = sender.send_request(request).await.map_err(|_| ())?;
+            if response.status() != StatusCode::OK { return Err(()); }
+            let raw = Limited::new(response.into_body(), 4096).collect().await.map_err(|_| ())?.to_bytes();
+            serde_json::from_slice(&raw).map_err(|_| ())
+        }).await.map_err(|_| ())?
+    }
     pub async fn crash_register(&self, body: Value) -> Result<Value, ()> {
         let raw = serde_json::to_vec(&body).map_err(|_| ())?;
         if raw.len() > 2048 { return Err(()); }
@@ -174,7 +192,7 @@ pub(crate) fn tool_name(entry: &Entry) -> Result<String, ()> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     #[test]
