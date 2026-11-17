@@ -9,6 +9,10 @@ use std::{
 };
 pub mod host;
 pub mod delegation;
+#[cfg(target_os = "linux")]
+pub mod delegation_linux;
+#[cfg(target_os = "linux")]
+pub mod raw_mount_linux;
 mod ipc;
 pub mod platform;
 pub const MAX_AGE: u64 = 7 * 24 * 60 * 60;
@@ -500,6 +504,10 @@ fn inventory(
 fn purge(runs: &[PathBuf], root: &Path) -> io::Result<()> {
     for run in runs {
         private(run)?;
+        #[cfg(target_os = "linux")]
+        if run.join("host-ticket.json").exists() { raw_mount_linux::remove(run)?; }
+        else { fs::remove_dir_all(run)?; }
+        #[cfg(not(target_os = "linux"))]
         fs::remove_dir_all(run)?;
         storage::sync_dir(root)?;
     }
@@ -513,13 +521,21 @@ pub fn prune_locked(directory: &Path, time: u64) -> io::Result<()> {
 pub fn prune_runs_locked(root: &Path, time: u64) -> io::Result<()> {
     let runs = runs_at(root)?;
     let (mut entries, mut count, mut bytes) = (0, 0, 0);
+    let mut malformed = Vec::new();
     for run in &runs {
-        inventory(run, 0, &mut entries, &mut count, &mut bytes)?;
+        if let Err(error) = inventory(run, 0, &mut entries, &mut count, &mut bytes) {
+            #[cfg(target_os = "linux")]
+            if raw_mount_linux::is_bounded(run).unwrap_or(false) {
+                malformed.push(run.clone());
+                continue;
+            }
+            return Err(error);
+        }
     }
     let invalid: Vec<_> = runs
         .into_iter()
         .filter(|run| {
-            count > 5 || bytes > MAX_BYTES || !fresh(run, time) || run.join("stop-handler").exists()
+            malformed.contains(run) || count > 5 || bytes > MAX_BYTES || !fresh(run, time) || run.join("stop-handler").exists()
         })
         .collect();
     purge(&invalid, root)

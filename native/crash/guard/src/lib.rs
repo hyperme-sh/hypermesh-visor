@@ -20,7 +20,9 @@ use uuid::Uuid;
 
 struct Guard {
     run: PathBuf,
-    file: File,
+    file: Option<File>,
+    #[cfg(target_os = "linux")]
+    delegated: Option<hypermesh_crash_retention::delegation_linux::Client>,
     finished: Arc<AtomicBool>,
     monitor: Option<thread::JoinHandle<()>>,
 }
@@ -30,7 +32,9 @@ impl Drop for Guard {
         if let Some(monitor) = self.monitor.take() {
             let _ = monitor.join();
         }
-        drop(storage::UnlockOnDrop(&self.file));
+        if let Some(file) = &self.file {
+            drop(storage::UnlockOnDrop(file));
+        }
     }
 }
 fn refused() -> io::Error {
@@ -210,6 +214,14 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
         let Ok(path) = CStr::from_ptr(database).to_str() else {
             return std::ptr::null_mut();
         };
+        #[cfg(target_os = "linux")]
+        if let Some(mode) = std::env::var_os("HYPERMESH_HOST_CRASH_DELEGATED") {
+            return if mode == "1" {
+                enter_delegated(Path::new(path))
+            } else {
+                std::ptr::null_mut()
+            };
+        }
         let Ok((file, run)) = acquire(Path::new(path)) else {
             return std::ptr::null_mut();
         };
@@ -228,7 +240,9 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
         };
         let guard = Box::new(Guard {
             run: guard_run,
-            file,
+            file: Some(file),
+            #[cfg(target_os = "linux")]
+            delegated: None,
             finished,
             monitor: Some(monitor),
         });
@@ -243,6 +257,39 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
         Box::into_raw(guard).cast()
     })
     .unwrap_or(std::ptr::null_mut())
+}
+#[cfg(target_os = "linux")]
+fn enter_delegated(database: &Path) -> *mut c_void {
+    let Ok(client) = hypermesh_crash_retention::delegation_linux::Client::open(database) else {
+        return std::ptr::null_mut();
+    };
+    if client.permit().is_err() {
+        return std::ptr::null_mut();
+    }
+    let finished = Arc::new(AtomicBool::new(false));
+    let signal = Arc::clone(&finished);
+    let monitor_client = client.clone();
+    let Ok(monitor) = thread::Builder::new()
+        .name("host-container-capture-control".into())
+        .spawn(move || {
+            while !signal.load(Ordering::Acquire) {
+                if monitor_client.permit().is_err() {
+                    terminate();
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+        })
+    else {
+        return std::ptr::null_mut();
+    };
+    Box::into_raw(Box::new(Guard {
+        run: database.to_owned(),
+        file: None,
+        delegated: Some(client),
+        finished,
+        monitor: Some(monitor),
+    }))
+    .cast()
 }
 #[no_mangle]
 pub unsafe extern "C" fn visor_capture_leave(guard: *mut c_void) {
@@ -364,9 +411,15 @@ mod tests {
 #[no_mangle]
 pub unsafe extern "C" fn visor_capture_permit_write(guard: *mut c_void) -> bool {
     std::panic::catch_unwind(|| {
-        !guard.is_null()
-            && authority_valid(&(*guard.cast::<Guard>()).run)
-            && hypermesh_crash_retention::permit(&(*guard.cast::<Guard>()).run).is_ok()
+        if guard.is_null() {
+            return false;
+        }
+        let guard = &*guard.cast::<Guard>();
+        #[cfg(target_os = "linux")]
+        if let Some(client) = &guard.delegated {
+            return client.permit().is_ok();
+        }
+        authority_valid(&guard.run) && hypermesh_crash_retention::permit(&guard.run).is_ok()
     })
     .unwrap_or(false)
 }
