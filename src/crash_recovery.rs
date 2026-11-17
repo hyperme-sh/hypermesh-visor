@@ -40,6 +40,7 @@ pub fn recover(
     directory: &Path,
 ) -> io::Result<Vec<PendingCrash>> {
     let guard = store.recovery_guard()?;
+    hypermesh_crash_retention::prune_runs_locked(directory, hypermesh_crash_retention::now()?)?;
     match fs::symlink_metadata(directory) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(_) => return Err(refused()),
@@ -135,7 +136,7 @@ mod tests {
         fn new() -> Self {
             let path = std::env::temp_dir().join(format!("visor-recovery-{}", Uuid::new_v4()));
             storage::create_dir(&path).unwrap();
-            Self(path)
+            Self(fs::canonicalize(path).unwrap())
         }
     }
     impl Drop for Temp {
@@ -162,6 +163,7 @@ mod tests {
     fn run(root: &Path, store: &Store, location: &str) -> PathBuf {
         let run = root.join(Uuid::new_v4().to_string());
         storage::create_dir(&run).unwrap();
+        hypermesh_crash_retention::stamp(&run).unwrap();
         let ticket = store.capture(Category::Crashes).unwrap().unwrap();
         storage::open(&run.join("ticket.json"), storage::Open::New)
             .unwrap()
@@ -341,8 +343,8 @@ mod tests {
         fs::write(outside.0.join("keep"), b"unrelated private file").unwrap();
         fs::remove_dir_all(run.join("database")).unwrap();
         std::os::unix::fs::symlink(&outside.0, run.join("database")).unwrap();
-        assert!(recover(&store, DEST, &root.0).unwrap().is_empty());
-        assert!(!run.exists());
+        assert!(recover(&store, DEST, &root.0).is_err());
+        assert!(run.exists());
         assert_eq!(
             fs::read(outside.0.join("keep")).unwrap(),
             b"unrelated private file"
@@ -361,7 +363,7 @@ mod tests {
         assert!(recover(&store, DEST, &root.0).is_err());
         assert_eq!(fs::read_dir(&root.0).unwrap().count(), 6);
         drop(lease);
-        assert_eq!(recover(&store, DEST, &root.0).unwrap().len(), 5);
+        assert!(recover(&store, DEST, &root.0).unwrap().is_empty());
         assert_eq!(fs::read_dir(&root.0).unwrap().count(), 0);
     }
 }

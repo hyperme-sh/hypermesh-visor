@@ -1,0 +1,16 @@
+[Unit]
+Description=Hypermesh Visor owner crash cleanup
+After=local-fs.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=/usr/lib/hypermesh-visor/crash-sdk/bin/hypermesh-crash-retention service
+Restart=always
+RestartSec=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

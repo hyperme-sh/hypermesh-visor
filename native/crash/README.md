@@ -53,3 +53,22 @@ The standalone Linux executable and musl headless bundles do not include a
 native capture SDK. Capture remains disabled without local consent and a
 matching installed desktop SDK. macOS retains the existing ad-hoc development
 signing and hardened runtime settings; distribution signing remains deferred.
+
+## Raw writer bounds
+
+Capture policy marker 2 requires the patched native writer. Each raw report
+refuses writes beyond 32 MiB, including vector writes and writes after a seek.
+Each handler reserves at most five reports; failed or discarded attempts also
+consume a reservation. Attachments are refused. The build runs a synthetic-byte
+unit contract against these native methods without starting capture.
+
+The owner cleanup service binds these bounds to one registered configuration
+and one active writer per OS account. Consent enablement and capture require a
+held service lease and a fresh heartbeat. Native writes recheck permission after
+sleep or service failure. The helper purges expired or invalid stopped runs and
+coordinates with the writer lock before deletion. Runs expire conservatively
+within seven days of their start, including time while Visor is stopped.
+
+See [service installation and operation](service/README.md). The desktop runtime
+includes the helper; installation and service credentials remain local owner
+operations. Raw capture stays unavailable until the installed service is ready.

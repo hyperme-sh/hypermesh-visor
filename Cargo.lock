@@ -949,7 +949,7 @@ dependencies = [
 name = "hypermesh-companion"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "hypermesh-local-storage",
  "hypermesh-session",
  "libc",
@@ -964,6 +964,19 @@ dependencies = [
 
 [[package]]
 name = "hypermesh-crash-guard"
+version = "0.1.0"
+dependencies = [
+ "hypermesh-crash-retention",
+ "hypermesh-local-storage",
+ "libc",
+ "serde",
+ "serde_json",
+ "uuid",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "hypermesh-crash-retention"
 version = "0.1.0"
 dependencies = [
  "hypermesh-local-storage",
@@ -1018,6 +1031,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "hypermesh-crash-retention",
  "hypermesh-local-storage",
  "hypermesh-local-transport",
  "hypermesh-session",

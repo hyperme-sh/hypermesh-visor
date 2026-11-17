@@ -146,5 +146,6 @@ mod tests {
 #[cfg(windows)]
 pub use platform::{
     check_private_object as windows_check_private_object,
-    private_attributes as windows_private_attributes, user_sid as windows_user_sid,
+    private_attributes as windows_private_attributes, process_user_sid as windows_process_user_sid,
+    user_sid as windows_user_sid,
 };

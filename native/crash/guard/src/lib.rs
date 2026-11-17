@@ -19,6 +19,7 @@ use std::{
 use uuid::Uuid;
 
 struct Guard {
+    run: PathBuf,
     file: File,
     finished: Arc<AtomicBool>,
     monitor: Option<thread::JoinHandle<()>>,
@@ -124,7 +125,7 @@ fn stop_requested(run: &Path) -> io::Result<bool> {
 fn monitor(run: &Path, finished: &AtomicBool, terminate: impl FnOnce()) {
     while !finished.load(Ordering::Acquire) {
         // Losing control of the private directory also stops capture.
-        if stop_requested(run).unwrap_or(true) {
+        if stop_requested(run).unwrap_or(true) || hypermesh_crash_retention::permit(run).is_err() {
             terminate();
             return;
         }
@@ -159,6 +160,10 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
         let Ok((file, run)) = acquire(Path::new(path)) else {
             return std::ptr::null_mut();
         };
+        if hypermesh_crash_retention::admit_handler(&run).is_err() {
+            return std::ptr::null_mut();
+        }
+        let guard_run = run.clone();
         let finished = Arc::new(AtomicBool::new(false));
         let signal = Arc::clone(&finished);
         let active = run.join("handler-active");
@@ -169,6 +174,7 @@ pub unsafe extern "C" fn visor_capture_enter(database: *const c_char) -> *mut c_
             return std::ptr::null_mut();
         };
         let guard = Box::new(Guard {
+            run: guard_run,
             file,
             finished,
             monitor: Some(monitor),
@@ -299,4 +305,13 @@ mod tests {
         monitor(&run, &AtomicBool::new(false), || stopped = true);
         assert!(stopped);
     }
+}
+
+/// Consulted by the native bounded writer before every write, including after sleep.
+#[no_mangle]
+pub unsafe extern "C" fn visor_capture_permit_write(guard: *mut c_void) -> bool {
+    std::panic::catch_unwind(|| {
+        !guard.is_null() && hypermesh_crash_retention::permit(&(*guard.cast::<Guard>()).run).is_ok()
+    })
+    .unwrap_or(false)
 }

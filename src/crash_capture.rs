@@ -79,7 +79,7 @@ impl Sdk {
     #[cfg(all(target_os = "macos", feature = "native-crash-static"))]
     unsafe fn load(_path: &Path) -> io::Result<Self> {
         use linked::*;
-        if sentry_visor_capture_policy_version() != 1 {
+        if sentry_visor_capture_policy_version() != 2 {
             return Err(refused());
         }
         Ok(Self {
@@ -103,7 +103,7 @@ impl Sdk {
         let library = Library::new(path).map_err(|_| refused())?;
         let policy: unsafe extern "C" fn() -> i32 =
             symbol(&library, b"sentry_visor_capture_policy_version\0")?;
-        if policy() != 1 {
+        if policy() != 2 {
             return Err(refused());
         }
         Ok(Self {
@@ -237,6 +237,7 @@ pub(crate) fn start(store: Store, directory: &Path) -> io::Result<()> {
     if ATTEMPTED.swap(true, Ordering::AcqRel) {
         return Err(refused());
     }
+    hypermesh_crash_retention::require_service(directory)?;
     let executable = std::env::current_exe()?;
     let executable_directory = executable.parent().ok_or_else(refused)?;
     #[cfg(target_os = "linux")]
@@ -273,10 +274,14 @@ pub(crate) fn start(store: Store, directory: &Path) -> io::Result<()> {
     let run = root.join(Uuid::new_v4().to_string());
     storage::create_dir(&run)?;
     storage::create_dir(&run.join("database"))?;
+    hypermesh_crash_retention::stamp(&run)?;
     let mut ticket = storage::open(&run.join("ticket.json"), storage::Open::New)?;
     ticket.write_all(&serde_json::to_vec(lease.ticket()).map_err(|_| refused())?)?;
     ticket.sync_all()?;
     storage::sync_dir(&run)?;
+    // Reserve immutable service age while the application still owns the
+    // capture lease, before handler-ready can expose the handoff lock gap.
+    hypermesh_crash_retention::permit(&run)?;
     // Native OS callbacks may survive sentry_close. Retain the loaded library
     // until process exit even if initialization or later capture fails.
     let sdk = Box::leak(Box::new(sdk));
