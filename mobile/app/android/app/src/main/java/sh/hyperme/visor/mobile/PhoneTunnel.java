@@ -32,6 +32,7 @@ final class PhoneTunnel {
     private String conductor;
     private long generation;
     private boolean wanted;
+    private boolean stopFailed;
 
     PhoneTunnel(Context context, MobileMachine machine, MobileOwnerSignIn owner, String ca) {
         this.machine = machine; this.owner = owner; this.ca = ca;
@@ -41,7 +42,7 @@ final class PhoneTunnel {
         expiry.scheduleWithFixedDelay(this::expire, 1, 1, TimeUnit.SECONDS);
     }
     Intent permissionRequest() { return tunnel.permissionRequest(); }
-    synchronized long begin() { disconnect(); wanted = true; return generation; }
+    synchronized long begin() { disconnect(); wanted = !stopFailed; return generation; }
     void connect(long expected) throws Exception {
         synchronized (this) { if (!wanted || generation != expected) return; }
         MobileMeshLease next = mesh.prepare(owner);
@@ -74,7 +75,7 @@ final class PhoneTunnel {
     }
     synchronized String status() {
         expire();
-        return wanted ? tunnel.status().name().toLowerCase(Locale.ROOT) : "disconnected";
+        return wanted ? tunnel.status().name().toLowerCase(Locale.ROOT) : (stopFailed ? "unreachable" : "disconnected");
     }
     synchronized MobilePhoneClient client() {
         if (!"connected".equals(status()) || phone == null) throw new IllegalStateException();
@@ -83,7 +84,7 @@ final class PhoneTunnel {
     synchronized void failed(long expected) { if (generation == expected) disconnect(); }
     synchronized void disconnect() {
         generation++; wanted = false; mesh.cancel(); owner.cancelPhoneOperations();
-        tunnel.stop(); lease = null; phone = null; configuration = null; conductor = null;
+        stopFailed = !tunnel.stop(); lease = null; phone = null; configuration = null; conductor = null;
     }
     void close() { disconnect(); refresh.shutdownNow(); expiry.shutdownNow(); }
 }
