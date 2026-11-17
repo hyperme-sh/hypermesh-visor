@@ -27,6 +27,8 @@ mod conductor_socket;
 mod desktop;
 mod harness;
 mod host_bridge;
+#[cfg(unix)]
+pub mod feedback_grant;
 mod input;
 #[cfg(unix)]
 mod local_peer;
