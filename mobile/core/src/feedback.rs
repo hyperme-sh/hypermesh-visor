@@ -391,6 +391,7 @@ mod tests {
         calls: AtomicU64,
         sends: Mutex<Vec<usize>>,
         unknown: AtomicBool,
+        grant_refused: AtomicBool,
         changed: AtomicBool,
         hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
@@ -400,6 +401,7 @@ mod tests {
                 calls: AtomicU64::new(0),
                 sends: Mutex::new(vec![]),
                 unknown: AtomicBool::new(false),
+                grant_refused: AtomicBool::new(false),
                 changed: AtomicBool::new(false),
                 hook: Mutex::new(None),
             }
@@ -408,6 +410,9 @@ mod tests {
     impl Backend for Fake {
         fn grant(&self) -> Result<(Zeroizing<String>, MachineBinding), FeedbackError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.grant_refused.load(Ordering::SeqCst) {
+                return Err(FeedbackError::Refused);
+            }
             Ok((
                 Zeroizing::new(token(TENANT, DEVICE, &uuid::Uuid::new_v4().to_string())),
                 MachineBinding {
@@ -509,6 +514,13 @@ mod tests {
             c.submit(id.clone(), p.operation_id.clone()),
             Err(FeedbackError::Unknown)
         );
+        b.grant_refused.store(true, Ordering::SeqCst);
+        assert_eq!(
+            c.submit(id.clone(), p.operation_id.clone()),
+            Err(FeedbackError::Refused)
+        );
+        assert_eq!(b.sends.lock().unwrap().len(), 1);
+        b.grant_refused.store(false, Ordering::SeqCst);
         b.unknown.store(false, Ordering::SeqCst);
         c.submit(id.clone(), p.operation_id.clone()).unwrap();
         let sent = b.sends.lock().unwrap();
