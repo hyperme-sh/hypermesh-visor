@@ -59,7 +59,7 @@ export interface VisorFeedbackNative {
   feedbackConsent(options: { sessionId: string }): Promise<{ enabled: boolean }>;
   feedbackSetConsent(options: { sessionId: string; enabled: boolean }): Promise<void>;
   feedbackPrepare(options: { sessionId: string; kind: 'bug' | 'idea'; title: string; description: string }): Promise<FeedbackPreview>;
-  feedbackSubmit(options: { sessionId: string; operationId: string }): Promise<void>;
+  feedbackSubmit(options: { sessionId: string; operationId: string }): Promise<{ submitted: boolean; retryable: boolean }>;
 }
 const feedbackPlugin = plugin;
 export function nativeFeedbackClient(): VisorFeedbackNative {

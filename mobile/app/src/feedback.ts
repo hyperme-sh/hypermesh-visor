@@ -27,5 +27,7 @@ export function feedbackDraft(state: FeedbackDraft, action: FeedbackAction): Fee
   const title = state.title.trim();
   const description = state.description.trim();
   if (!title || !description) return { ...state, preview: null, error: 'Add a title and description before previewing.' };
+  if (Array.from(title).length < 4) return { ...state, preview: null, error: 'Use at least 4 characters in the title.' };
+  if (Array.from(description).length < 10) return { ...state, preview: null, error: 'Use at least 10 characters in the description.' };
   return { ...state, preview: { kind: state.kind, title, description }, error: '' };
 }

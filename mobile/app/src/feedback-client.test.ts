@@ -5,7 +5,7 @@ const report = { kind: 'bug' as const, title: 'Example title', description: 'Man
 function native(): VisorFeedbackNative {
   return { feedbackStatus: vi.fn(async () => ({ configured: true })), feedbackStart: vi.fn(async () => ({ sessionId: '1' })),
     feedbackCancel: vi.fn(async () => {}), feedbackConsent: vi.fn(async () => ({ enabled: true })), feedbackSetConsent: vi.fn(async () => {}),
-    feedbackPrepare: vi.fn(async () => ({ ...report, operationId: 'op' })), feedbackSubmit: vi.fn(async () => {}) };
+    feedbackPrepare: vi.fn(async () => ({ ...report, operationId: 'op' })), feedbackSubmit: vi.fn(async () => ({submitted:true,retryable:false})) };
 }
 it('never sends during preview and retries with the same native handle', async () => {
   const bridge = native(), client = new FeedbackClient(() => bridge);
@@ -33,4 +33,15 @@ it('withdrawal is explicit and never enables consent automatically', async () =>
   await client.prepare(report); expect(bridge.feedbackSetConsent).not.toHaveBeenCalled();
   await client.consent(false); expect(bridge.feedbackSetConsent).toHaveBeenCalledWith({sessionId:'1',enabled:false});
   await expect(client.submit()).rejects.toThrow();
+});
+
+it('requires a new preview after native refusal and retains only retryable operations', async () => {
+  const bridge=native(), client=new FeedbackClient(()=>bridge);
+  await client.prepare(report);
+  vi.mocked(bridge.feedbackSubmit).mockResolvedValueOnce({submitted:false,retryable:true});
+  await expect(client.submit()).rejects.toMatchObject({retryable:true});
+  vi.mocked(bridge.feedbackSubmit).mockResolvedValueOnce({submitted:false,retryable:false});
+  await expect(client.submit()).rejects.toMatchObject({retryable:false});
+  await expect(client.submit()).rejects.toThrow('Preview the report again.');
+  expect(bridge.feedbackSubmit).toHaveBeenCalledTimes(2);
 });

@@ -1,6 +1,6 @@
 import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { emptyDraft, feedbackDraft } from './feedback';
-import { FeedbackClient } from './feedback-client';
+import { FeedbackClient, FeedbackSendError } from './feedback-client';
 import { nativeFeedbackClient, type FeedbackPreview } from './native';
 
 /** Drafts stay in memory; native code owns authority and exact submitted bytes. */
@@ -50,7 +50,12 @@ export function FeedbackPanel() {
     if (!confirmed || busy) return;
     const op = generation.current; setBusy(true); setMessage('');
     try { await client.current.submit(); if (op === generation.current) { clear(); setMessage('Report submitted for review.'); } }
-    catch { if (op === generation.current) { setUncertain(true); setMessage('Submission is not confirmed. Retry this unchanged report or discard it.'); } }
+    catch (error) { if (op === generation.current) {
+      const retryable = error instanceof FeedbackSendError && error.retryable;
+      setUncertain(retryable);
+      if (!retryable) setConfirmed(null);
+      setMessage(retryable ? 'Submission is not confirmed. Retry this unchanged report or discard it.' : 'Submission refused. Review the report again before sending.');
+    } }
     finally { if (op === generation.current) setBusy(false); }
   };
   return <section className="card" aria-labelledby="feedback-title">

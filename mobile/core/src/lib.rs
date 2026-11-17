@@ -10,7 +10,7 @@ mod machine;
 mod mesh;
 mod owner;
 mod phone;
-pub use feedback::{FeedbackError, FeedbackPreview, MobileFeedbackClient};
+pub use feedback::{FeedbackError, FeedbackPreview, FeedbackSubmission, MobileFeedbackClient};
 pub use machine::{MachineError, MachineStatus, MobileMachine};
 pub use mesh::{MobileMeshClient, MobileMeshLease};
 pub use owner::{MobileOwnerSignIn, OwnerSignInPrompt};

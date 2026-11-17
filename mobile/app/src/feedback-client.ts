@@ -1,6 +1,8 @@
 import type { FeedbackPreview, VisorFeedbackNative } from './native';
 import type { Preview } from './feedback';
 
+export class FeedbackSendError extends Error { constructor(readonly retryable: boolean) { super('Report submission not confirmed.'); } }
+
 /** Only public handles and manually entered text cross the native boundary. */
 export class FeedbackClient {
   private generation = 0;
@@ -44,7 +46,13 @@ export class FeedbackClient {
     const sessionId = this.session, report = this.confirmed, generation = this.generation;
     if (!sessionId || !report) throw new Error('Preview the report again.');
     // Native retains immutable bytes and idempotency after an uncertain result.
-    await this.native().feedbackSubmit({ sessionId, operationId: report.operationId });
+    let result: { submitted: boolean; retryable: boolean };
+    try { result = await this.native().feedbackSubmit({ sessionId, operationId: report.operationId }); }
+    catch { throw new FeedbackSendError(true); } // Lost bridge response: do not create a new report.
+    if (!result.submitted) {
+      if (!result.retryable) this.confirmed = null;
+      throw new FeedbackSendError(result.retryable === true);
+    }
     if (generation !== this.generation) throw new Error('Feedback action cancelled.');
     this.confirmed = null;
   }

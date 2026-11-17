@@ -224,7 +224,7 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func feedbackSubmit(_ call: CAPPluginCall) {
         run(call) { state in
             guard let op = call.getString("operationId") else { throw PhoneFailure.unavailable }
-            try self.feedback(state).submit(sessionId: self.feedbackSession(call), operationId: op); return [:]
+            let sent = try self.feedback(state).submitReport(sessionId: self.feedbackSession(call), operationId: op); return ["submitted": sent.submitted, "retryable": sent.retryable]
         }
     }
     @objc func cancelPhone(_ call: CAPPluginCall) { native?.owner.cancelPhoneOperations(); call.resolve() }

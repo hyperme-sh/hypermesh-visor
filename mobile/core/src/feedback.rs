@@ -42,6 +42,11 @@ pub struct FeedbackPreview {
     pub description: String,
     pub kind: String,
 }
+#[derive(uniffi::Record)]
+pub struct FeedbackSubmission {
+    pub submitted: bool,
+    pub retryable: bool,
+}
 #[derive(Clone, PartialEq, Eq)]
 struct MachineBinding {
     tenant: String,
@@ -346,7 +351,31 @@ impl MobileFeedbackClient {
             })
         })
     }
-    pub fn submit(&self, session_id: String, operation_id: String) -> Result<(), FeedbackError> {
+    pub fn submit_report(&self, session_id: String, operation_id: String) -> FeedbackSubmission {
+        let submitted = self
+            .submit(session_id.clone(), operation_id.clone())
+            .is_ok();
+        let retryable = !submitted
+            && session_id
+                .parse::<u64>()
+                .ok()
+                .is_some_and(|id| self.current(id).is_ok())
+            && self.state.try_lock().ok().is_some_and(|s| {
+                s.as_ref().is_some_and(|s| {
+                    s.pending
+                        .as_ref()
+                        .is_some_and(|(op, _)| op == &operation_id)
+                })
+            });
+        FeedbackSubmission {
+            submitted,
+            retryable,
+        }
+    }
+}
+
+impl MobileFeedbackClient {
+    fn submit(&self, session_id: String, operation_id: String) -> Result<(), FeedbackError> {
         self.with(&session_id, |id, s| {
             if !s
                 .pending
@@ -391,6 +420,7 @@ mod tests {
         calls: AtomicU64,
         sends: Mutex<Vec<usize>>,
         unknown: AtomicBool,
+        send_refused: AtomicBool,
         grant_refused: AtomicBool,
         changed: AtomicBool,
         hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -401,6 +431,7 @@ mod tests {
                 calls: AtomicU64::new(0),
                 sends: Mutex::new(vec![]),
                 unknown: AtomicBool::new(false),
+                send_refused: AtomicBool::new(false),
                 grant_refused: AtomicBool::new(false),
                 changed: AtomicBool::new(false),
                 hook: Mutex::new(None),
@@ -448,6 +479,9 @@ mod tests {
         }
         fn send(&self, _: &str, report: &ConfirmedReport) -> Result<(), FeedbackError> {
             self.sends.lock().unwrap().push(report as *const _ as usize);
+            if self.send_refused.load(Ordering::SeqCst) {
+                return Err(FeedbackError::Refused);
+            }
             if self.unknown.load(Ordering::SeqCst) {
                 Err(FeedbackError::Unknown)
             } else {
@@ -542,6 +576,24 @@ mod tests {
         b.changed.store(true, Ordering::SeqCst);
         assert!(c.submit(id, p.operation_id).is_err());
         assert!(b.sends.lock().unwrap().is_empty());
+    }
+    #[test]
+    fn submission_response_distinguishes_retained_and_consumed_operations() {
+        let (c, b) = client();
+        let id = c.start(true).unwrap();
+        let p = prepare(&c, &id);
+        b.unknown.store(true, Ordering::SeqCst);
+        let result = c.submit_report(id.clone(), p.operation_id.clone());
+        assert!(!result.submitted && result.retryable);
+        b.grant_refused.store(true, Ordering::SeqCst);
+        let result = c.submit_report(id.clone(), p.operation_id.clone());
+        assert!(!result.submitted && result.retryable);
+        b.grant_refused.store(false, Ordering::SeqCst);
+        b.send_refused.store(true, Ordering::SeqCst);
+        let result = c.submit_report(id.clone(), p.operation_id.clone());
+        assert!(!result.submitted && !result.retryable);
+        let result = c.submit_report(id, p.operation_id);
+        assert!(!result.submitted && !result.retryable);
     }
     #[test]
     fn cancellation_during_consent_prevents_the_next_network_step() {

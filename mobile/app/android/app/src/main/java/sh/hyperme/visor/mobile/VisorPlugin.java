@@ -123,7 +123,7 @@ public final class VisorPlugin extends Plugin {
         });
     }
     @PluginMethod public void feedbackSubmit(PluginCall call) {
-        perform(call, n -> { String op = call.getString("operationId"); if (op == null) throw new IllegalArgumentException(); feedback(n).submit(feedbackSession(call), op); return new JSObject(); });
+        perform(call, n -> { String op = call.getString("operationId"); if (op == null) throw new IllegalArgumentException(); var sent = feedback(n).submitReport(feedbackSession(call), op); JSObject out = new JSObject(); out.put("submitted", sent.getSubmitted()); out.put("retryable", sent.getRetryable()); return out; });
     }
     private void clearFeedback() { if (nativeState != null && nativeState.feedback != null) nativeState.feedback.cancelAll(); }
     @Override protected void handleOnPause() { clearFeedback(); super.handleOnPause(); }
