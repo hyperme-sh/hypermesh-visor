@@ -14,8 +14,7 @@ not interpreted as HTML or Markdown. No prompt, document, clipboard, attachment
 or diagnostic is read automatically.
 
 Sending stays disabled by default. The Linux dialog has an optional connection
-to the native Host grant broker and intake client; the phone and native
-Windows forms below remain independent local surfaces.
+to the native Host grant broker and intake client; the phone form remains an independent local surface.
 
 ## Optional Linux submission
 
@@ -64,9 +63,19 @@ form discards the draft; reopening requires fresh consent. This is process-local
 clearing, not a promise of secure erasure from operating-system memory.
 
 Opening this form pauses desktop access and blocks new desktop approval while
-it is open. It has no engine calls, file writes, transport, attachments or automatic
-collection. Sending remains unavailable. Windows self-test contracts check the
-form's consent/reset/edit controls and strict UTF-8 draft validation in CI.
+it is open. Sending is default-off. Explicit settings use the same enable/origin
+keys as Linux, with `HYPERMESH_HOST_BRIDGE_SOCKET` fixed to
+`\\.\pipe\hypermesh-feedback-grant-v1`. The separately installed
+`HypermeshFeedbackGrant` LocalSystem service must be configured for this user's
+SID. The client verifies the pipe's service PID and LocalSystem configuration
+before sending bytes; this is separate from crash registration.
+
+Saved consent, plain title/body preview, explicit send/withdrawal and same-report
+retry follow the macOS flow below. Credentials remain in the native engine and
+network calls run off the form thread. No service installation, destination,
+credential, consent or collection is enabled by this change. Windows unit
+contracts cover form controls, stale callbacks and refusal of an impostor pipe
+before writing bytes.
 
 ## macOS
 

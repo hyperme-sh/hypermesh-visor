@@ -27,9 +27,8 @@ mod conductor_socket;
 mod desktop;
 mod harness;
 mod host_bridge;
-#[cfg(unix)]
 pub mod feedback_grant;
-#[cfg(all(unix, any(target_os = "macos", test)))]
+#[cfg(any(target_os = "macos", windows, test))]
 mod feedback_session;
 mod input;
 #[cfg(unix)]

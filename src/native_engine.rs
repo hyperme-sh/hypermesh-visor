@@ -112,10 +112,7 @@ pub unsafe extern "C" fn hypermesh_native_control(
         let action = value["action"].as_str().unwrap_or("");
         if engine.failed.load(Ordering::Acquire) && !matches!(action, "crash-consent-status" | "crash-consent-set") { return 1; }
         let result = if action.starts_with("feedback-") {
-            #[cfg(unix)]
-            { Some(crate::feedback_session::control(value.clone())) }
-            #[cfg(not(unix))]
-            { Some(serde_json::json!({"status":403,"body":null})) }
+            Some(crate::feedback_session::control(value.clone()))
         } else if matches!(action, "crash-consent-status" | "crash-consent-set") {
             Some(match crate::crash_startup::consent_ui(action, &value["decision"]) {
                 Ok(body) => serde_json::json!({"status":200,"body":body}),

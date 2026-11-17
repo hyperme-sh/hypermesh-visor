@@ -50,6 +50,25 @@ internal static class Engine
         return hypermesh_native_start(callback) == 0;
     }
 
+    private static readonly SemaphoreSlim FeedbackCalls = new(1);
+    internal static async Task<JsonElement?> Feedback(string action, string session, bool optIn = false, string category = "", string title = "", string body = "")
+    {
+        await FeedbackCalls.WaitAsync();
+        try {
+            return await Task.Run(() => {
+                byte[] request = JsonSerializer.SerializeToUtf8Bytes(new { action, session, opt_in = optIn, category, title, body });
+                int status = hypermesh_native_control(request, (nuint)request.Length, out nint output, out nuint length);
+                try {
+                    if (status != 0 || output == 0 || length == 0 || length > 16384) return (JsonElement?)null;
+                    byte[] bytes = new byte[(int)length]; Marshal.Copy(output,bytes,0,bytes.Length);
+                    using JsonDocument response = JsonDocument.Parse(bytes,new JsonDocumentOptions { MaxDepth = 16 });
+                    return response.RootElement.Clone();
+                } finally { hypermesh_native_free(output); Array.Clear(request); }
+            });
+        } catch { return null; }
+        finally { FeedbackCalls.Release(); }
+    }
+
     internal static async Task<JsonElement?> Control(string action, string? session = null, ulong? epoch = null, object? selection = null, object? decision = null, string? server = null)
     {
         await Calls.WaitAsync();

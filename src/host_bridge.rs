@@ -35,7 +35,7 @@ pub(crate) struct Call {
 impl Bridge {
     pub fn new(socket: PathBuf) -> Result<Self, ()> {
         #[cfg(windows)]
-        if socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_CRASH_PIPE) { return Err(()); }
+        if socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_CRASH_PIPE) && socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_FEEDBACK_PIPE) { return Err(()); }
         if !socket.is_absolute()
             || socket
                 .components()
@@ -95,15 +95,17 @@ impl Bridge {
     }
     #[cfg(windows)]
     async fn request(&self, method: &str, path: &str, body: Vec<u8>) -> Result<Value, ()> {
-        if method != "POST" || path != "/crash-register" || body.len() > 2048 { return Err(()); }
+        let feedback = path == "/feedback-grant" && self.socket == std::path::Path::new(hypermesh_local_transport::WINDOWS_FEEDBACK_PIPE);
+        let crash = path == "/crash-register" && self.socket == std::path::Path::new(hypermesh_local_transport::WINDOWS_CRASH_PIPE);
+        if method != "POST" || (!feedback && !crash) || body.len() > if feedback { 256 } else { 2048 } { return Err(()); }
         let _permit = self.slots.try_acquire().map_err(|_| ())?;
         tokio::time::timeout(Duration::from_secs(15), async {
-            let stream = hypermesh_local_transport::connect_crash_registration().await.map_err(|_| ())?;
+            let stream = if feedback { hypermesh_local_transport::connect_feedback_grant().await } else { hypermesh_local_transport::connect_crash_registration().await }.map_err(|_| ())?;
             let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.map_err(|_| ())?;
             struct Driver(tokio::task::JoinHandle<()>);
             impl Drop for Driver { fn drop(&mut self) { self.0.abort(); } }
             let _driver = Driver(tokio::spawn(async move { let _ = connection.await; }));
-            let request = Request::builder().method("POST").uri("/crash-register")
+            let request = Request::builder().method("POST").uri(path)
                 .header("Host", "localhost").header("Content-Type", "application/json")
                 .header("Connection", "close").body(Full::new(Bytes::from(body))).map_err(|_| ())?;
             let response = sender.send_request(request).await.map_err(|_| ())?;
@@ -112,7 +114,6 @@ impl Bridge {
             serde_json::from_slice(&raw).map_err(|_| ())
         }).await.map_err(|_| ())?
     }
-    #[cfg(unix)]
     pub(crate) async fn feedback_grant(&self, opted_in: bool) -> Result<crate::feedback_grant::FeedbackGrant, ()> {
         if !opted_in { return Err(()); }
         let value = self.request("POST", "/feedback-grant",

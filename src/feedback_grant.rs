@@ -1,4 +1,4 @@
-//! Explicit Unix Host grant acquisition; no report sending or automatic configuration.
+//! Explicit authenticated Host grant acquisition; no report sending or automatic configuration.
 use crate::host_bridge::Bridge;
 use serde::Deserialize;
 use std::{fmt, path::PathBuf};
@@ -21,6 +21,8 @@ impl std::error::Error for GrantUnavailable {}
 
 impl FeedbackGrantClient {
     pub fn configured(socket: PathBuf) -> Result<Self, GrantUnavailable> {
+        #[cfg(windows)]
+        if socket != std::path::Path::new(hypermesh_local_transport::WINDOWS_FEEDBACK_PIPE) { return Err(GrantUnavailable); }
         Ok(Self { bridge: Some(Bridge::new(socket).map_err(|_| GrantUnavailable)?) })
     }
 
