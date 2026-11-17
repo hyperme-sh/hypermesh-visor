@@ -23,6 +23,7 @@ final class PhoneTunnel {
     private final MobileOwnerSignIn owner;
     private final AndroidMeshTunnel tunnel;
     private final String packageName;
+    private final String ca;
     private final ScheduledExecutorService refresh = Executors.newSingleThreadScheduledExecutor();
     private final ScheduledExecutorService expiry = Executors.newSingleThreadScheduledExecutor();
     private MobileMeshLease lease;
@@ -32,8 +33,8 @@ final class PhoneTunnel {
     private long generation;
     private boolean wanted;
 
-    PhoneTunnel(Context context, MobileMachine machine, MobileOwnerSignIn owner) {
-        this.machine = machine; this.owner = owner;
+    PhoneTunnel(Context context, MobileMachine machine, MobileOwnerSignIn owner, String ca) {
+        this.machine = machine; this.owner = owner; this.ca = ca;
         mesh = new MobileMeshClient(machine);
         tunnel = new AndroidMeshTunnel(context); packageName = context.getPackageName();
         refresh.scheduleWithFixedDelay(this::renew, 20, 20, TimeUnit.SECONDS);
@@ -53,9 +54,9 @@ final class PhoneTunnel {
                     String scoped = raw.replace("[Interface]\n", "[Interface]\nIncludedApplications = " + packageName + "\n");
                     Config config = Config.parse(new ByteArrayInputStream(scoped.getBytes(StandardCharsets.UTF_8)));
                     if (!tunnel.start(config)) throw new IllegalStateException();
-                    phone = new MobilePhoneClient(machine, origin);
+                    phone = new MobilePhoneClient(machine, origin, ca);
                 } else if (!origin.equals(conductor)) {
-                    phone = new MobilePhoneClient(machine, origin);
+                    phone = new MobilePhoneClient(machine, origin, ca);
                 }
                 lease = next; configuration = raw; conductor = origin;
             } catch (Exception failure) { disconnect(); throw failure; }

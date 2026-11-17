@@ -26,3 +26,12 @@ it('keeps Conductor optional and refuses unsafe or incomplete origins', () => {
     expect(() => nativeConfig({...valid,VISOR_MOBILE_CONDUCTOR_ORIGIN:origin})).toThrow();
   }
 });
+
+it('accepts public Conductor CA configuration and refuses private keys', () => {
+  const ca = '-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----\n';
+  expect(nativeConfig({...valid,VISOR_MOBILE_CONDUCTOR_CA_PEM:ca}).conductorCaPem).toBe(ca);
+  expect(() => nativeConfig({VISOR_MOBILE_CONDUCTOR_CA_PEM:ca})).toThrow();
+  for (const bad of ['private-key', ca.replaceAll('CERTIFICATE','PRIVATE KEY'), ca+ca]) {
+    expect(() => nativeConfig({...valid,VISOR_MOBILE_CONDUCTOR_CA_PEM:bad})).toThrow();
+  }
+});

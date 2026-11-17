@@ -67,7 +67,12 @@ job's native AAR. Neither compile job provisions a peer or performs live sign-in
 
 ## Native prompt operations
 
-The lease supplies the native Conductor origin. The legacy optional
+The lease supplies the native Conductor origin. A private-IP listener needs a
+certificate with that IP in its SAN. Supply its public CA certificate through
+`VISOR_MOBILE_CONDUCTOR_CA_PEM`; the native core trusts that CA only for Conductor,
+with normal certificate and hostname validation. It does not change the public
+trust roots used for issuer, auth or Plane bootstrap. Never supply a private key.
+Without an applicable trusted CA, connection attempts fail closed. The legacy optional
 `VISOR_MOBILE_CONDUCTOR_ORIGIN` build input grants no routing authority. Both platform plugins expose `preparePrompt`, `submitPrompt` and
 `discardPrompt`; no per-request origin, bearer token or arbitrary network method
 crosses the JavaScript boundary. Preparing returns public task/operation IDs and

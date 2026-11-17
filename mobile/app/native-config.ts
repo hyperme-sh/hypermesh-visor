@@ -1,9 +1,9 @@
-export function nativeConfig(env: Record<string, string | undefined>): Partial<Record<'issuer' | 'authOrigin' | 'planeOrigin' | 'workspaceId' | 'workspaceName' | 'conductorOrigin', string>> {
+export function nativeConfig(env: Record<string, string | undefined>): Partial<Record<'issuer' | 'authOrigin' | 'planeOrigin' | 'workspaceId' | 'workspaceName' | 'conductorOrigin' | 'conductorCaPem', string>> {
   const names = ['issuer', 'authOrigin', 'planeOrigin', 'workspaceId', 'workspaceName'] as const;
   const keys = ['VISOR_MOBILE_ISSUER', 'VISOR_MOBILE_AUTH_ORIGIN', 'VISOR_MOBILE_PLANE_ORIGIN', 'VISOR_MOBILE_WORKSPACE_ID', 'VISOR_MOBILE_WORKSPACE_NAME'];
   const values = keys.map(key => env[key]);
   if (values.every(value => !value)) {
-    if (env.VISOR_MOBILE_CONDUCTOR_ORIGIN) throw new Error('Complete native phone configuration is required.');
+    if (env.VISOR_MOBILE_CONDUCTOR_ORIGIN || env.VISOR_MOBILE_CONDUCTOR_CA_PEM) throw new Error('Complete native phone configuration is required.');
     return {};
   }
   if (values.some(value => !value || /[\x00-\x1f\x7f]/.test(value))) throw new Error('Complete native phone configuration is required.');
@@ -24,5 +24,9 @@ export function nativeConfig(env: Record<string, string | undefined>): Partial<R
       throw new Error('Conductor configuration must be an HTTPS origin.');
     }
   }
-  return { ...config, ...(conductor ? { conductorOrigin: conductor } : {}) };
+  const ca = env.VISOR_MOBILE_CONDUCTOR_CA_PEM;
+  if (ca && (ca.length > 16384 || !/^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*$/.test(ca))) {
+    throw new Error('Conductor trust must contain one public CA certificate.');
+  }
+  return { ...config, ...(ca ? { conductorCaPem: ca } : {}), ...(conductor ? { conductorOrigin: conductor } : {}) };
 }

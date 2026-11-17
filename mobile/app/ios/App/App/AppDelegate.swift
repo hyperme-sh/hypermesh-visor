@@ -55,16 +55,16 @@ private final class PhoneNativeState {
     let machine: MobileMachine
     let workspaceId: String
     let workspaceName: String
-    init(issuer: String, auth: String, plane: String, workspace: String, name: String, conductor: String?) throws {
+    init(issuer: String, auth: String, plane: String, workspace: String, name: String, conductor: String?, ca: String?) throws {
         guard UUID(uuidString: workspace)?.uuidString.lowercased() == workspace,
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 128 else {
             throw PhoneFailure.unavailable
         }
-        binding = [issuer, auth, plane, workspace, name, conductor ?? ""]
+        binding = [issuer, auth, plane, workspace, name, conductor ?? "", ca ?? ""]
         workspaceId = workspace; workspaceName = name
         machine = try appleMachineIdentity(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", planeOrigin: plane)
         owner = try appleOwnerSignIn(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", issuer: issuer, authOrigin: auth)
-        tunnel = PhoneTunnel(machine: machine, owner: owner)
+        tunnel = PhoneTunnel(machine: machine, owner: owner, ca: ca)
     }
 }
 
@@ -90,15 +90,15 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         let conductor = config.getString("conductorOrigin")
         Self.stateLock.lock(); defer { Self.stateLock.unlock() }
         do {
-            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name, conductor: conductor) }
-            guard Self.shared?.binding == [issuer, auth, plane, workspace, name, conductor ?? ""] else { return }
+            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name, conductor: conductor, ca: config.getString("conductorCaPem")) }
+            guard Self.shared?.binding == [issuer, auth, plane, workspace, name, conductor ?? "", config.getString("conductorCaPem") ?? ""] else { return }
             native = Self.shared
         } catch { /* Missing native storage/configuration never falls back to JS storage. */ }
     }
     private func run(_ call: CAPPluginCall, _ action: @escaping (PhoneNativeState) throws -> JSObject) {
         guard let state = native else { call.reject("Phone configuration is unavailable."); return }
         busyLock.lock()
-        if busy { busyLock.unlock(); call.reject("Another action is in progress."); return }
+        if busy { busyLock.unlock(); call.reject("Another action is in progress.", "BUSY"); return }
         busy = true; busyLock.unlock()
         worker.async {
             let result = Result { try action(state) }
@@ -115,7 +115,13 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
                 "revoked": current?.revoked == true,
                 "connection": state.tunnel.status(), "canConnect": current?.enrolled == true && current?.revoked != true]
     }
-    @objc func status(_ call: CAPPluginCall) { run(call, publicState) }
+    @objc func status(_ call: CAPPluginCall) {
+        guard let state = native else { call.reject("Phone configuration is unavailable."); return }
+        DispatchQueue.global(qos: .utility).async {
+            do { call.resolve(try self.publicState(state)) }
+            catch { call.reject("Phone status is unavailable.") }
+        }
+    }
     @objc func beginSignIn(_ call: CAPPluginCall) {
         run(call) { state in
             state.tunnel.disconnect()

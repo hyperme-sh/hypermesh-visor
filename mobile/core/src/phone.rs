@@ -87,15 +87,44 @@ struct Pending {
 trait Sender: Send + Sync {
     fn send(&self, token: &str, raw: &str) -> Result<String, MachineError>;
 }
+// A deployment-supplied public CA applies only to Conductor, never identity bootstrap.
+fn private_ca(pem: &str) -> Result<Arc<rustls::ClientConfig>, MachineError> {
+    use base64::Engine;
+    if pem.len() > 16384 {
+        return Err(MachineError::Invalid);
+    }
+    let body = pem
+        .trim()
+        .strip_prefix("-----BEGIN CERTIFICATE-----")
+        .and_then(|value| value.strip_suffix("-----END CERTIFICATE-----"))
+        .ok_or(MachineError::Invalid)?;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(body.split_whitespace().collect::<String>())
+        .map_err(|_| MachineError::Invalid)?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(rustls::pki_types::CertificateDer::from(der))
+        .map_err(|_| MachineError::Invalid)?;
+    Ok(Arc::new(
+        rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ))
+}
 struct HttpsSender {
     origin: String,
+    tls: Option<Arc<rustls::ClientConfig>>,
 }
 impl Sender for HttpsSender {
     fn send(&self, token: &str, raw: &str) -> Result<String, MachineError> {
-        let agent = ureq::AgentBuilder::new()
+        let builder = ureq::AgentBuilder::new()
             .redirects(0)
-            .timeout(Duration::from_secs(30))
-            .build();
+            .timeout(Duration::from_secs(30));
+        let agent = match &self.tls {
+            Some(config) => builder.tls_config(config.clone()),
+            None => builder,
+        }
+        .build();
         let response = agent
             .post(&format!("{}/v1/phone/prompt-submit", self.origin))
             .set("Authorization", &format!("Bearer {token}"))
@@ -138,11 +167,13 @@ impl MobilePhoneClient {
     pub fn new(
         machine: Arc<MobileMachine>,
         conductor_origin: String,
+        conductor_ca_pem: Option<String>,
     ) -> Result<Self, MachineError> {
         Ok(Self {
             machine,
             sender: Arc::new(HttpsSender {
                 origin: origin(&conductor_origin)?,
+                tls: conductor_ca_pem.as_deref().map(private_ca).transpose()?,
             }),
             pending: Mutex::new(HashMap::new()),
             active: Mutex::new(()),
@@ -316,6 +347,20 @@ mod tests {
     use super::*;
     use crate::{NativeSessionStore, StoreError};
     use base64::Engine;
+    #[test]
+    fn private_conductor_trust_rejects_invalid_or_multiple_roots() {
+        let ca = include_str!("../tests/fixtures/conductor-ca.pem");
+        assert!(private_ca(ca).is_ok());
+        for value in [
+            String::new(),
+            "-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----".into(),
+            format!("{ca}{ca}"),
+            ca.replace("CERTIFICATE", "PRIVATE KEY"),
+            "x".repeat(16385),
+        ] {
+            assert!(private_ca(&value).is_err());
+        }
+    }
     #[derive(Default)]
     struct Store(Mutex<Option<String>>);
     impl NativeSessionStore for Store {
@@ -435,7 +480,7 @@ mod tests {
             "https://user:password@host.test",
             "https://host.test/path",
         ] {
-            assert!(MobilePhoneClient::new(client.machine.clone(), value.into()).is_err());
+            assert!(MobilePhoneClient::new(client.machine.clone(), value.into(), None).is_err());
         }
         assert!(capture.calls.lock().unwrap().is_empty());
     }

@@ -8,6 +8,7 @@ final class PhoneTunnel {
     let mesh: MobileMeshClient
     private let machine: MobileMachine
     private let owner: MobileOwnerSignIn
+    private let ca: String?
     private let lock = NSRecursiveLock()
     private let renewal = DispatchQueue(label: "sh.hyperme.visor.phone-renewal")
     private var timer: DispatchSourceTimer?
@@ -20,8 +21,8 @@ final class PhoneTunnel {
     private var conductor: String?
     private let provider = "sh.hyperme.visor.mobile.tunnel"
 
-    init(machine: MobileMachine, owner: MobileOwnerSignIn) {
-        self.machine = machine; self.owner = owner; mesh = MobileMeshClient(machine: machine)
+    init(machine: MobileMachine, owner: MobileOwnerSignIn, ca: String?) {
+        self.machine = machine; self.owner = owner; self.ca = ca; mesh = MobileMeshClient(machine: machine)
         let timer = DispatchSource.makeTimerSource(queue: renewal)
         timer.schedule(deadline: .now() + 20, repeating: 20)
         timer.setEventHandler { [weak self] in self?.refresh() }
@@ -89,7 +90,7 @@ final class PhoneTunnel {
             guard session.status == .disconnected || session.status == .invalid else { throw TunnelFailure.unavailable }
             try session.startTunnel(options: ["configuration": raw as NSString, "expires": NSNumber(value: next.expiresAt())])
         }
-        if phone == nil || conductor != origin { phone = try MobilePhoneClient(machine: machine, conductorOrigin: origin) }
+        if phone == nil || conductor != origin { phone = try MobilePhoneClient(machine: machine, conductorOrigin: origin, conductorCaPem: ca) }
         manager = selected; lease = next; configuration = raw; conductor = origin
     }
     private func refresh() {

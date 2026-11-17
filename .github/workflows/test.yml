@@ -345,10 +345,14 @@ jobs:
           npm run build
           npx cap sync ios
           bash build-apple-tunnel.sh
-          xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
-            -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple" \
-            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
+          for sdk in iphonesimulator iphoneos; do
+            destination='generic/platform=iOS'
+            if [[ "$sdk" == iphonesimulator ]]; then destination='generic/platform=iOS Simulator'; fi
+            xcodebuild -project ios/App/App.xcodeproj -scheme App -configuration Release \
+              -sdk "$sdk" -destination "$destination" \
+              -derivedDataPath "$RUNNER_TEMP/visor-capacitor-apple-$sdk" \
+              ARCHS=arm64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build -quiet
+          done
       - name: Build unsigned Capacitor Android enrollment app
         if: matrix.os == 'ubuntu-latest'
         shell: bash

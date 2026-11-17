@@ -38,7 +38,7 @@ public final class VisorPlugin extends Plugin {
         final String workspaceId;
         final String workspaceName;
         NativeState(android.content.Context context, String issuer, String auth, String plane,
-                    String workspace, String name, String conductor) throws Exception {
+                    String workspace, String name, String conductor, String ca) throws Exception {
             if (!UUID.fromString(workspace).toString().equals(workspace) || name.isBlank() || name.length() > 128)
                 throw new IllegalArgumentException();
             binding = String.join("\n", issuer, auth, plane, workspace, name, conductor == null ? "" : conductor);
@@ -46,7 +46,7 @@ public final class VisorPlugin extends Plugin {
             workspaceName = name;
             machine = AndroidSessionStoreKt.androidMachineIdentity(context, "device-owner-v1", plane);
             owner = AndroidSessionStoreKt.androidOwnerSignIn(context, "device-owner-v1", issuer, auth);
-            tunnel = new PhoneTunnel(context, machine, owner);
+            tunnel = new PhoneTunnel(context, machine, owner, ca);
         }
     }
 
@@ -60,7 +60,7 @@ public final class VisorPlugin extends Plugin {
             String conductor = getConfig().getString("conductorOrigin");
             if (issuer == null || auth == null || plane == null || workspace == null || name == null) return;
             String binding = String.join("\n", issuer, auth, plane, workspace, name, conductor == null ? "" : conductor);
-            nativeState = new NativeState(getContext().getApplicationContext(), issuer, auth, plane, workspace, name, conductor);
+            nativeState = new NativeState(getContext().getApplicationContext(), issuer, auth, plane, workspace, name, conductor, getConfig().getString("conductorCaPem"));
         } catch (Exception ignored) { /* No partial/plaintext fallback or raw diagnostics. */ }
     }
 
@@ -72,7 +72,7 @@ public final class VisorPlugin extends Plugin {
                 try { call.resolve(action.run(nativeState)); }
                 catch (Exception ignored) { call.reject("That action could not be completed."); }
             });
-        } catch (java.util.concurrent.RejectedExecutionException ignored) { call.reject("Another action is in progress."); }
+        } catch (java.util.concurrent.RejectedExecutionException ignored) { call.reject("Another action is in progress.", "BUSY"); }
     }
     private JSObject state(NativeState n) throws Exception {
         MachineStatus status = n.machine.status();
@@ -191,7 +191,7 @@ public final class VisorPlugin extends Plugin {
     @ActivityCallback private void vpnPermission(PluginCall call, ActivityResult result) {
         if (call == null) return;
         if (result.getResultCode() != Activity.RESULT_OK) {
-            if (nativeState != null) nativeState.tunnel.disconnect();
+            if (nativeState != null) nativeState.tunnel.failed(call.getData().optLong("nativeConnectionGeneration", -1));
             call.reject("VPN permission was not granted."); return;
         }
         startTunnel(call, call.getData().optLong("nativeConnectionGeneration", -1));
