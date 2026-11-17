@@ -32,7 +32,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if !self.current() {
                 self.configuration = nil; self.generation &+= 1
                 self.timer?.cancel(); self.timer = nil
-                self.tunnel.stop { _ in self.cancelTunnelWithError(nil) }
+                let stamp = self.generation
+                self.tunnel.stop { _ in
+                    self.queue.async {
+                        if stamp == self.generation { self.cancelTunnelWithError(nil) }
+                    }
+                }
             }
         }
         timer = watchdog; watchdog.resume()
@@ -50,7 +55,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.configuration = raw; self.arm(end)
             self.tunnel.start(configuration: config) { started in
                 self.queue.async {
-                    guard stamp == self.generation, self.current(), started else {
+                    guard stamp == self.generation else {
+                        completionHandler(NSError(domain: "VisorTunnel", code: 1)); return
+                    }
+                    guard self.current(), started else {
                         self.configuration = nil
                         self.tunnel.stop { _ in completionHandler(NSError(domain: "VisorTunnel", code: 1)) }
                         return

@@ -78,8 +78,14 @@ final class PhoneTunnel {
         }
         lock.lock(); defer { lock.unlock() }
         guard wanted, generation == stamp, next.valid(), let session = selected.connection as? NETunnelProviderSession else { throw TunnelFailure.unavailable }
+        let nextPhone: MobilePhoneClient?
+        if phone == nil || conductor != origin {
+            nextPhone = try MobilePhoneClient(machine: machine, conductorOrigin: origin, conductorCaPem: ca)
+        } else { nextPhone = phone }
+        let wasConfigured = manager != nil
+        manager = selected
         let values: [String: Any] = ["operation": "refresh", "configuration": raw, "expires": NSNumber(value: next.expiresAt())]
-        if manager != nil && raw == configuration && session.status == .connected {
+        if wasConfigured && raw == configuration && session.status == .connected {
             guard try message(session, values) == Data("ok".utf8) else { throw TunnelFailure.unavailable }
         } else {
             session.stopTunnel()
@@ -90,8 +96,7 @@ final class PhoneTunnel {
             guard session.status == .disconnected || session.status == .invalid else { throw TunnelFailure.unavailable }
             try session.startTunnel(options: ["configuration": raw as NSString, "expires": NSNumber(value: next.expiresAt())])
         }
-        if phone == nil || conductor != origin { phone = try MobilePhoneClient(machine: machine, conductorOrigin: origin, conductorCaPem: ca) }
-        manager = selected; lease = next; configuration = raw; conductor = origin
+        phone = nextPhone; lease = next; configuration = raw; conductor = origin
     }
     private func refresh() {
         lock.lock(); let active = wanted && lease != nil; let stamp = generation; lock.unlock()
