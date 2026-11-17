@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+pub mod host;
 mod ipc;
 pub mod platform;
 pub const MAX_AGE: u64 = 7 * 24 * 60 * 60;
@@ -66,6 +67,8 @@ fn write<T: Serialize>(path: &Path, value: &T) -> io::Result<()> {
 #[serde(deny_unknown_fields)]
 struct Registration {
     directory: PathBuf,
+    #[serde(default, skip_serializing_if = "Authority::is_visor")]
+    authority: Authority,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,9 +84,25 @@ struct Stamp {
 
 /// Fixed OS account profile, never HOME/USERPROFILE or an application override.
 pub fn root() -> io::Result<PathBuf> {
-    Ok(platform::home()?.join(".hypermesh-crash-retention"))
+    let home = platform::home()?;
+    #[cfg(unix)]
+    let home = fs::canonicalize(home)?;
+    Ok(home.join(".hypermesh-crash-retention"))
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Authority {
+    #[default]
+    Visor,
+    Host,
+}
+impl Authority {
+    fn is_visor(&self) -> bool {
+        *self == Self::Visor
+    }
 }
 pub struct Owner {
+    authority: Authority,
     root: PathBuf,
     directory: PathBuf,
 }
@@ -100,7 +119,11 @@ impl Owner {
             return Err(refused());
         }
         private(&registration.directory)?;
+        if registration.authority == Authority::Host {
+            host::require_root()?;
+        }
         Ok(Self {
+            authority: registration.authority,
             root,
             directory: registration.directory,
         })
@@ -113,7 +136,21 @@ impl Owner {
         storage::create_dir(&directory)?;
         Self::register_at(root, &directory)
     }
+    pub fn authority(&self) -> Authority {
+        self.authority
+    }
+    pub fn register_host() -> io::Result<()> {
+        host::require_root()?;
+        let root = root()?;
+        storage::create_dir(&root)?;
+        let directory = root.join("config");
+        storage::create_dir(&directory)?;
+        Self::register_authority(root, &directory, Authority::Host)
+    }
     fn register_at(root: PathBuf, directory: &Path) -> io::Result<()> {
+        Self::register_authority(root, directory, Authority::Visor)
+    }
+    fn register_authority(root: PathBuf, directory: &Path, authority: Authority) -> io::Result<()> {
         if directory != root.join("config") {
             return Err(refused());
         }
@@ -126,13 +163,14 @@ impl Owner {
         let path = root.join("directory.json");
         if path.try_exists()? {
             let old: Registration = read(&path)?;
-            if old.directory != directory {
+            if old.directory != directory || old.authority != authority {
                 return Err(refused());
             }
         } else {
             write(
                 &path,
                 &Registration {
+                    authority,
                     directory: directory.to_owned(),
                 },
             )?;
@@ -140,8 +178,11 @@ impl Owner {
         Ok(())
     }
     pub fn require(&self, directory: &Path) -> io::Result<()> {
-        self.require_with(directory, now, platform::verify_service)?;
-        ipc::request(&self.root, uuid::Uuid::nil())
+        match self.authority {
+            Authority::Visor => self.require_with(directory, now, platform::verify_service)?,
+            Authority::Host => self.require_with(directory, now, platform::verify_host_service)?,
+        }
+        ipc::request(&self.root, uuid::Uuid::nil(), self.authority)
     }
     fn require_with(
         &self,
@@ -375,7 +416,11 @@ fn lock(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 pub fn require_service(directory: &Path) -> io::Result<()> {
-    Owner::open()?.require(directory)
+    let owner = Owner::open()?;
+    if owner.authority != Authority::Visor {
+        return Err(refused());
+    }
+    owner.require(directory)
 }
 pub fn stamp(run: &Path) -> io::Result<()> {
     private(run)?;
@@ -488,7 +533,7 @@ pub fn permit(run: &Path) -> io::Result<()> {
         .and_then(|v| v.to_str())
         .and_then(|v| uuid::Uuid::parse_str(v).ok())
         .ok_or_else(refused)?;
-    ipc::request(&owner.root, id)?;
+    ipc::request(&owner.root, id, owner.authority)?;
     let time = now()?;
     if !fresh(run, time) {
         return Err(refused());
@@ -567,6 +612,22 @@ mod tests {
         let file = storage::open(&run.join("synthetic.dmp"), storage::Open::New).unwrap();
         file.set_len(size).unwrap();
         run
+    }
+    #[test]
+    fn authority_registration_cannot_change_an_existing_scope() {
+        let (_temp, owner) = fixture();
+        assert_eq!(owner.authority(), Authority::Visor);
+        assert!(
+            Owner::register_authority(owner.root.clone(), &owner.directory, Authority::Host)
+                .is_err()
+        );
+        let old: Registration =
+            serde_json::from_value(serde_json::json!({"directory":owner.directory})).unwrap();
+        assert_eq!(old.authority, Authority::Visor);
+        assert!(serde_json::from_value::<Registration>(
+            serde_json::json!({"directory":owner.directory,"authority":"unknown"})
+        )
+        .is_err());
     }
     #[test]
     fn registered_run_survives_the_application_to_handler_lock_gap() {
@@ -840,6 +901,7 @@ mod tests {
         write(
             &owner.root.join("directory.json"),
             &Registration {
+                authority: Authority::Visor,
                 directory: second.clone(),
             },
         )

@@ -42,6 +42,20 @@ jobs:
           cargo build --locked -p hypermesh-companion
           python3 companion/tests/session_cli_terminal.py
 
+  host-crash-authority-contract:
+    runs-on: ${{ github.event.repository.private && fromJSON('["self-hosted","linux","x64","debrunner"]') || 'ubuntu-24.04' }}
+    container: ubuntu:24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install isolated compiler prerequisites
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates curl build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Root Host authority unit contract
+        env:
+          HYPERMESH_HOST_ROOT_CONTRACT: "1"
+        run: cargo test --locked -p hypermesh-crash-retention host::tests::root_enrollment_contract --lib -- --exact --ignored
+
   native-windows-desktop-contract:
     runs-on: windows-latest
     steps:

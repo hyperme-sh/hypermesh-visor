@@ -8,8 +8,11 @@ use std::{
 const SIZE: usize = 32;
 const TIMEOUT: Duration = Duration::from_millis(500);
 
-pub fn request(root: &Path, run: uuid::Uuid) -> io::Result<()> {
-    request_with(root, run, platform::verify_service)
+pub fn request(root: &Path, run: uuid::Uuid, authority: crate::Authority) -> io::Result<()> {
+    match authority {
+        crate::Authority::Visor => request_with(root, run, platform::verify_service),
+        crate::Authority::Host => request_with(root, run, platform::verify_host_service),
+    }
 }
 fn request_with(
     root: &Path,

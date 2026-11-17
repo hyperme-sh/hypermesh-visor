@@ -1,0 +1,16 @@
+[Unit]
+Description=Hypermesh Host local crash cleanup
+After=local-fs.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/lib/hypermesh-host/crash-sdk/bin/hypermesh-crash-retention service-host
+Restart=always
+RestartSec=1
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

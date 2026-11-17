@@ -18,6 +18,7 @@ if text.count(old) != 1:
     raise SystemExit("unexpected native handler log configuration")
 text = text.replace(old, "        // Visor captures no separate handler log.")
 text += '\nextern "C" SENTRY_API int sentry_visor_capture_policy_version(void) { return 2; }\n'
+text += '\nextern "C" SENTRY_API int sentry_host_capture_policy_version(void) { return 1; }\n'
 backend.write_text(text)
 
 main = source / "external/crashpad/handler/main.cc"

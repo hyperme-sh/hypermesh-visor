@@ -80,6 +80,16 @@ fn prepare(database: &Path) -> io::Result<(Store, PathBuf, Vec<u8>)> {
 }
 
 fn acquire(database: &Path) -> io::Result<(File, PathBuf)> {
+    let run = database.parent().ok_or_else(refused)?;
+    if run.join("host-ticket.json").try_exists()? {
+        return acquire_host(database);
+    }
+    if hypermesh_crash_retention::Owner::open()
+        .is_ok_and(|owner| owner.authority() == hypermesh_crash_retention::Authority::Host)
+    {
+        return Err(refused());
+    }
+
     let (store, run, bytes) = prepare(database)?;
     // The application still owns the capture lock while the SDK prepares its
     // database. This signal lets it release that lock while SDK initialization
@@ -108,6 +118,46 @@ fn acquire(database: &Path) -> io::Result<(File, PathBuf)> {
     Ok((file, run))
 }
 
+fn acquire_host(database: &Path) -> io::Result<(File, PathBuf)> {
+    if !database.is_absolute() || database.file_name().and_then(|x| x.to_str()) != Some("database")
+    {
+        return Err(refused());
+    }
+    storage::check_dir(database)?;
+    let run = database.parent().ok_or_else(refused)?;
+    hypermesh_crash_retention::host::validate(run)?;
+    hypermesh_crash_retention::permit(run)?;
+    let directory = run.parent().and_then(Path::parent).ok_or_else(refused)?;
+    let mut ready = storage::open(&run.join("handler-ready"), storage::Open::New)?;
+    ready.write_all(b"host-crash-guard-v1")?;
+    ready.sync_all()?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let file = loop {
+        let file = storage::open(
+            &directory.join("health-consent/crash-capture.lock"),
+            storage::Open::Lock,
+        )?;
+        match storage::lock(&file) {
+            Ok(()) => break file,
+            Err(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Err(refused()),
+        }
+    };
+    if hypermesh_crash_retention::host::validate(run).is_err() || stop_requested(run)? {
+        drop(storage::UnlockOnDrop(&file));
+        return Err(refused());
+    }
+    Ok((file, run.to_owned()))
+}
+fn authority_valid(run: &Path) -> bool {
+    match hypermesh_crash_retention::Owner::open() {
+        Ok(owner) if owner.authority() == hypermesh_crash_retention::Authority::Host => {
+            hypermesh_crash_retention::host::validate(run).is_ok()
+        }
+        Ok(_) => !run.join("host-ticket.json").exists(),
+        Err(_) => false,
+    }
+}
 fn stop_requested(run: &Path) -> io::Result<bool> {
     storage::check_dir(run)?;
     match storage::open(
@@ -125,7 +175,10 @@ fn stop_requested(run: &Path) -> io::Result<bool> {
 fn monitor(run: &Path, finished: &AtomicBool, terminate: impl FnOnce()) {
     while !finished.load(Ordering::Acquire) {
         // Losing control of the private directory also stops capture.
-        if stop_requested(run).unwrap_or(true) || hypermesh_crash_retention::permit(run).is_err() {
+        if stop_requested(run).unwrap_or(true)
+            || !authority_valid(run)
+            || hypermesh_crash_retention::permit(run).is_err()
+        {
             terminate();
             return;
         }
@@ -311,7 +364,9 @@ mod tests {
 #[no_mangle]
 pub unsafe extern "C" fn visor_capture_permit_write(guard: *mut c_void) -> bool {
     std::panic::catch_unwind(|| {
-        !guard.is_null() && hypermesh_crash_retention::permit(&(*guard.cast::<Guard>()).run).is_ok()
+        !guard.is_null()
+            && authority_valid(&(*guard.cast::<Guard>()).run)
+            && hypermesh_crash_retention::permit(&(*guard.cast::<Guard>()).run).is_ok()
     })
     .unwrap_or(false)
 }

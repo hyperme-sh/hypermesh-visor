@@ -107,3 +107,34 @@ backup or export inputs. Never add them to diagnostic bundles, sync roots or
 application archives. Visor has no raw export command. An OS backup outside
 Visor's control must be excluded separately by its owner. Ordinary deletion is
 not a secure-erasure guarantee for SSDs, snapshots or backups.
+
+## Host authority preparation
+
+Host analytics uses accepted Host Terms, not Visor category consent. The separate
+`register-host` command creates an immutable Host authority registration in the
+root OS account's existing fixed retention location. It refuses another authority
+at that location; it does not migrate or modify Visor consent. `service-host`
+requires the dedicated `hypermesh-host-crash-retention.service` on Linux or
+`sh.hyperme.host.crash-retention` system LaunchDaemon on macOS, running as root.
+The Visor service verifier still rejects root and keeps its existing service names.
+
+The supplied service definitions are preparation only and are not installed or
+started by a package. Worker packaging and attachment are tracked in Host #230.
+The dedicated Host registration, actual protected enrollment and matching Terms
+version/hash must exist before a Host handler is admitted. Each raw write checks
+that binding again. Host and Visor share the same per-account location, lock,
+quota and expiry implementation; a second authority cannot increase that budget.
+A container without the verified OS service context refuses capture. No host PID
+namespace mount or privileged-container fallback is supplied.
+
+The native SDK advertises `sentry_host_capture_policy_version() == 1` in addition
+to its existing Visor marker. Host launchers must require it. Host tickets are
+private `host-ticket.json` records bound to the run UUID, current device UUID,
+canonical private `device.json` path, accepted Terms version/hash and original
+acceptance time. Current supported Terms are the unchanged Host inline
+`hypermesh-terms-inline-2026-11-05-r1`; changing the accepted text requires matching
+Host and guard preparation, not rewriting existing acceptance records.
+
+Raw dumps remain local. This does not install a service, grant Visor consent,
+enable collection, change an approved confidential runtime or activate digest
+billing. Windows worker authority is unsupported and refuses capture.
