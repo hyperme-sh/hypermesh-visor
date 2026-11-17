@@ -94,6 +94,11 @@ impl Bridge {
     }
     #[cfg(windows)]
     async fn request(&self, _: &str, _: &str, _: Vec<u8>) -> Result<Value, ()> { Err(()) }
+    pub async fn crash_register(&self, body: Value) -> Result<Value, ()> {
+        let raw = serde_json::to_vec(&body).map_err(|_| ())?;
+        if raw.len() > 2048 { return Err(()); }
+        self.request("POST", "/crash-register", raw).await
+    }
     pub async fn machine_context(&self) -> Result<Value, ()> {
         self.request("GET", "/machine-context", vec![]).await
     }

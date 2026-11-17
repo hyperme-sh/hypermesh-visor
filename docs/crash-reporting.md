@@ -63,3 +63,20 @@ Unit and mocked-collector contracts cover version rejection, field allowlists,
 request isolation, missing upstream metadata, redirect refusal, queue/rate bounds
 and the Application Insights envelope. They send no production reports. The
 reporter does not change production promotion rules or activate a canary.
+
+## Native GlitchTip registration boundary
+
+This separate opt-in sender requires `owner_socket` in its private crash config,
+pointing to the root-owned Host bridge. The existing DSN remains ingest-only.
+After local approval, Visor sends only event ID, original UTC time and approved
+JSON hash over the root-peer-verified socket. Host retains the enrolled credential
+and contacts the configured private registration broker. Visor verifies the
+returned tenant, subject, device, DSN project, event ID, timestamp and hash before
+sending the exact approved JSON once. Missing registration, mismatch or failure
+consumes the attempt without upload or silent retry. No raw dump is sent.
+
+The broker path is currently supported through the Unix Host bridge; unsupported
+platforms refuse registration. The local capture cleanup service remains required.
+Machine identity binds the capture assertion to an enrolled sender, not a physical
+crash or tamper-proof clock. Registration does not enable collection or remove the
+backend Visor refusal. Digest activation remains disabled.

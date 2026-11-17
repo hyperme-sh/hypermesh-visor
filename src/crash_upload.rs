@@ -29,12 +29,15 @@ pub struct Config {
     dsn: Dsn,
     endpoint: String,
     pub scope: Scope,
+    owner_socket: Option<std::path::PathBuf>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     dsn: String,
     scope: Scope,
+    #[serde(default)]
+    owner_socket: Option<std::path::PathBuf>,
 }
 impl Config {
     /// Missing config disables crash reporting. Never log the file or parse errors.
@@ -54,7 +57,18 @@ impl Config {
         }
         let mut config: FileConfig = serde_json::from_slice(&bytes).map_err(|_| refused())?;
         let secret = Zeroizing::new(std::mem::take(&mut config.dsn));
-        Self::parse(&secret, config.scope).map(Some)
+        let mut parsed = Self::parse(&secret, config.scope)?;
+        if let Some(path) = &config.owner_socket {
+            if !path.is_absolute()
+                || path
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                return Err(refused());
+            }
+        }
+        parsed.owner_socket = config.owner_socket;
+        Ok(Some(parsed))
     }
     fn parse(value: &str, scope: Scope) -> io::Result<Self> {
         if value.len() > 2048 {
@@ -89,6 +103,7 @@ impl Config {
             dsn,
             endpoint,
             scope,
+            owner_socket: None,
         })
     }
     /// Safe for the local preview: contains no DSN key or authentication header.
@@ -99,6 +114,31 @@ impl Config {
     /// Send only a consumed, individually approved report. The SDK has no
     /// integrations or background transport, and never receives a dump path.
     pub fn send(&self, report: PendingCrash, store: &Store) -> io::Result<()> {
+        self.send_registered(report, store, |claim| {
+            let bridge =
+                crate::host_bridge::Bridge::new(self.owner_socket.clone().ok_or_else(refused)?)
+                    .map_err(|_| refused())?;
+            // Startup callers may already own a Tokio runtime. The bounded local
+            // request uses a separate thread, and credentials never enter Visor.
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| refused())?;
+                runtime
+                    .block_on(bridge.crash_register(claim))
+                    .map_err(|_| refused())
+            })
+            .join()
+            .map_err(|_| refused())?
+        })
+    }
+    fn send_registered(
+        &self,
+        report: PendingCrash,
+        store: &Store,
+        register: impl FnOnce(serde_json::Value) -> io::Result<serde_json::Value>,
+    ) -> io::Result<()> {
         if !report.consent_ticket().matches_scope(&self.scope) {
             return Err(refused());
         }
@@ -111,6 +151,32 @@ impl Config {
                 .get("event_id")
                 .and_then(|v| v.as_str())
                 .ok_or_else(refused)?;
+            use sha2::{Digest, Sha256};
+            let captured = value
+                .get("timestamp")
+                .and_then(|v| v.as_str())
+                .ok_or_else(refused)?;
+            let hash = format!("{:x}", Sha256::digest(body));
+            let fact = register(serde_json::json!({"version":1,"event_id":event_id,
+                "captured_at":captured,"payload_sha256":hash}))?;
+            let project: u64 = self
+                .dsn
+                .project_id()
+                .to_string()
+                .parse()
+                .map_err(|_| refused())?;
+            if fact["version"] != 1
+                || fact["registered"] != true
+                || fact["tenant"] != self.scope.tenant.to_string()
+                || fact["subject"] != self.scope.subject.to_string()
+                || fact["device"] != self.scope.device.to_string()
+                || fact["project"].as_u64() != Some(project)
+                || fact["event_id"] != event_id
+                || fact["captured_at"] != captured
+                || fact["payload_sha256"] != hash
+            {
+                return Err(refused());
+            }
             let mut bytes = serde_json::to_vec(&serde_json::json!({"event_id": event_id}))
                 .map_err(|_| refused())?;
             bytes.push(b'\n');
@@ -195,6 +261,51 @@ mod tests {
             notice_version: uuid::Uuid::new_v4(),
             purpose_version: uuid::Uuid::new_v4(),
         }
+    }
+    #[test]
+    fn registration_failure_and_wrong_scope_never_upload() {
+        use crate::health_consent::Category;
+        let config = Config::parse("https://fixture_key@unreachable.invalid/42", scope()).unwrap();
+        let dir = std::env::temp_dir().join(format!("visor-registration-{}", uuid::Uuid::new_v4()));
+        let store = Store::open(&dir, config.scope.clone()).unwrap();
+        store.decide(Category::Crashes, true).unwrap();
+        for bad in ["subject", "device", "project", "payload_sha256"] {
+            let mut report =
+                PendingCrash::capture(&store, config.destination(), &serde_json::json!({}))
+                    .unwrap()
+                    .unwrap();
+            let preview = report.preview();
+            let (id, hash, destination) = (
+                preview.id,
+                preview.sha256.to_owned(),
+                preview.destination.to_owned(),
+            );
+            report.approve(id, &hash, &destination).unwrap();
+            assert!(config
+                .send_registered(report, &store, |mut claim| {
+                    claim["registered"] = true.into();
+                    claim["tenant"] = config.scope.tenant.to_string().into();
+                    claim["subject"] = config.scope.subject.to_string().into();
+                    claim["device"] = config.scope.device.to_string().into();
+                    claim["project"] = 42.into();
+                    claim[bad] = "wrong".into();
+                    Ok(claim)
+                })
+                .is_err());
+        }
+        let mut report =
+            PendingCrash::capture(&store, config.destination(), &serde_json::json!({}))
+                .unwrap()
+                .unwrap();
+        let preview = report.preview();
+        let (id, hash, destination) = (
+            preview.id,
+            preview.sha256.to_owned(),
+            preview.destination.to_owned(),
+        );
+        report.approve(id, &hash, &destination).unwrap();
+        assert!(config.send(report, &store).is_err()); // Missing owner socket fails closed.
+        std::fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn dsn_is_ingest_only_and_preview_omits_credentials() {
@@ -352,7 +463,19 @@ mod tests {
                 assert!(!String::from_utf8_lossy(body).contains("fixture_key"));
                 write!(socket, "HTTP/1.1 {status} Fixture\r\nContent-Length: 0\r\nLocation: http://127.0.0.1:1/forbidden\r\nConnection: close\r\n\r\n").unwrap();
             });
-            assert_eq!(config.send(report, &store).is_ok(), status == 200);
+            assert_eq!(
+                config
+                    .send_registered(report, &store, |mut claim| {
+                        claim["registered"] = true.into();
+                        claim["tenant"] = config.scope.tenant.to_string().into();
+                        claim["subject"] = config.scope.subject.to_string().into();
+                        claim["device"] = config.scope.device.to_string().into();
+                        claim["project"] = 42.into();
+                        Ok(claim)
+                    })
+                    .is_ok(),
+                status == 200
+            );
             server.join().unwrap();
             std::fs::remove_dir_all(dir).unwrap();
         }
