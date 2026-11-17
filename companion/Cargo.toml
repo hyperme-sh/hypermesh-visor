@@ -11,6 +11,8 @@ name = "hypermesh-companion"
 path = "src/main.rs"
 
 [dependencies]
+hypermesh-visor = { path = "..", default-features = false }
+tokio = { version = "1", features = ["rt", "net", "time"] }
 hypermesh-local-storage = { path = "../local-storage" }
 base64 = "0.22"
 hypermesh-session = { path = "../session" }

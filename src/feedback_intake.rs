@@ -115,6 +115,21 @@ pub enum Category {
     Feature,
 }
 
+/// Identity captured from an authenticated grant, without retaining its token.
+/// The binding may outlive that grant; every replacement grant is validated fresh.
+pub struct IdentityBinding(Scope);
+impl IdentityBinding {
+    pub fn from_grant(grant: &str) -> Result<Self, IntakeError> { Ok(Self(scope(grant)?)) }
+    pub fn accepts(&self, grant: &str) -> Result<(), IntakeError> {
+        if scope(grant)? == self.0 { Ok(()) } else { Err(IntakeError::Refused) }
+    }
+}
+impl fmt::Debug for IdentityBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("IdentityBinding([REDACTED])")
+    }
+}
+
 /// Immutable confirmed bytes; discard this object on edit, withdrawal or account change.
 /// Its Debug output excludes identity, destination and report text.
 pub struct ConfirmedReport {
@@ -373,6 +388,17 @@ mod tests {
     fn consent(enabled: bool, revision: u64) -> Vec<u8> {
         serde_json::to_vec(&json!({"enabled":enabled,"revision":revision,"notice":"human-reports-v1","purpose":"product-feedback"})).unwrap()
     }
+    #[test]
+    fn identity_binding_accepts_fresh_grants_without_retaining_old_token() {
+        let subject = Uuid::new_v4();
+        let token = grant(subject);
+        let binding = IdentityBinding::from_grant(&token).unwrap();
+        drop(token);
+        assert!(binding.accepts(&grant(subject)).is_ok());
+        assert_eq!(binding.accepts(&grant(Uuid::new_v4())), Err(IntakeError::Refused));
+        assert_eq!(format!("{binding:?}"), "IdentityBinding([REDACTED])");
+    }
+
     #[test]
     fn default_and_invalid_configuration_refuse() {
         assert!(IntakeClient::default().origin.is_none());

@@ -13,10 +13,43 @@ control characters, oversized output and blank drafts are refused. User text is
 not interpreted as HTML or Markdown. No prompt, document, clipboard, attachment
 or diagnostic is read automatically.
 
-Sending is unavailable: this slice has no intake transport, identity conversion,
-credential prompt, persistence or direct GitHub action. Native issuer/device
-authentication and intake authorization remain in Hypermesh #79. The phone form
-is independent. The native desktop forms below are independent local surfaces.
+Sending stays disabled by default. The Linux dialog has an optional connection
+to the native Host grant broker and intake client; the phone and native
+Windows/macOS forms below remain independent local surfaces.
+
+## Optional Linux submission
+
+The worker reads trusted application settings: `HYPERMESH_FEEDBACK_ENABLED`
+must be exactly `true` to select submission mode; absent or `false` preserves
+local drafts. No checked-in setting enables it. The existing
+`HYPERMESH_HOST_BRIDGE_SOCKET` must identify the root-owned Host broker, and
+`HYPERMESH_FEEDBACK_INTAKE_ORIGIN` must be an HTTPS origin without credentials,
+path, query or fragment. There is no manual token or destination entry in the form.
+
+Opt in before the worker obtains a grant or reads server consent. Enabling saved
+human-reports-v1/product-feedback consent requires a separate confirmation.
+Choose a Problem or Idea, enter a title (4–160 characters) and body (10–4000
+characters, at most 4096 UTF-8 bytes), review plain text, then explicitly choose
+**Send this report**. Editing returns to the editors and requires another preview.
+
+The worker uses the existing observer activity checkpoint before authorized
+changes and sending. Network work never runs on the X11 event loop. Fresh grants
+must match the initially authenticated issuer, tenant, user and device, and
+consent must still have the same enabled revision before confirmation.
+No general machine credential enters the form.
+
+An unknown result offers **Retry same report**: only that explicit action resends
+the immutable confirmed bytes and idempotency key. No automatic retry occurs.
+Closing discards the local copy; it cannot recall an already dispatched request.
+**Withdraw saved consent** or **Withdraw consent and discard** explicitly updates
+server consent and ends the form. A failed update is reported as unconfirmed,
+never as successful withdrawal. Ordinary cancel clears local work without changing
+saved server consent. No draft or token is persisted; process-local clearing is
+not guaranteed secure erasure of all operating-system memory.
+
+No runtime destination, membership, provisioning or collection is enabled by this
+implementation. Installed owner composition and shared journeys remain scheduled
+CI work under Hypermesh #79.
 
 Validation uses offline companion unit contracts with injected dialog responses.
 No desktop session or shared service is opened by those tests.

@@ -9,6 +9,7 @@ mod automation;
 mod credentials;
 mod draw;
 mod feedback;
+mod feedback_send;
 #[path = "../../shared/session_destinations.rs"]
 mod destinations;
 #[path = "../../src/local_peer.rs"]
