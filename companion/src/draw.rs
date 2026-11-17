@@ -18,6 +18,7 @@ pub const MENU_SCROLL_STEP: i32 = 52;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    Feedback,
     ToggleMenu,
     ToggleCompact,
     OpenCli,
@@ -265,6 +266,7 @@ pub fn render(
             ("Session forum", Action::OpenSessionForum),
             ("Session in VS Code", Action::OpenSessionEditor),
             ("Open CLI", Action::OpenCli),
+            ("Human feedback", Action::Feedback),
             ("MCP trust", Action::McpTrust),
             ("MCP profiles", Action::McpProfiles),
             ("Permissions", Action::Permissions),
@@ -1214,6 +1216,7 @@ mod tests {
             0,
         );
         assert!(menu.hits.iter().any(|hit| hit.action == Action::McpTrust));
+        assert!(menu.hits.iter().any(|hit| hit.action == Action::Feedback));
     }
 
     #[test]
