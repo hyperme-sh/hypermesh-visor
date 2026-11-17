@@ -866,7 +866,7 @@ fn on_click(
             let confirmation = app.poller.confirmation();
             std::thread::spawn(move || {
                 let result = if action == Action::Feedback {
-                    crate::feedback::run()
+                    crate::feedback::run(confirmation)
                 } else if action == Action::ManageCompanions {
                     crate::companions::run(confirmation)
                 } else if action == Action::ChooseSession {

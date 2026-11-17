@@ -1,16 +1,19 @@
-//! Opt-in local human feedback. No transport, files or session contents.
+//! Opt-in human feedback dialogs; sending requires separate explicit configuration.
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 
 const MAX_BYTES: usize = 4096;
-const FAILURE: &str = "Feedback dialog failed; no report was sent.";
-const NOTICE: &str = "Draft a human problem report or idea locally? Include only text you choose to type. Do not include prompts, documents, credentials or personal information. No attachments or automatic diagnostics are collected. Sending is unavailable until native intake authentication is connected. Closing any dialog discards this draft.";
+const FAILURE: &str = "Feedback dialog failed. A previously dispatched report may have arrived.";
+const NOTICE: &str = "Draft a human problem report or idea locally? Include only text you choose to type. Do not include prompts, documents, credentials or personal information. No attachments or automatic diagnostics are collected. Sending is disabled in this configuration. Closing any dialog discards this draft.";
 
-pub fn run() -> Result<(), String> {
-    screen(dialog)
+pub fn run(confirmation: crate::visor::Confirmation) -> Result<(), String> {
+    match crate::feedback_send::Native::from_env()? {
+        Some(mut native) => crate::feedback_send::screen(dialog, &mut native, || confirmation.wait()),
+        None => screen(dialog),
+    }
 }
 
-fn base(kind: &str, title: &str) -> Vec<String> {
+pub(super) fn base(kind: &str, title: &str) -> Vec<String> {
     vec![
         format!("--{kind}"),
         format!("--title={title}"),
@@ -19,7 +22,7 @@ fn base(kind: &str, title: &str) -> Vec<String> {
         "--timeout=900".into(),
     ]
 }
-fn decode(bytes: Vec<u8>) -> Result<String, String> {
+pub(super) fn decode(bytes: Vec<u8>) -> Result<String, String> {
     if bytes.len() > MAX_BYTES {
         return Err("Feedback must be 4096 UTF-8 bytes or smaller.".into());
     }
