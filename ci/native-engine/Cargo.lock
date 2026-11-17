@@ -941,6 +941,7 @@ version = "0.1.0"
 dependencies = [
  "hypermesh-local-storage",
  "libc",
+ "ring",
  "serde",
  "serde_json",
  "uuid",
