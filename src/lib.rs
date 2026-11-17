@@ -100,3 +100,6 @@ pub mod host_health;
 
 #[cfg(target_os = "linux")]
 pub mod health_hardware;
+
+/// Explicit, disabled-by-default native feedback intake transport.
+pub mod feedback_intake;
