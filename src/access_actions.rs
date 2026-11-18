@@ -258,21 +258,38 @@ impl NewFile {
     pub fn arguments(&self) -> Value {
         json!({"content_sha256":digest(&self.content),"content_bytes":self.content.len(),"expected_object_sha256":digest(b"absent"),"parent_object_sha256":digest(&serde_json::to_vec(&self.parent_mark).unwrap())})
     }
-    pub fn execute(self, valid: impl Fn() -> bool) -> Result<Value, &'static str> {
+    pub fn execute(self, seconds: u32, valid: impl Fn() -> bool) -> Result<Value, &'static str> {
+        if seconds == 0 || seconds > 30 {
+            return Err(ERROR);
+        }
+        self.execute_until(
+            std::time::Instant::now() + Duration::from_secs(seconds as u64),
+            valid,
+        )
+    }
+    fn execute_until(
+        self,
+        deadline: std::time::Instant,
+        valid: impl Fn() -> bool,
+    ) -> Result<Value, &'static str> {
         use std::{
             ffi::CString,
             os::fd::{AsRawFd, FromRawFd},
         };
         let current = Self::prepare(&self.project, &self.target, Vec::new())?;
-        if current.parent_mark != self.parent_mark || !valid() {
+        if current.parent_mark != self.parent_mark
+            || !valid()
+            || std::time::Instant::now() >= deadline
+        {
             return Err(ERROR);
         }
-        let temporary = CString::new(format!(".visor-write-{}", uuid::Uuid::new_v4())).unwrap();
+        // An unnamed inode cannot be replaced through a writable directory entry.
+        let dot = CString::new(".").unwrap();
         let fd = unsafe {
             libc::openat(
                 self.parent.as_raw_fd(),
-                temporary.as_ptr(),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                dot.as_ptr(),
+                libc::O_WRONLY | libc::O_TMPFILE | libc::O_CLOEXEC,
                 0o600,
             )
         };
@@ -280,42 +297,38 @@ impl NewFile {
             return Err(ERROR);
         }
         let mut file = unsafe { std::fs::File::from_raw_fd(fd) };
-        let result = (|| {
-            file.write_all(&self.content)
-                .and_then(|_| file.sync_all())
-                .map_err(|_| ERROR)?;
-            self.absent()?;
-            if !valid() || directory_mark(&self.parent)? != self.parent_mark {
-                return Err(ERROR);
-            }
-            let current = Self::prepare(&self.project, &self.target, Vec::new())?;
-            if current.parent_mark != self.parent_mark {
-                return Err(ERROR);
-            }
-            // Atomic create-only publication: an intervening file or symlink wins and
-            // is never overwritten. The reviewed parent descriptor owns this operation.
-            let r = unsafe {
-                libc::syscall(
-                    libc::SYS_renameat2,
-                    self.parent.as_raw_fd(),
-                    temporary.as_ptr(),
-                    self.parent.as_raw_fd(),
-                    self.name.as_ptr(),
-                    libc::RENAME_NOREPLACE,
-                )
-            };
-            if r != 0 {
-                return Err(ERROR);
-            }
-            self.parent.sync_all().map_err(|_| ERROR)?;
-            Ok(json!({"completed":true,"bytes_written":self.content.len()}))
-        })();
-        if result.is_err() {
-            unsafe {
-                libc::unlinkat(self.parent.as_raw_fd(), temporary.as_ptr(), 0);
-            }
+        file.write_all(&self.content)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| ERROR)?;
+        self.absent()?;
+        if !valid()
+            || std::time::Instant::now() >= deadline
+            || directory_mark(&self.parent)? != self.parent_mark
+        {
+            return Err(ERROR);
         }
-        result
+        let current = Self::prepare(&self.project, &self.target, Vec::new())?;
+        if current.parent_mark != self.parent_mark || std::time::Instant::now() >= deadline {
+            return Err(ERROR);
+        }
+        // /proc/self/fd is kernel-owned. Following this exact open descriptor
+        // publishes the written inode without requiring AT_EMPTY_PATH privilege.
+        // linkat refuses an existing target, including an intervening symlink.
+        let source = CString::new(format!("/proc/self/fd/{}", file.as_raw_fd())).unwrap();
+        let result = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                self.parent.as_raw_fd(),
+                self.name.as_ptr(),
+                libc::AT_SYMLINK_FOLLOW,
+            )
+        };
+        if result != 0 {
+            return Err(ERROR);
+        }
+        self.parent.sync_all().map_err(|_| ERROR)?;
+        Ok(json!({"completed":true,"bytes_written":self.content.len()}))
     }
 }
 #[cfg(target_os = "linux")]
@@ -473,7 +486,7 @@ pub fn perform(
                     network.execute(body.max_bytes, body.timeout_seconds, current)?
                 }
                 #[cfg(target_os = "linux")]
-                Prepared::File(file) => file.execute(current)?,
+                Prepared::File(file) => file.execute(body.timeout_seconds, current)?,
                 Prepared::Service => unreachable!(),
             };
             (output, admitted)
@@ -624,17 +637,17 @@ mod tests {
         let project = root.to_str().unwrap();
         let target = root.join("new");
         let file = NewFile::prepare(project, target.to_str().unwrap(), b"one".to_vec()).unwrap();
-        assert_eq!(file.execute(|| true).unwrap()["bytes_written"], 3);
+        assert_eq!(file.execute(10, || true).unwrap()["bytes_written"], 3);
         assert_eq!(std::fs::read(&target).unwrap(), b"one");
         assert!(NewFile::prepare(project, target.to_str().unwrap(), b"two".to_vec()).is_err());
         let race = root.join("race");
         let file = NewFile::prepare(project, race.to_str().unwrap(), b"bad".to_vec()).unwrap();
         std::os::unix::fs::symlink(&target, &race).unwrap();
-        assert!(file.execute(|| true).is_err());
+        assert!(file.execute(10, || true).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"one");
         let cancel = root.join("cancel");
         let file = NewFile::prepare(project, cancel.to_str().unwrap(), vec![1]).unwrap();
-        assert!(file.execute(|| false).is_err());
+        assert!(file.execute(10, || false).is_err());
         assert!(!cancel.exists());
         assert!(
             NewFile::prepare(project, root.join("../escape").to_str().unwrap(), vec![]).is_err()
@@ -663,7 +676,7 @@ mod tests {
         .unwrap();
         let calls = std::cell::Cell::new(0);
         assert!(file
-            .execute(|| {
+            .execute(10, || {
                 calls.set(calls.get() + 1);
                 if calls.get() == 2 {
                     std::fs::rename(&project, root.join("moved")).unwrap();
@@ -675,6 +688,61 @@ mod tests {
         assert!(!project.join("new").exists());
         assert!(!root.join("moved/new").exists());
         assert_eq!(std::fs::read_dir(root.join("moved")).unwrap().count(), 0);
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unnamed_write_cannot_publish_a_substituted_directory_entry() {
+        let dir = TempDir::new();
+        let root = dir.path().canonicalize().unwrap();
+        let target = root.join("new");
+        let file = NewFile::prepare(
+            root.to_str().unwrap(),
+            target.to_str().unwrap(),
+            b"reviewed".to_vec(),
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0);
+        file.execute(10, || {
+            calls.set(calls.get() + 1);
+            if calls.get() == 2 {
+                assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+                std::os::unix::fs::symlink("/unreviewed", root.join(".visor-write-substitute"))
+                    .unwrap();
+            }
+            true
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&target).unwrap(), b"reviewed");
+        assert!(!std::fs::symlink_metadata(target)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn elapsed_write_deadline_prevents_publication() {
+        let dir = TempDir::new();
+        let root = dir.path().canonicalize().unwrap();
+        let target = root.join("new");
+        let file = NewFile::prepare(
+            root.to_str().unwrap(),
+            target.to_str().unwrap(),
+            b"reviewed".to_vec(),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_millis(20);
+        let calls = std::cell::Cell::new(0);
+        assert!(file
+            .execute_until(deadline, || {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                true
+            })
+            .is_err());
+        assert!(!target.exists());
+        assert_eq!(std::fs::read_dir(root).unwrap().count(), 0);
     }
     #[cfg(target_os = "linux")]
     #[test]
@@ -691,7 +759,7 @@ mod tests {
         .unwrap();
         std::fs::rename(&project, root.join("old")).unwrap();
         std::fs::create_dir(&project).unwrap();
-        assert!(file.execute(|| true).is_err());
+        assert!(file.execute(10, || true).is_err());
         assert!(!project.join("new").exists());
         assert!(!root.join("old/new").exists());
     }

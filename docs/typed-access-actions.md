@@ -22,7 +22,8 @@ If a response is lost, the result is unknown and is not automatically retried.
 * Linux project writes create a new direct child of the selected project.
   Existing files and symlinks are refused. Every project path component is
   opened without following links, and the reviewed parent identity is checked
-  before an atomic create-only publication. Content is written as the Visor
+  before an atomic create-only publication from an unnamed temporary inode.
+  A monotonic execution deadline is checked before publication. Content is written as the Visor
   user with private file permissions; no privileged file adapter is used.
 * Named service restart uses the Host's optional configured non-root user
   service driver. The reviewed scope binds the controller executable hash,
