@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 
 static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
 use reads::ReadRequest;
-fn directory(state: &AppState) -> Result<PathBuf, &'static str> {
+pub(super) fn directory(state: &AppState) -> Result<PathBuf, &'static str> {
     let dir = state.mcp_dir.join("permission-templates");
     storage::create_dir(&dir).map_err(|_| reads::ERROR)?;
     Ok(dir)

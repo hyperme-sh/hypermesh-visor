@@ -107,3 +107,5 @@ pub mod health_hardware;
 
 /// Explicit, disabled-by-default native feedback intake transport.
 pub mod feedback_intake;
+
+pub mod access_actions;
