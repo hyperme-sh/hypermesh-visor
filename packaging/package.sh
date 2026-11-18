@@ -71,8 +71,8 @@ mkdir -p dist
 find dist -mindepth 1 -delete
 
 # Pin the public source and its bytes independently of the Visor version.
-conductor_revision=73e33b31f35d7e365863bc0448f2fe967a9a444a
-conductor_sha256=3668085cdb4789699dcc1e8776bccf3d55a03e1784cb0361b9de8013785ac531
+conductor_revision=cc03d2525749c21f75af84cd01d85024cfe9ad57
+conductor_sha256=3bfd4845af9b647f0ad1bf97eda585957c01cdc1291890a576353784cc589aa6
 conductor_src=$(mktemp -d)
 trap 'rm -rf -- "$conductor_src"' EXIT
 curl --fail --silent --show-error --location \

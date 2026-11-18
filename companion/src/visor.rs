@@ -551,6 +551,7 @@ fn connection_request(session: &str, server: &str, reconnect: bool) -> Result<St
 
 fn trust_response_limit(path: &str) -> usize {
     match path {
+        "/continue/plan" => 1024*1024+8192,
         "/permissions/reads" | "/permissions/actions" => 2 * 1024 * 1024,
         "/permissions/dream" => 2 * 1024 * 1024 + 8192,
         "/permissions/allows" => 512 * 1024 + 8192,
@@ -560,12 +561,12 @@ fn trust_response_limit(path: &str) -> usize {
 
 fn trust_endpoint(path:&str)->bool { matches!(
         path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context" | "/continue/context" | "/continue/view" | "/continue/start" | "/continue/control" | "/continue/local-resume"
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context" | "/continue/context" | "/continue/view" | "/continue/plan" | "/continue/project" | "/continue/start" | "/continue/control" | "/continue/local-resume"
     ) }
 
 #[test]
 fn continue_endpoints_reach_the_private_transport(){
- for path in ["/continue/context","/continue/view","/continue/start","/continue/control","/continue/local-resume"]{assert!(trust_endpoint(path));}
+ for path in ["/continue/context","/continue/view","/continue/plan", "/continue/project", "/continue/start","/continue/control","/continue/local-resume"]{assert!(trust_endpoint(path));}
  assert!(!trust_endpoint("/continue/arbitrary"));
 }
 

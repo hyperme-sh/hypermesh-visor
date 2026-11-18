@@ -29,3 +29,18 @@ When ready, choose **Resume local execution for this session**: it uses the
 existing selected-session and current-epoch check, then closes the dialog.
 An intervening pause or session change refuses the resume. Execution still waits
 for the existing current Plane assignment and local consent heartbeat.
+
+
+Project presets use the same selected task. Kanban, vertical slices, milestones,
+and bounded spikes collect acceptance units with existing GitHub issue links,
+component/file scope, outcome and dependencies. The protected Conductor planner
+previews configured model capacity (or an explicit conservative unknown), input,
+tool, check, output and handoff reserves before dispatch. An oversized unit must
+be broken into smaller acceptance units; text is never cut at an arbitrary token
+boundary. The IDE opens this same native form and shows style/capacity status.
+
+Execution remains serial within the editable WIP ceiling. Changing defaults on
+an existing plan preserves submissions, completed work, assignment, scope and
+spent budgets; new completion/stop defaults apply to a future task. A spike's
+prompt explicitly stops at its declared research output. The tool guide favors
+the existing central tracker; no tracker issues are created by this feature.
