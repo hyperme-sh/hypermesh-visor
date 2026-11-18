@@ -34,10 +34,11 @@ jobs:
           targets: aarch64-unknown-linux-gnu
 
       - name: Install packagers
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu rpm golang-go
-          curl -fsSL -o /tmp/nfpm.tar.gz \
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y gcc-aarch64-linux-gnu rpm golang-go
+          curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-all-errors -o /tmp/nfpm.tar.gz \
             https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
           tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
           sudo install -m 0755 /tmp/nfpm /usr/local/bin/nfpm
