@@ -375,6 +375,45 @@ mod tests {
         assert_eq!(reads, 1);
     }
     #[test]
+    fn typed_write_uses_saved_scope_and_does_not_retry_unknown_outcome() {
+        let selection = json!({"version":1,"scope":{"organization":"org","device":"device","project":"/project"},"preset":"project_development","rules":[{"operation":"write","target":"/project/new","max_bytes":1024,"timeout_seconds":10}]});
+        let mut answers = vec![
+            Some("/project"),
+            Some("4"),
+            Some("0"),
+            Some("/project/new"),
+            Some("hello"),
+        ]
+        .into_iter();
+        let mut calls = 0;
+        let result = screen(
+            |path, body| {
+                Ok(match path {
+                    "/permissions/context" => {
+                        json!({"device_id":"device","binding":{"organization_id":"org"}})
+                    }
+                    "/permissions/templates" => {
+                        json!({"version":1,"selections":[selection.clone()]})
+                    }
+                    "/acp/context" => json!({"workspace":"/project","session_id":"session"}),
+                    "/permissions/actions" => {
+                        calls += 1;
+                        let body = body.unwrap();
+                        assert_eq!(body["selection"], selection);
+                        assert_eq!(body["operation"], "write");
+                        assert_eq!(body["content_base64"], "aGVsbG8=");
+                        assert!(body.get("credential").is_none());
+                        json!({"error":"unknown"})
+                    }
+                    _ => panic!("unexpected route"),
+                })
+            },
+            |_, _| Ok(answers.next().unwrap().map(str::to_owned)),
+        );
+        assert!(result.unwrap_err().contains("outcome may be unknown"));
+        assert_eq!(calls, 1);
+    }
+    #[test]
     fn advisory_is_not_rendered_as_a_block() {
         let text=render(&json!({"preview_only":true,"decision":"advisory","reason":"Review later","learning_eligible":false})).unwrap();
         assert!(text.contains("Permitted with advisory"));

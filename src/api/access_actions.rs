@@ -1,14 +1,14 @@
-//! Local companion read entrypoint; all file access uses the Visor user's UID.
+//! Local companion typed-action entrypoint with cancellation and bounded work.
 use super::*;
 use crate::local_reads as reads;
 use serde_json::{json, Value};
 
 static SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
-use crate::access_actions::Input as ReadRequest;
+use crate::access_actions::Input as ActionRequest;
 #[cfg(unix)]
 fn execute(
     state: Arc<AppState>,
-    body: ReadRequest,
+    body: ActionRequest,
     cancel: Arc<AtomicBool>,
     consent: tasks::Consent,
     rt: tokio::runtime::Handle,
@@ -72,7 +72,7 @@ fn execute(
 #[cfg(not(unix))]
 fn execute(
     _: Arc<AppState>,
-    _: ReadRequest,
+    _: ActionRequest,
     _: Arc<AtomicBool>,
     _: tasks::Consent,
     _: tokio::runtime::Handle,
@@ -83,7 +83,7 @@ fn execute(
 pub(super) async fn run(
     State(state): State<Arc<AppState>>,
     Extension(link): Extension<CompanionLink>,
-    Json(body): Json<ReadRequest>,
+    Json(body): Json<ActionRequest>,
 ) -> Result<Response, ApiError> {
     if !link.0 {
         return Err(ApiError::forbidden("Local companion socket required"));
