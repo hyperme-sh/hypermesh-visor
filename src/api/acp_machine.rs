@@ -14,7 +14,7 @@ fn permitted(state: &AppState, session: Uuid) -> bool {
         gate.phase() == Phase::Running && gate.session() == Some(session)
     }
 }
-fn binding(value: &Value, workspace: &str) -> Result<Uuid, ()> {
+pub(super) fn binding(value: &Value, workspace: &str) -> Result<Uuid, ()> {
     let identity = &value["identity"];
     let session = Uuid::parse_str(identity["session_id"].as_str().ok_or(())?).map_err(|_| ())?;
     if session.is_nil() || value["workspace"].as_str() != Some(workspace) {
