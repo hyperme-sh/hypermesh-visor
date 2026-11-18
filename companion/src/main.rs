@@ -91,7 +91,12 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
-        Some("--permissions") => match permissions::run() {
+        Some("--permissions-workspace") => {
+ let project=args.next();
+ if project.is_none() || args.next().is_some(){return ExitCode::from(2)}
+ match permissions::run_workspace(project.as_deref()){Ok(())=>ExitCode::SUCCESS,Err(err)=>{eprintln!("Permissions: {err}");ExitCode::from(1)}}
+ },
+ Some("--permissions") => match permissions::run() {
  Ok(()) => ExitCode::SUCCESS,
  Err(err) => {eprintln!("Permissions: {err}");ExitCode::from(1)}
  },

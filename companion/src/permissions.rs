@@ -2,21 +2,30 @@
 use crate::mcp_dialog::{args, choose, dialog};
 use serde_json::{json, Value};
 
-pub fn run() -> Result<(), String> {
+pub fn run() -> Result<(), String> { run_workspace(None) }
+pub fn run_workspace(workspace:Option<&str>) -> Result<(), String> {
     hypermesh_session::refresh_session(
         &hypermesh_session::KeyringStore,
         &hypermesh_session::Endpoints::panopticon(),
     )
     .map_err(|_| "Sign in again to open Permissions")?;
-    screen(
+    let mut initial_identity=None;
+    screen_for(
         |path, body| {
-            if path == "/permissions/policy" {
+            if let Some(project)=workspace {
+                let active=crate::visor::trust_request("/acp/context",None)?;
+                verify_workspace(&active,project,&mut initial_identity)?;
+            }
+            let result=if path == "/permissions/policy" {
                 crate::access_policy::request(body.ok_or("Policy scope required")?)
             } else {
                 crate::visor::trust_request(path, body)
-            }
+            }?;
+            if let Some(project)=workspace {let active=crate::visor::trust_request("/acp/context",None)?;verify_workspace(&active,project,&mut initial_identity)?;}
+            Ok(result)
         },
         dialog,
+        workspace,
     )
 }
 fn entry(
@@ -28,9 +37,11 @@ fn entry(
     a.push(format!("--entry-text={initial}"));
     ui(&a, None)
 }
-fn screen(
+fn screen(request:impl FnMut(&str,Option<Value>)->Result<Value,String>,ui:impl FnMut(&[String],Option<&str>)->Result<Option<String>,String>)->Result<(),String>{screen_for(request,ui,None)}
+fn screen_for(
     mut request: impl FnMut(&str, Option<Value>) -> Result<Value, String>,
     mut ui: impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
+    workspace:Option<&str>,
 ) -> Result<(), String> {
     let context = request("/permissions/context", None)?;
     let organization = context["binding"]["organization_id"]
@@ -39,11 +50,20 @@ fn screen(
     let device = context["device_id"]
         .as_str()
         .ok_or("Assigned device unavailable")?;
-    let Some(project) = entry(&mut ui, "Absolute project directory", "")? else {
+    let Some(project) = (if let Some(path)=workspace {
+        if !std::path::Path::new(path).is_absolute() || path.chars().any(char::is_control) || path.len()>4096 {return Err("Select a canonical local workspace".into())}
+        Some(path.to_owned())
+    }else{entry(&mut ui, "Absolute project directory", "")?}) else {
         return Ok(());
     };
     let scope = json!({"organization":organization,"device":device,"project":project});
     loop {
+        let fresh=request("/permissions/context",None)?;
+        if fresh["binding"]!=context["binding"] || fresh["device_id"]!=context["device_id"] {return Err("Assigned scope changed. Reopen Permissions to refresh.".into())}
+        if workspace.is_some(){
+            let active=request("/acp/context",None)?;
+            if active["workspace"]!=project || active["identity"]["organization_id"]!=organization || active["identity"]["device_id"]!=device {return Err("Workspace differs from the active assignment. Reconnect and reopen Permissions.".into())}
+        }
         let snapshot = request("/permissions/templates", None)?;
         let selections = snapshot["selections"]
             .as_array()
@@ -677,3 +697,31 @@ fn history_for_project(history:&Value,project:&str)->Vec<Value>{ history["histor
 
 #[cfg(test)]
 mod history_tests { use super::*; #[test] fn selected_project_never_displays_active_other_project(){ let history=json!({"history":[{"project":"/active","reason":"private"}]});assert!(history_for_project(&history,"/selected").is_empty());assert_eq!(history_for_project(&history,"/active").len(),1); } }
+#[cfg(test)]
+mod workspace_tests {
+ use super::*;
+ #[test]
+ fn workspace_mismatch_never_loads_permissions(){
+  let context=json!({"device_id":"device","binding":{"organization_id":"org"}});
+  let result=screen_for(|path,_| match path{
+   "/permissions/context"=>Ok(context.clone()),
+   "/acp/context"=>Ok(json!({"workspace":"/other","identity":{"device_id":"device","organization_id":"org"}})),
+   _=>panic!("loaded another workspace")},|_,_|panic!("displayed another workspace"),Some("/project"));
+  assert!(result.unwrap_err().contains("Workspace differs"));
+ }
+ #[test]
+ fn changed_org_refuses_stale_ui_before_loading_rules(){
+  let mut calls=0;
+  let result=screen_for(|path,_|{assert_eq!(path,"/permissions/context");calls+=1;Ok(json!({"device_id":"device","binding":{"organization_id":if calls==1{"old"}else{"new"}}}))},|_,_|panic!("displayed stale organization"),Some("/project"));
+  assert!(result.unwrap_err().contains("scope changed"));
+ }
+}
+
+fn verify_workspace(active:&Value,project:&str,initial:&mut Option<Value>)->Result<(),String>{
+ if active["workspace"]!=project || !active["identity"].is_object(){return Err("Workspace assignment changed; reconnect and reopen Permissions".into())}
+ if let Some(identity)=initial.as_ref(){if *identity!=active["identity"]{return Err("Session or organization changed; reopen Permissions".into())}}
+ else{*initial=Some(active["identity"].clone());}
+ Ok(())
+}
+#[cfg(test)]
+mod refresh_tests {use super::*; #[test] fn reconnect_or_org_switch_refuses_stale_mutation(){let mut identity=None;let first=json!({"workspace":"/project","identity":{"organization_id":"a","session_id":"one"}});verify_workspace(&first,"/project",&mut identity).unwrap();let changed=json!({"workspace":"/project","identity":{"organization_id":"b","session_id":"two"}});assert!(verify_workspace(&changed,"/project",&mut identity).is_err());}}
