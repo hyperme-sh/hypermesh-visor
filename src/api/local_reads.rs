@@ -64,9 +64,15 @@ fn execute(
         body,
         &identity,
         context["workspace"].as_str().ok_or(reads::ERROR)?,
-        |request| {
-            rt.block_on(bridge.permission_read_review(request))
-                .map_err(|_| reads::ERROR)
+        |request, admit| {
+            rt.block_on(async {
+                if admit {
+                    bridge.permission_read_admit(request).await
+                } else {
+                    bridge.permission_read_review(request).await
+                }
+            })
+            .map_err(|_| reads::ERROR)
         },
         valid,
     )
@@ -141,4 +147,38 @@ pub(super) async fn read(
         Body::from_stream(ReceiverStream::new(rx)),
     )
         .into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Invalidate {
+    organization_id: Uuid,
+}
+pub(super) async fn invalidate(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Invalidate>,
+) -> Result<Json<Value>, ApiError> {
+    if !link.0 {
+        return Err(ApiError::forbidden("Local companion socket required"));
+    }
+    if body.organization_id.is_nil() {
+        return Err(ApiError::bad("Organization required"));
+    }
+    tokio::task::spawn_blocking(move || {
+        let dir = directory(&state)?;
+        let guard =
+            storage::open(&dir.join("lock"), storage::Open::Lock).map_err(|_| reads::ERROR)?;
+        storage::lock(&guard).map_err(|_| reads::ERROR)?;
+        let _unlock = storage::UnlockOnDrop(&guard);
+        let mut store = reads::load(&dir)?;
+        store
+            .allows
+            .retain(|a| a.identity["organization_id"] != body.organization_id.to_string());
+        reads::save(&dir, &store)?;
+        Ok::<_, &'static str>(Json(json!({"invalidated":true})))
+    })
+    .await
+    .map_err(|_| ApiError::unavailable(reads::ERROR))?
+    .map_err(ApiError::unavailable)
 }

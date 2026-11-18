@@ -15,11 +15,12 @@ Stored metadata never includes file contents or machine credentials. The optiona
 allow cache evicts least recently used entries to stay within 256 entries and
 512 KiB; a full cache does not turn into a quota on authorized reads.
 
-The last 1,024 consumed request IDs remain deduplicated across restarts. New reads
-retire the oldest ID when this bounded retry window fills. An ID outside that
-window is treated as a new request and must pass all current verification; no
-cached contents are returned. Callers must not retry abandoned requests after
-that window. Reads are capped at 1 MiB and 30 seconds.
+AIuditor #92 adds committed owner admission immediately before reading. Its
+retained consumed IDs survive local retry-cache eviction and restarts. The local
+last-1,024 list is only an early duplicate check; it cannot authorize reuse.
+A current policy revision change invalidates old allow metadata and requires a
+fresh review. Revocation before admission refuses the read. A later revocation
+cannot undo an already admitted read. Reads remain capped at 1 MiB and 30 seconds.
 
 This consumer supports Conductor #68 with Plane #177, AIuditor #95, Conductor #80
 and Host #224. The initial assigned Host bridge supports Linux. Unit and contract

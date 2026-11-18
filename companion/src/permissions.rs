@@ -8,7 +8,16 @@ pub fn run() -> Result<(), String> {
         &hypermesh_session::Endpoints::panopticon(),
     )
     .map_err(|_| "Sign in again to open Permissions")?;
-    screen(crate::visor::trust_request, dialog)
+    screen(
+        |path, body| {
+            if path == "/permissions/policy" {
+                crate::access_policy::request(body.ok_or("Policy scope required")?)
+            } else {
+                crate::visor::trust_request(path, body)
+            }
+        },
+        dialog,
+    )
 }
 fn entry(
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
@@ -51,12 +60,15 @@ fn screen(
                 "Read a verified local file".into(),
                 "View learned allows".into(),
                 "Run a verified typed action".into(),
+                "Review or change access policy".into(),
             ],
         )?
         else {
             return Ok(());
         };
-        if action == 4 {
+        if action == 5 {
+            policy_screen(&mut request, &mut ui, &context, organization)?;
+        } else if action == 4 {
             let Some(selection) = current else { continue };
             let machine = request("/acp/context", None)?;
             if machine["workspace"] != project {
@@ -468,5 +480,193 @@ mod tests {
         assert_eq!(writes[0]["selection"]["rules"][0]["max_bytes"], 1024);
         assert_eq!(writes[0]["selection"]["scope"]["project"], "/project");
         assert!(writes[0].get("allow").is_none());
+    }
+}
+
+fn policy_screen(
+    request: &mut impl FnMut(&str, Option<Value>) -> Result<Value, String>,
+    ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
+    context: &Value,
+    organization: &str,
+) -> Result<(), String> {
+    let tenant = context["tenant_id"]
+        .as_str()
+        .ok_or("Assigned tenant unavailable")?;
+    let scope = json!({"tenant_id":tenant,"organization_id":organization});
+    let policy = request("/permissions/policy", Some(scope.clone()))?;
+    let mut choices = vec!["View current policy and restrictions".into()];
+    if policy["can_edit_personal"] == true {
+        choices.push("Narrow my permissions".into());
+    }
+    if policy["can_edit_organization"] == true {
+        choices.push("Change organization restrictions".into());
+    }
+    let Some(choice)=choose(ui,"Access policy","Personal settings cannot relax organization restrictions. Per-use means fresh automatic verification, not another prompt.",&choices)? else{return Ok(())};
+    if choice == 0 {
+        crate::mcp_dialog::text(ui, "Current access policy", &policy_text(&policy), false)?;
+        return Ok(());
+    }
+    let organization_edit = choices[choice] == "Change organization restrictions";
+    let rules = policy["rules"]
+        .as_array()
+        .ok_or("Policy rules unavailable")?;
+    if rules.is_empty() {
+        return Err("No configured rules in this organization".into());
+    }
+    let labels: Vec<String> = rules
+        .iter()
+        .map(|r| {
+            format!(
+                "{}: {}",
+                r["operation"].as_str().unwrap_or(""),
+                r["target"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    let Some(index)=choose(ui,"Policy rule","Select the exact operation and resource. Restrictions cover all typed arguments for this target.",&labels)? else{return Ok(())};
+    let rule = &rules[index];
+    let Some(mode) = choose(
+        ui,
+        "Rule restriction",
+        "Removing your restriction still leaves organization policy in force.",
+        &[
+            "Prohibit this action".into(),
+            "Verify each use; do not remember".into(),
+            "Reduce byte/time limits".into(),
+            "Remove this scope's restriction".into(),
+        ],
+    )?
+    else {
+        return Ok(());
+    };
+    let Some(reason) = entry(ui, "Reason for this change", "")? else {
+        return Ok(());
+    };
+    if reason.is_empty() || reason.len() > 256 {
+        return Err("Enter a reason of 1–256 bytes".into());
+    }
+    let mode_name = ["deny", "per_use", "limited", "inherited"][mode];
+    let mut restriction = json!({"operation":rule["operation"],"target":rule["target"],"mode":mode_name,"reason":reason});
+    if mode == 2 {
+        let Some(bytes) = entry(
+            ui,
+            "Maximum bytes",
+            &rule["limits"]["max_bytes"].to_string(),
+        )?
+        else {
+            return Ok(());
+        };
+        let Some(seconds) = entry(
+            ui,
+            "Timeout in seconds",
+            &rule["limits"]["timeout_seconds"].to_string(),
+        )?
+        else {
+            return Ok(());
+        };
+        restriction["limits"] = json!({"max_bytes":bytes.parse::<u64>().map_err(|_|"Whole-number limit required")?,"timeout_seconds":seconds.parse::<u32>().map_err(|_|"Whole-number timeout required")?});
+    }
+    let mut update = scope;
+    update["mutation"] = json!({"version":1,"organization_id":organization,"expected_revision":policy["revision"],"scope":if organization_edit{"organization"}else{"personal"},"restriction":restriction});
+    request("/permissions/policy", Some(update))?;
+    let cleared = request(
+        "/permissions/cache",
+        Some(json!({"organization_id":organization})),
+    )
+    .is_ok();
+    ui(
+        &args(
+            "info",
+            "Policy updated",
+            if cleared {
+                "Remembered allows were cleared. New actions use the updated policy. Already admitted actions cannot be undone."
+            } else {
+                "The policy changed. Local cache cleanup was unavailable; every new action still checks current policy. Already admitted actions cannot be undone."
+            },
+        ),
+        None,
+    )?;
+    Ok(())
+}
+
+fn policy_text(policy: &Value) -> String {
+    let mut lines = vec![format!(
+        "Signed-in user: {}",
+        policy["subject"].as_str().unwrap_or("")
+    )];
+    if let Some(rules) = policy["rules"].as_array() {
+        for r in rules {
+            lines.push(format!(
+                "{} — {}\n{} · {} bytes · {} seconds\n{}",
+                r["operation"].as_str().unwrap_or(""),
+                r["target"].as_str().unwrap_or(""),
+                r["effect"].as_str().unwrap_or(""),
+                r["limits"]["max_bytes"],
+                r["limits"]["timeout_seconds"],
+                r["reason"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    if let Some(rules) = policy["restrictions"].as_array() {
+        for r in rules {
+            lines.push(format!(
+                "{} restriction: {} — {}\n{} · {}",
+                if r["subject"] == "" {
+                    "Organization"
+                } else {
+                    "Personal"
+                },
+                r["operation"].as_str().unwrap_or(""),
+                r["target"].as_str().unwrap_or(""),
+                r["mode"].as_str().unwrap_or(""),
+                r["reason"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    lines.join("\n\n")
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    #[test]
+    fn personal_edit_uses_expected_revision_and_clears_local_cache() {
+        let mut answers = vec![
+            Some("1"),
+            Some("0"),
+            Some("1"),
+            Some("Verify each action"),
+            None,
+        ]
+        .into_iter();
+        let policy = json!({"version":1,"revision":"revision","can_edit_personal":true,"can_edit_organization":false,"rules":[{"operation":"read","target":"/project/file","limits":{"max_bytes":1024,"timeout_seconds":10}}]});
+        let mut updates = 0;
+        let mut clears = 0;
+        policy_screen(
+            &mut |path, body| {
+                if path == "/permissions/cache" {
+                    clears += 1;
+                    return Ok(json!({"invalidated":true}));
+                }
+                let body = body.unwrap();
+                assert_eq!(body["tenant_id"], "tenant");
+                assert_eq!(body["organization_id"], "org");
+                if !body["mutation"].is_null() {
+                    updates += 1;
+                    assert_eq!(body["mutation"]["scope"], "personal");
+                    assert_eq!(body["mutation"]["expected_revision"], "revision");
+                    assert_eq!(body["mutation"]["restriction"]["mode"], "per_use");
+                }
+                Ok(policy.clone())
+            },
+            &mut |args, _| {
+                assert!(!args.iter().any(|s| s == "Change organization restrictions"));
+                Ok(answers.next().unwrap().map(str::to_owned))
+            },
+            &json!({"tenant_id":"tenant"}),
+            "org",
+        )
+        .unwrap();
+        assert_eq!((updates, clears), (1, 1));
     }
 }

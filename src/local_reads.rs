@@ -268,7 +268,7 @@ pub fn perform(
     body: ReadRequest,
     identity: &Value,
     workspace: &str,
-    mut reviewer: impl FnMut(Value) -> Result<Value, &'static str>,
+    mut reviewer: impl FnMut(Value, bool) -> Result<Value, &'static str>,
     valid: impl Fn() -> bool,
 ) -> Result<Value, &'static str> {
     body.selection.validate()?;
@@ -319,12 +319,21 @@ pub fn perform(
         .cloned();
     let rules:Vec<Value>=body.selection.rules.iter().map(|r|json!({"operation":r.operation,"target":r.target,"limits":{"max_bytes":r.max_bytes,"timeout_seconds":r.timeout_seconds}})).collect();
     let mut request = json!({"request_id":body.request_id,"project":body.selection.scope.project,"template_version":1,"template":rules,"action":action});
-    if let Some(ref prior) = previous {
-        request["expected_policy_revision"] = json!(prior.policy_revision);
-    }
-    let review = reviewer(request.clone())?;
+    store.allows.retain(|a| {
+        !(a.identity == *identity
+            && a.project == body.selection.scope.project
+            && a.action == action)
+    });
+    save(dir, &store)?;
+    let review = reviewer(request.clone(), false)?;
     verify(&review, &request, identity)?;
     if !valid() {
+        return Err(ERROR);
+    }
+    request["expected_policy_revision"] = review["policy_revision"].clone();
+    let final_review = reviewer(request.clone(), true)?;
+    verify(&final_review, &request, identity)?;
+    if final_review["dispatch_admitted"] != true || !valid() {
         return Err(ERROR);
     }
     // Consume the ID before OS reading. A disconnected or restarted caller may
@@ -335,18 +344,18 @@ pub fn perform(
     }
     store.requests.push(body.request_id);
     save(dir, &store)?;
-    let expiry = review["expires_at"].as_f64().ok_or(ERROR)?;
+    let expiry = final_review["expires_at"].as_f64().ok_or(ERROR)?;
     let bytes = file.read(body.max_bytes, body.timeout_seconds, || {
         valid() && now() < expiry
     })?;
-    request["expected_policy_revision"] = review["policy_revision"].clone();
-    let final_review = reviewer(request.clone())?;
-    verify(&final_review, &request, identity)?;
     if !valid() {
         return Err(ERROR);
     }
     let learn = final_review["learning_eligible"] == true;
-    let reused = previous.is_some() && learn;
+    let reused = previous
+        .as_ref()
+        .is_some_and(|a| json!(a.policy_revision) == final_review["policy_revision"])
+        && learn;
     let pending = final_review["decision"] == "advisory"
         || (learn && previous.as_ref().is_some_and(|a| a.review_pending));
     store.allows.retain(|a| {
@@ -453,7 +462,7 @@ mod tests {
             }
         }
         fn review(&self, request: &Value) -> Value {
-            json!({"version":1,"request_id":request["request_id"],"project":request["project"],"action":request["action"],"limits":request["action"]["limits"],"preview_only":false,"identity":self.identity,"permitted":true,"decision":"advisory","learning_eligible":true,"policy_revision":self.revision,"expires_at":now()+9.0})
+            json!({"version":1,"request_id":request["request_id"],"project":request["project"],"action":request["action"],"limits":request["action"]["limits"],"preview_only":false,"identity":self.identity,"permitted":true,"decision":"advisory","learning_eligible":true,"dispatch_admitted":true,"policy_revision":self.revision,"expires_at":now()+9.0})
         }
         fn run(&self, id: Uuid) -> Result<Value, &'static str> {
             perform(
@@ -461,7 +470,7 @@ mod tests {
                 self.body(id),
                 &self.identity,
                 &self.project,
-                |r| Ok(self.review(&r)),
+                |r, _| Ok(self.review(&r)),
                 || true,
             )
         }
@@ -520,7 +529,7 @@ mod tests {
             f.body(Uuid::new_v4()),
             &f.identity,
             &f.project,
-            |r| {
+            |r, _| {
                 let mut value = f.review(&r);
                 value["decision"] = json!("allowed");
                 Ok(value)
@@ -533,7 +542,7 @@ mod tests {
         assert!(load(&f.dir).unwrap().allows[0].review_pending);
     }
     #[test]
-    fn first_read_learns_restart_reuses_and_revision_change_refuses() {
+    fn first_read_learns_restart_reuses_and_revision_change_revalidates() {
         let mut f = Fixture::new();
         let first = Uuid::new_v4();
         let result = f.run(first).unwrap();
@@ -549,7 +558,7 @@ mod tests {
         assert!(!raw.contains("private file text"));
         assert!(!raw.contains("content_base64"));
         f.revision = Uuid::new_v4();
-        assert!(f.run(Uuid::new_v4()).is_err());
+        assert_eq!(f.run(Uuid::new_v4()).unwrap()["reused"], false);
     }
     #[test]
     fn owner_policy_revocation_and_missing_verification_cannot_read_or_learn() {
@@ -559,7 +568,7 @@ mod tests {
             f.body(Uuid::new_v4()),
             &f.identity,
             &f.project,
-            |_| Err(ERROR),
+            |_, _| Err(ERROR),
             || true
         )
         .is_err());
@@ -571,7 +580,7 @@ mod tests {
                 f.body(Uuid::new_v4()),
                 &f.identity,
                 &f.project,
-                |r| {
+                |r, _| {
                     let mut v = f.review(&r);
                     v[field] = json!(field == "preview_only");
                     Ok(v)
@@ -585,7 +594,7 @@ mod tests {
             f.body(Uuid::new_v4()),
             &f.identity,
             &f.project,
-            |r| {
+            |r, _| {
                 let mut v = f.review(&r);
                 v["learning_eligible"] = json!(false);
                 Ok(v)
@@ -595,6 +604,45 @@ mod tests {
         .unwrap();
         assert_eq!(result["reused"], false);
         assert!(load(&f.dir).unwrap().allows.is_empty());
+    }
+    #[test]
+    fn revocation_between_review_and_admission_clears_cached_allow() {
+        let f = Fixture::new();
+        f.run(Uuid::new_v4()).unwrap();
+        let mut calls = 0;
+        let result = perform(
+            &f.dir,
+            f.body(Uuid::new_v4()),
+            &f.identity,
+            &f.project,
+            |r, admit| {
+                calls += 1;
+                let mut value = f.review(&r);
+                if admit {
+                    value["permitted"] = json!(false);
+                    value["dispatch_admitted"] = json!(false);
+                    value["policy_revision"] = json!(Uuid::new_v4());
+                }
+                Ok(value)
+            },
+            || true,
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, 2);
+        assert!(load(&f.dir).unwrap().allows.is_empty());
+        let result = perform(
+            &f.dir,
+            f.body(Uuid::new_v4()),
+            &f.identity,
+            &f.project,
+            |r, _| {
+                let mut value = f.review(&r);
+                value["dispatch_admitted"] = json!(false);
+                Ok(value)
+            },
+            || true,
+        );
+        assert!(result.is_err());
     }
     #[test]
     fn links_escape_replacement_changed_arguments_and_cancel_refuse() {
@@ -613,7 +661,7 @@ mod tests {
             f.body(Uuid::new_v4()),
             &f.identity,
             &f.project,
-            |r| {
+            |r, _| {
                 let mut v = f.review(&r);
                 v["action"]["arguments_sha256"] = json!("0".repeat(64));
                 Ok(v)
@@ -626,7 +674,7 @@ mod tests {
             f.body(Uuid::new_v4()),
             &f.identity,
             &f.project,
-            |r| Ok(f.review(&r)),
+            |r, _| Ok(f.review(&r)),
             || false
         )
         .is_err());
@@ -641,7 +689,7 @@ mod tests {
                 f.body(Uuid::new_v4()),
                 &f.identity,
                 &f.project,
-                |r| {
+                |r, _| {
                     let mut v = f.review(&r);
                     v["identity"][key] = json!(Uuid::new_v4());
                     Ok(v)
