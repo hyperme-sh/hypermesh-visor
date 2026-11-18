@@ -852,6 +852,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/mcp/sources", get(mcp_sources))
         .route("/mcp/profiles", get(mcp_profiles).post(mcp_profile_edit))
         .route("/permissions/templates", get(permissions::list).post(permissions::save))
+        .route("/continue/context", get(continue_tasks::current_context))
         .route("/continue/view", post(continue_tasks::view))
         .route("/continue/start", post(continue_tasks::start))
         .route("/continue/control", post(continue_tasks::control))

@@ -60,6 +60,14 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Some(action @ ("--continue-status-workspace"|"--continue-control-workspace")) => {
+            let Some(workspace)=args.next() else{return ExitCode::FAILURE};if args.next().is_some(){return ExitCode::FAILURE}
+            let control=if action=="--continue-control-workspace" {
+                use std::io::Read;let mut raw=Vec::new();if std::io::stdin().take(8193).read_to_end(&mut raw).is_err()||raw.len()>8192{return ExitCode::FAILURE}
+                match serde_json::from_slice(&raw){Ok(v)=>Some(v),Err(_)=>return ExitCode::FAILURE}
+            }else{None};
+            match continue_tasks::exchange(&workspace,control){Ok(value)=>{println!("{value}");ExitCode::SUCCESS},Err(_)=>{eprintln!("Continue task unavailable; refresh before retrying");ExitCode::FAILURE}}
+        },
         Some("--continue-workspace") => {
             let Some(workspace)=args.next() else {eprintln!("Select a local workspace");return ExitCode::FAILURE};
             if args.next().is_some(){return ExitCode::FAILURE}

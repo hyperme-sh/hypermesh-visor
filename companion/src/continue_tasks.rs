@@ -7,16 +7,43 @@ pub fn run(workspace: &str) -> Result<(), String> {
     screen(
         workspace,
         |path, body| {
-            let active = crate::visor::trust_request("/acp/context", None)?;
+            let active = crate::visor::trust_request("/continue/context", None)?;
             verify_scope(&active, workspace, &mut identity)?;
             let result = crate::visor::trust_request(path, body)?;
-            let fresh = crate::visor::trust_request("/acp/context", None)?;
+            let fresh = crate::visor::trust_request("/continue/context", None)?;
             verify_scope(&fresh, workspace, &mut identity)?;
             Ok(result)
         },
         dialog,
     )
 }
+pub fn exchange(workspace: &str, control: Option<Value>) -> Result<Value, String> {
+    let active = crate::visor::trust_request("/continue/context", None)?;
+    let mut identity = None;
+    verify_scope(&active, workspace, &mut identity)?;
+    let mut body = json!({"workspace":workspace,"session_id":active["session_id"]});
+    let path = if let Some(control) = control {
+        let object = control.as_object().ok_or("Invalid task control")?;
+        if object.len() != 3
+            || !["run_id", "revision", "action"]
+                .iter()
+                .all(|k| object.contains_key(*k))
+        {
+            return Err("Invalid task control".into());
+        }
+        for (k, v) in object {
+            body[k] = v.clone();
+        }
+        "/continue/control"
+    } else {
+        "/continue/view"
+    };
+    let result = crate::visor::trust_request(path, Some(body))?;
+    let fresh = crate::visor::trust_request("/continue/context", None)?;
+    verify_scope(&fresh, workspace, &mut identity)?;
+    Ok(result)
+}
+
 fn verify_scope(
     context: &Value,
     workspace: &str,
@@ -48,9 +75,23 @@ fn start_form(
     scope: &Value,
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
 ) -> Result<Option<Value>, String> {
-    let Some(goal) = entry(ui, "Goal (include the central issue URL)", "")? else {
+    let Some(goal) = entry(ui, "Goal", "")? else {
         return Ok(None);
     };
+    let Some(links) = entry(
+        ui,
+        "Central issue, PR or check URLs (comma-separated GitHub links)",
+        "",
+    )?
+    else {
+        return Ok(None);
+    };
+    let tracking: Vec<String> = links
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
     let Some(completion) = entry(ui, "Completion criteria", "")? else {
         return Ok(None);
     };
@@ -97,6 +138,7 @@ fn start_form(
     let mut body = scope.clone();
     body["run_id"] = json!(uuid::Uuid::new_v4());
     body["goal"] = json!(goal);
+    body["tracking"] = json!(tracking);
     body["completion"] = json!(completion);
     body["chunks"] = json!(chunks);
     body["seconds"] = json!(seconds);
@@ -120,12 +162,12 @@ fn screen(
     mut request: impl FnMut(&str, Option<Value>) -> Result<Value, String>,
     mut ui: impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
 ) -> Result<(), String> {
-    let context = request("/acp/context", None)?;
+    let context = request("/continue/context", None)?;
     let mut identity = None;
     verify_scope(&context, workspace, &mut identity)?;
     let scope = json!({"workspace":workspace,"session_id":context["session_id"]});
     loop {
-        let fresh = request("/acp/context", None)?;
+        let fresh = request("/continue/context", None)?;
         verify_scope(&fresh, workspace, &mut identity)?;
         let snapshot = request("/continue/view", Some(scope.clone()))?;
         let run = &snapshot["run"];
@@ -197,7 +239,7 @@ mod tests {
     fn controls_use_current_revision_and_owner_acknowledgement() {
         let mut calls = Vec::new();
         let mut ui_count = 0;
-        screen("/project",|path,body|{calls.push((path.to_owned(),body.clone()));match path{"/acp/context"=>Ok(json!({"workspace":"/project","session_id":"s","identity":{"session_id":"s"}})),"/continue/view"=>Ok(json!({"run":{"id":"r","revision":7,"state":"running","continue_enabled":true}})),"/continue/control"=>Err("stale task revision".into()),_=>panic!("unexpected path")}},|_,_|{ui_count+=1;Ok(Some("3".into()))}).unwrap_err();
+        screen("/project",|path,body|{calls.push((path.to_owned(),body.clone()));match path{"/continue/context"=>Ok(json!({"workspace":"/project","session_id":"s","identity":{"session_id":"s"}})),"/continue/view"=>Ok(json!({"run":{"id":"r","revision":7,"state":"running","continue_enabled":true}})),"/continue/control"=>Err("stale task revision".into()),_=>panic!("unexpected path")}},|_,_|{ui_count+=1;Ok(Some("3".into()))}).unwrap_err();
         assert_eq!(ui_count, 1);
         let body = calls.last().unwrap().1.as_ref().unwrap();
         assert_eq!(body["revision"], 7);
@@ -206,7 +248,7 @@ mod tests {
     #[test]
     fn reconnect_reads_server_state_without_starting_a_task() {
         let mut starts = 0;
-        screen("/project",|path,_|{if path=="/acp/context"{Ok(json!({"workspace":"/project","session_id":"s","identity":{"session_id":"s"}}))}else{if path=="/continue/start"{starts+=1}Ok(json!({"run":{"state":"paused","continue_enabled":false}}))}},|_,_|Ok(None)).unwrap();
+        screen("/project",|path,_|{if path=="/continue/context"{Ok(json!({"workspace":"/project","session_id":"s","identity":{"session_id":"s"}}))}else{if path=="/continue/start"{starts+=1}Ok(json!({"run":{"state":"paused","continue_enabled":false}}))}},|_,_|Ok(None)).unwrap();
         assert_eq!(starts, 0);
     }
 }

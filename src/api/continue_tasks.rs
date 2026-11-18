@@ -30,6 +30,8 @@ pub(super) struct Start {
     seconds: u64,
     tokens: u64,
     continue_enabled: bool,
+    #[serde(default)]
+    tracking: Vec<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -93,7 +95,7 @@ fn start_body(context: &Value, body: &Start) -> Result<Value, ()> {
     let mut result = scope_body(context);
     result["run_id"] = json!(body.run_id);
     result["continue_enabled"] = json!(body.continue_enabled);
-    result["plan"] = json!({"version":1,"workspace":body.workspace,"goal":body.goal,"completion":body.completion,"chunks":chunks,"budgets":{"seconds":body.seconds,"tokens":body.tokens,"chunks":body.chunks.len()}});
+    result["plan"] = json!({"version":1,"workspace":body.workspace,"goal":body.goal,"completion":body.completion,"chunks":chunks,"tracking":body.tracking,"budgets":{"seconds":body.seconds,"tokens":body.tokens,"chunks":body.chunks.len()}});
     if result.to_string().len() > 524288 {
         return Err(());
     }
@@ -182,6 +184,26 @@ async fn call(context: Value, path: &'static str, body: Value) -> Result<Json<Va
     .map_err(|_| unavailable())?;
     Ok(Json(result))
 }
+pub(super) async fn current_context(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+) -> Result<Json<Value>, ApiError> {
+    if !link.0 {
+        return Err(ApiError::forbidden("Local companion socket required"));
+    }
+    let value = state
+        .host_bridge
+        .as_ref()
+        .ok_or_else(unavailable)?
+        .machine_context()
+        .await
+        .map_err(|_| unavailable())?;
+    let session =
+        acp_machine::binding(&value, value["workspace"].as_str().ok_or_else(unavailable)?)
+            .map_err(|_| unavailable())?;
+    Ok(Json(acp_machine::context_view(&value, session)))
+}
+
 pub(super) async fn view(
     State(state): State<Arc<AppState>>,
     Extension(link): Extension<CompanionLink>,
@@ -279,6 +301,7 @@ mod tests {
             seconds: 120,
             tokens: 2048,
             continue_enabled: true,
+            tracking: vec![],
         };
         (value, body)
     }
