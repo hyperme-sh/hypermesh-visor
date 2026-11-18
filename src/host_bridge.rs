@@ -181,6 +181,7 @@ impl Bridge {
         if raw.len()>196608 {return Err(())}
         self.request("POST","/permission-read-review",raw).await
     }
+    pub async fn continue_plan(&self,body:Value)->Result<Value,()>{let raw=serde_json::to_vec(&body).map_err(|_|())?;if raw.len()>524288{return Err(())}self.request("POST","/continue-plan",raw).await}
     pub async fn permission_preview(&self, body: Value) -> Result<Value, ()> {
         let raw = serde_json::to_vec(&body).map_err(|_| ())?;
         if raw.len() > 196608 { return Err(()); }

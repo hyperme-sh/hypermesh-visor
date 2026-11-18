@@ -855,6 +855,8 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/continue/local-resume", post(continue_tasks::local_resume))
         .route("/continue/context", get(continue_tasks::current_context))
         .route("/continue/view", post(continue_tasks::view))
+        .route("/continue/plan", post(continue_tasks::plan))
+        .route("/continue/project", post(continue_tasks::project))
         .route("/continue/start", post(continue_tasks::start))
         .route("/continue/control", post(continue_tasks::control))
         .route("/coding/status", get(coding_tasks::status))

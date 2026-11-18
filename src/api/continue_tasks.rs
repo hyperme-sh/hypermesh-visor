@@ -32,6 +32,8 @@ pub(super) struct Start {
     continue_enabled: bool,
     #[serde(default)]
     tracking: Vec<String>,
+    #[serde(default)]
+    project: Option<Value>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +98,18 @@ fn start_body(context: &Value, body: &Start) -> Result<Value, ()> {
     result["run_id"] = json!(body.run_id);
     result["continue_enabled"] = json!(body.continue_enabled);
     result["plan"] = json!({"version":1,"workspace":body.workspace,"goal":body.goal,"completion":body.completion,"chunks":chunks,"tracking":body.tracking,"budgets":{"seconds":body.seconds,"tokens":body.tokens,"chunks":body.chunks.len()}});
+    if let Some(project) = &body.project {
+        let mut project = project.clone();
+        let units = project["units"].as_array_mut().ok_or(())?;
+        if units.len() != body.chunks.len() {
+            return Err(());
+        }
+        for (i, unit) in units.iter_mut().enumerate() {
+            unit["chunk_id"] = json!(stable_id(body.run_id, i, 0));
+            unit["assignment_id"] = identity["assignment_id"].clone();
+        }
+        result["plan"]["project"] = project;
+    }
     if result.to_string().len() > 524288 {
         return Err(());
     }
@@ -327,6 +341,7 @@ mod tests {
             tokens: 2048,
             continue_enabled: true,
             tracking: vec![],
+            project: None,
         };
         (value, body)
     }
@@ -354,4 +369,56 @@ mod tests {
         b.chunks[0].depends_on = vec![1];
         assert!(start_body(&v, &b).is_err());
     }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Plan {
+    session_id: Uuid,
+    workspace: String,
+    plan: Value,
+}
+pub(super) async fn plan(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Plan>,
+) -> Result<Json<Value>, ApiError> {
+    let scope = Scope {
+        session_id: body.session_id,
+        workspace: body.workspace.clone(),
+    };
+    context(&state, link, &scope).await?;
+    let result = state
+        .host_bridge
+        .as_ref()
+        .ok_or_else(unavailable)?
+        .continue_plan(json!({"workspace":body.workspace,"plan":body.plan}))
+        .await
+        .map_err(|_| unavailable())?;
+    Ok(Json(result))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Project {
+    session_id: Uuid,
+    workspace: String,
+    run_id: Uuid,
+    revision: u64,
+    settings: Value,
+}
+pub(super) async fn project(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Project>,
+) -> Result<Json<Value>, ApiError> {
+    let scope = Scope {
+        session_id: body.session_id,
+        workspace: body.workspace,
+    };
+    let value = context(&state, link, &scope).await?;
+    let mut payload = scope_body(&value);
+    payload["run_id"] = json!(body.run_id);
+    payload["revision"] = json!(body.revision);
+    payload["settings"] = body.settings;
+    call(value, "continue-project", payload).await
 }
