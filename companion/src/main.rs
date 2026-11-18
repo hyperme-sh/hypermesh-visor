@@ -19,6 +19,7 @@ mod mcp_connections;
 mod mcp_dialog;
 mod mcp_profiles;
 mod permissions;
+mod continue_tasks;
 mod access_policy;
 mod mcp_servers;
 mod mcp_status;
@@ -58,6 +59,11 @@ fn main() -> ExitCode {
                 eprintln!("hypermesh-companion: {err}");
                 ExitCode::from(1)
             }
+        },
+        Some("--continue-workspace") => {
+            let Some(workspace)=args.next() else {eprintln!("Select a local workspace");return ExitCode::FAILURE};
+            if args.next().is_some(){return ExitCode::FAILURE}
+            match continue_tasks::run(&workspace){Ok(())=>ExitCode::SUCCESS,Err(error)=>{eprintln!("Continue task: {error}");ExitCode::FAILURE}}
         },
         Some("--choose-session") => match session_selection::run() {
             Ok(()) => ExitCode::SUCCESS,
