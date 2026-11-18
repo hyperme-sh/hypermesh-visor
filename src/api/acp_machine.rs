@@ -59,7 +59,7 @@ pub(super) async fn context(
     ))
 }
 
-fn context_view(value:&Value,session:Uuid)->Value{
+pub(super) fn context_view(value:&Value,session:Uuid)->Value{
  let identity:Value=["tenant_id","owner_id","principal","organization_id","device_id","bot_id","assignment_id","session_id"].into_iter().map(|key|(key.to_owned(),value["identity"][key].clone())).collect::<serde_json::Map<String,Value>>().into();
  json!({"session_id":session,"workspace":value["workspace"],"identity":identity})
 }

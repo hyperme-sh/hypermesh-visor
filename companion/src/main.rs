@@ -19,6 +19,7 @@ mod mcp_connections;
 mod mcp_dialog;
 mod mcp_profiles;
 mod permissions;
+mod continue_tasks;
 mod access_policy;
 mod mcp_servers;
 mod mcp_status;
@@ -58,6 +59,19 @@ fn main() -> ExitCode {
                 eprintln!("hypermesh-companion: {err}");
                 ExitCode::from(1)
             }
+        },
+        Some(action @ ("--continue-status-workspace"|"--continue-control-workspace")) => {
+            let Some(workspace)=args.next() else{return ExitCode::FAILURE};if args.next().is_some(){return ExitCode::FAILURE}
+            let control=if action=="--continue-control-workspace" {
+                use std::io::Read;let mut raw=Vec::new();if std::io::stdin().take(8193).read_to_end(&mut raw).is_err()||raw.len()>8192{return ExitCode::FAILURE}
+                match serde_json::from_slice(&raw){Ok(v)=>Some(v),Err(_)=>return ExitCode::FAILURE}
+            }else{None};
+            match continue_tasks::exchange(&workspace,control){Ok(value)=>{println!("{value}");ExitCode::SUCCESS},Err(_)=>{eprintln!("Continue task unavailable; refresh before retrying");ExitCode::FAILURE}}
+        },
+        Some("--continue-workspace") => {
+            let Some(workspace)=args.next() else {eprintln!("Select a local workspace");return ExitCode::FAILURE};
+            if args.next().is_some(){return ExitCode::FAILURE}
+            match continue_tasks::run(&workspace){Ok(())=>ExitCode::SUCCESS,Err(error)=>{eprintln!("Continue task: {error}");ExitCode::FAILURE}}
         },
         Some("--choose-session") => match session_selection::run() {
             Ok(()) => ExitCode::SUCCESS,

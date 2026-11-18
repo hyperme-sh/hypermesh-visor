@@ -51,6 +51,7 @@ mod permission_dream;
 mod access_actions;
 mod acp_machine;
 mod coding_tasks;
+mod continue_tasks;
 
 pub struct AppState {
     companions: std::sync::OnceLock<Arc<crate::companion_runtime::Runtime>>,
@@ -851,6 +852,11 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/mcp/sources", get(mcp_sources))
         .route("/mcp/profiles", get(mcp_profiles).post(mcp_profile_edit))
         .route("/permissions/templates", get(permissions::list).post(permissions::save))
+        .route("/continue/local-resume", post(continue_tasks::local_resume))
+        .route("/continue/context", get(continue_tasks::current_context))
+        .route("/continue/view", post(continue_tasks::view))
+        .route("/continue/start", post(continue_tasks::start))
+        .route("/continue/control", post(continue_tasks::control))
         .route("/coding/status", get(coding_tasks::status))
         .route("/acp/context", get(acp_machine::context))
         .route("/acp/prompt", post(acp_machine::prompt))

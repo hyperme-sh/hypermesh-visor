@@ -558,22 +558,28 @@ fn trust_response_limit(path: &str) -> usize {
     }
 }
 
+fn trust_endpoint(path:&str)->bool { matches!(
+        path,
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context" | "/continue/context" | "/continue/view" | "/continue/start" | "/continue/control" | "/continue/local-resume"
+    ) }
+
+#[test]
+fn continue_endpoints_reach_the_private_transport(){
+ for path in ["/continue/context","/continue/view","/continue/start","/continue/control","/continue/local-resume"]{assert!(trust_endpoint(path));}
+ assert!(!trust_endpoint("/continue/arbitrary"));
+}
+
 pub fn trust_request(
     path: &str,
     body: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    if !matches!(
-        path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context"
-    ) {
-        return Err("Invalid trust endpoint".into());
-    }
+    if !trust_endpoint(path) {return Err("Invalid trust endpoint".into());}
     let method = if body.is_some() { "POST" } else { "GET" };
     let body = body.map(|v| v.to_string()).unwrap_or_default();
     let protocol = if matches!(path, "/permissions/reads" | "/permissions/actions") { "HTTP/1.0" } else { "HTTP/1.1" };
     let request = format!("{method} {path} {protocol}\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
     let socket = socket_path().ok_or("Companion socket unavailable")?;
-    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if matches!(path, "/permissions/reads" | "/permissions/actions") {70} else if path == "/permissions/preview" {20} else {5}), trust_response_limit(path))
+    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if matches!(path, "/permissions/reads" | "/permissions/actions") {70} else if path == "/permissions/preview" || path.starts_with("/continue/") {20} else {5}), trust_response_limit(path))
     else {
         return Err("Cannot reach visor; no trust change confirmed".into());
     };
