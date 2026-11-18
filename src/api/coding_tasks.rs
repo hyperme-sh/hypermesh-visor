@@ -89,11 +89,22 @@ async fn cancellable(
     }
 }
 
+async fn context_or_stop(
+    request: impl std::future::Future<Output = Result<Value, ()>>,
+    stop: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Value, ()> {
+    if *stop.borrow() {
+        return Err(());
+    }
+    tokio::select! {value=request=>value,_=stop.wait_for(|v|*v)=>Err(())}
+}
+
 pub(super) async fn run(
     state: Arc<AppState>,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> std::io::Result<()> {
     let Some(bridge) = state.host_bridge.as_ref() else {
+        let _ = stop.wait_for(|v| *v).await;
         return Ok(());
     };
     loop {
@@ -108,7 +119,8 @@ pub(super) async fn run(
         };
         if let Some(consent) = consent {
             if current(&state, consent) {
-                if let Ok(context) = bridge.machine_context().await {
+                let context = context_or_stop(bridge.machine_context(), &mut stop).await;
+                if let Ok(context) = context {
                     if context_matches(&context, consent.session) && current(&state, consent) {
                         let result = cancellable(bridge.coding_run(), &mut stop, || {
                             current(&state, consent)
@@ -203,5 +215,36 @@ mod tests {
         )
         .await
         .is_err());
+    }
+    #[tokio::test]
+    async fn stalled_context_is_cancelled_by_shutdown() {
+        let (tx, mut rx) = tokio::sync::watch::channel(false);
+        let job = tokio::spawn(async move {
+            context_or_stop(std::future::pending::<Result<Value, ()>>(), &mut rx).await
+        });
+        tx.send(true).unwrap();
+        assert!(tokio::time::timeout(Duration::from_secs(1), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_err());
+    }
+    #[cfg(feature = "headless")]
+    #[tokio::test]
+    async fn disabled_worker_waits_for_shutdown() {
+        let state = Arc::new(AppState::new(
+            Arc::new(crate::desktop::HeadlessDesktop),
+            Duration::from_secs(1),
+        ));
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let job = tokio::spawn(run(state, rx));
+        tokio::task::yield_now().await;
+        assert!(!job.is_finished());
+        tx.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), job)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

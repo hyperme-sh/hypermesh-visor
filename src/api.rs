@@ -1254,7 +1254,9 @@ pub async fn serve_until(
     });
     let mut jobs = vec![companion, control];
     if let Some(client) = remote_bot {
-        jobs.push(tokio::spawn(coding_tasks::run(Arc::clone(&state), cancel_rx.clone())));
+        if state.host_bridge.is_some() {
+            jobs.push(tokio::spawn(coding_tasks::run(Arc::clone(&state), cancel_rx.clone())));
+        }
         jobs.push(tokio::spawn(remote_bot::run(client, Arc::clone(&state), cancel_rx.clone())));
     }
     if let (Some(listener), Some(token)) = (tcp_listener, token) {
