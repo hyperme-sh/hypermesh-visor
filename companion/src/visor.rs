@@ -561,9 +561,10 @@ pub fn trust_request(
     }
     let method = if body.is_some() { "POST" } else { "GET" };
     let body = body.map(|v| v.to_string()).unwrap_or_default();
-    let request = format!("{method} {path} HTTP/1.1\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
+    let protocol = if path == "/permissions/reads" { "HTTP/1.0" } else { "HTTP/1.1" };
+    let request = format!("{method} {path} {protocol}\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
     let socket = socket_path().ok_or("Companion socket unavailable")?;
-    let Exchange::Body(response) = exchange_read_timeout(&socket, &request, Duration::from_secs(if path == "/permissions/preview" {20} else {5}))
+    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if path == "/permissions/reads" {70} else if path == "/permissions/preview" {20} else {5}), if path == "/permissions/reads" {2 * 1024 * 1024} else {POLL_READ_MAX})
     else {
         return Err("Cannot reach visor; no trust change confirmed".into());
     };

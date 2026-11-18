@@ -961,6 +961,7 @@ dependencies = [
  "toml",
  "ureq",
  "url",
+ "uuid",
  "x11rb",
 ]
 
