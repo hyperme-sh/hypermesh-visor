@@ -179,10 +179,10 @@ fn owner_call(context: Value, path: &str, body: Value) -> Result<Value, ()> {
     let mut raw = Vec::new();
     response
         .into_reader()
-        .take(32769)
+        .take(65537)
         .read_to_end(&mut raw)
         .map_err(|_| ())?;
-    if raw.len() > 32768 {
+    if raw.len() > 65536 {
         return Err(());
     }
     serde_json::from_slice(&raw).map_err(|_| ())

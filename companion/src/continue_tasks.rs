@@ -203,13 +203,26 @@ fn start_form(
     let (chunks, project) = planned_chunks(&preview)?;
     body["chunks"] = json!(chunks);
     body["project"] = project;
-    body["tracking"] = preview["issues"].clone();
+    body["tracking"] = json!(merge_tracking(&tracking, &preview["issues"])?);
     body["seconds"] = json!(seconds);
     body["tokens"] = json!(tokens);
     body["continue_enabled"] = json!(enabled == 0);
     Ok(Some(body))
 }
 
+fn merge_tracking(original: &[String], issues: &Value) -> Result<Vec<String>, String> {
+    let mut links = original.to_vec();
+    for issue in issues.as_array().ok_or("Invalid issue links")? {
+        let value = issue.as_str().ok_or("Invalid issue link")?.to_owned();
+        if !links.contains(&value) {
+            links.push(value)
+        }
+    }
+    if links.len() > 12 {
+        return Err("Use at most twelve unique tracking links".into());
+    }
+    Ok(links)
+}
 fn project_settings(
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
     old: Option<&Value>,
@@ -421,5 +434,23 @@ mod tests {
         let mut invalid = preview;
         invalid["chunks"][0]["depends_on"] = json!(["b"]);
         assert!(planned_chunks(&invalid).is_err());
+    }
+    #[test]
+    fn project_tracking_preserves_prs_checks_and_extra_issues() {
+        let links = vec![
+            "https://github.com/a/b/pull/2".into(),
+            "https://github.com/a/b/actions/runs/3".into(),
+            "https://github.com/a/b/issues/4".into(),
+        ];
+        let merged = merge_tracking(
+            &links,
+            &json!([
+                "https://github.com/a/b/issues/1",
+                "https://github.com/a/b/issues/4"
+            ]),
+        )
+        .unwrap();
+        assert_eq!(&merged[..3], &links);
+        assert_eq!(merged.len(), 4);
     }
 }

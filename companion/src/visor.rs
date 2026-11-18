@@ -551,6 +551,7 @@ fn connection_request(session: &str, server: &str, reconnect: bool) -> Result<St
 
 fn trust_response_limit(path: &str) -> usize {
     match path {
+        "/continue/plan" => 1024*1024+8192,
         "/permissions/reads" | "/permissions/actions" => 2 * 1024 * 1024,
         "/permissions/dream" => 2 * 1024 * 1024 + 8192,
         "/permissions/allows" => 512 * 1024 + 8192,
