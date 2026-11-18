@@ -17,6 +17,19 @@ pub fn run(workspace: &str) -> Result<(), String> {
         dialog,
     )
 }
+pub fn advice_exchange(workspace: &str) -> Result<Value, String> {
+    let active = crate::visor::trust_request("/continue/context", None)?;
+    let mut identity = None;
+    verify_scope(&active, workspace, &mut identity)?;
+    let mut result = crate::visor::trust_request(
+        "/continue/advice",
+        Some(json!({"workspace":workspace,"session_id":active["session_id"]})),
+    )?;
+    let fresh = crate::visor::trust_request("/continue/context", None)?;
+    verify_scope(&fresh, workspace, &mut identity)?;
+    result["workspace"] = json!(workspace);
+    Ok(result)
+}
 pub fn exchange(workspace: &str, control: Option<Value>) -> Result<Value, String> {
     let active = crate::visor::trust_request("/continue/context", None)?;
     let mut identity = None;
@@ -210,6 +223,67 @@ fn start_form(
     Ok(Some(body))
 }
 
+fn observation_form(
+    ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
+) -> Result<Option<Value>, String> {
+    let mut value = json!({"observed_at":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|_|"Clock unavailable")?.as_secs()});
+    for (key, label) in [
+        ("corrections", "Correction count"),
+        ("stale_assumptions", "Stale assumption count"),
+        ("tool_failures", "Recent tool failure count"),
+        ("scope_drift", "Scope drift count"),
+        ("context_used", "Estimated context tokens used"),
+        ("context_capacity", "Context token capacity"),
+        ("cost_micros", "Reported cost in micro-units"),
+    ] {
+        let Some(input) = entry(ui, &format!("{label}; blank means unknown"), "")? else {
+            return Ok(None);
+        };
+        value[key] = if input.is_empty() {
+            Value::Null
+        } else {
+            json!(input
+                .parse::<u64>()
+                .map_err(|_| "Enter a nonnegative number or leave unknown")?)
+        };
+    }
+    for (key, label) in [
+        (
+            "failed_approaches",
+            "Failed approach IDs in attempt order; comma separated",
+        ),
+        ("files", "Changed file paths; comma separated"),
+        ("blockers", "Current blockers; comma separated"),
+    ] {
+        let Some(input) = entry(ui, label, "")? else {
+            return Ok(None);
+        };
+        value[key] = json!(input
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>());
+    }
+    let Some(next) = entry(ui, "Proposed next step", "")? else {
+        return Ok(None);
+    };
+    value["next_step"] = json!(next);
+    let Some(owner) = choose(
+        ui,
+        "Task ownership",
+        "Does this worker still own the intended task?",
+        &["Unknown".into(), "Yes".into(), "No".into()],
+    )?
+    else {
+        return Ok(None);
+    };
+    value["owns_task"] = match owner {
+        1 => json!(true),
+        2 => json!(false),
+        _ => Value::Null,
+    };
+    Ok(Some(value))
+}
 fn merge_tracking(original: &[String], issues: &Value) -> Result<Vec<String>, String> {
     let mut links = original.to_vec();
     for issue in issues.as_array().ok_or("Invalid issue links")? {
@@ -334,11 +408,32 @@ fn screen(
                 "Stop task".into(),
                 "Resume local execution for this session".into(),
                 "Project style and defaults".into(),
+                "Agent recommendation and handoff".into(),
+                "Update work observations".into(),
             ],
         )?
         else {
             return Ok(());
         };
+        if action == 8 {
+            let result = request("/continue/advice", Some(scope.clone()))?;
+            let text=format!("Recommendation: {}\nReasons: {}\nContributing observations: {}\nConfidence: {}\nUnknown: {}\nNext action: {}\nProposed handoff: {}\nThresholds: {}\nViewing advice never restarts or retires a worker.",result["action"],result["reasons"],result["contributing"],result["confidence"],result["unknown"],result["next_action"],result["handoff"],result["thresholds"]);
+            choose(&mut ui, "Agent advice", &text, &["Back".into()])?;
+            continue;
+        }
+        if action == 9 {
+            if run.is_null() {
+                continue;
+            }
+            if let Some(observations) = observation_form(&mut ui)? {
+                let mut body = scope.clone();
+                body["run_id"] = run["id"].clone();
+                body["revision"] = run["revision"].clone();
+                body["observations"] = observations;
+                request("/continue/observations", Some(body))?;
+            }
+            continue;
+        }
         if action == 7 {
             if run["project"].is_null() {
                 return Err("Start a task with a project preset first".into());
@@ -452,5 +547,15 @@ mod tests {
         .unwrap();
         assert_eq!(&merged[..3], &links);
         assert_eq!(merged.len(), 4);
+    }
+    #[test]
+    fn advice_display_never_sends_worker_controls() {
+        let mut paths = Vec::new();
+        let mut choices = vec![Some("8".to_owned()), Some("0".to_owned()), None].into_iter();
+        screen("/project",|path,_|{paths.push(path.to_owned());match path{"/continue/context"=>Ok(json!({"workspace":"/project","session_id":"s","identity":{"session_id":"s"}})),"/continue/advice"=>Ok(json!({"action":"restart","handoff":{"goal":"goal"}})),_=>Ok(json!({"run":{"id":"r","state":"paused"}}))}},|_,_|Ok(choices.next().unwrap())).unwrap();
+        assert!(paths.iter().any(|p| p == "/continue/advice"));
+        assert!(!paths
+            .iter()
+            .any(|p| p == "/continue/control" || p == "/continue/local-resume"));
     }
 }

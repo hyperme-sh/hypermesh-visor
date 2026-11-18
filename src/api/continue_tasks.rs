@@ -179,10 +179,10 @@ fn owner_call(context: Value, path: &str, body: Value) -> Result<Value, ()> {
     let mut raw = Vec::new();
     response
         .into_reader()
-        .take(65537)
+        .take(131073)
         .read_to_end(&mut raw)
         .map_err(|_| ())?;
-    if raw.len() > 65536 {
+    if raw.len() > 131072 {
         return Err(());
     }
     serde_json::from_slice(&raw).map_err(|_| ())
@@ -421,4 +421,88 @@ pub(super) async fn project(
     payload["revision"] = json!(body.revision);
     payload["settings"] = body.settings;
     call(value, "continue-project", payload).await
+}
+
+pub(super) async fn advice(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(scope): Json<Scope>,
+) -> Result<Json<Value>, ApiError> {
+    let value = context(&state, link, &scope).await?;
+    let payload = scope_body(&value);
+    let snapshot = call(value, "continue-selected", payload).await?.0;
+    let run = &snapshot["run"];
+    let plan =
+        advice_input(run).map_err(|_| ApiError::bad("Select a task before requesting advice"))?;
+    let result = state
+        .host_bridge
+        .as_ref()
+        .ok_or_else(unavailable)?
+        .continue_plan(json!({"workspace":scope.workspace,"plan":{"advice":plan}}))
+        .await
+        .map_err(|_| unavailable())?;
+    Ok(Json(result))
+}
+fn advice_input(run: &Value) -> Result<Value, ()> {
+    if !run.is_object() {
+        return Err(());
+    }
+    let results = run["results"].as_object().ok_or(())?;
+    let checks: Vec<String> = results
+        .iter()
+        .map(|(id, v)| {
+            format!(
+                "{}: {} ({})",
+                id,
+                v["state"].as_str().unwrap_or("unknown"),
+                v["output_sha256"].as_str().unwrap_or("unknown")
+            )
+        })
+        .collect();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_secs_f64();
+    Ok(
+        json!({"task_id":run["id"],"goal":run["goal"].as_str().unwrap_or("Goal unavailable"),"constraints":[format!("Workspace: {}",run["workspace"].as_str().unwrap_or("unknown")),run["completion"].as_str().unwrap_or("Completion unknown"),format!("Current state: {}; Continue: {}; spent tokens: {} of {}; deadline: {}. Advice does not resume or replace workers.",run["state"],run["continue_enabled"],run["used_tokens"],run["budgets"]["tokens"],run["deadline"])],"state":run["state"],"completed":results.values().filter(|v|v["state"]=="passed").count(),"total":run["chunks"].as_array().ok_or(())?.len(),"elapsed_seconds":((now-run["created_at"].as_f64().unwrap_or(now)).max(0.0).min(86400.0)) as u64,"checks":checks,"links":run["tracking"],"observations":run["observations"]}),
+    )
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Observations {
+    session_id: Uuid,
+    workspace: String,
+    run_id: Uuid,
+    revision: u64,
+    observations: Value,
+}
+pub(super) async fn observations(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Observations>,
+) -> Result<Json<Value>, ApiError> {
+    let scope = Scope {
+        session_id: body.session_id,
+        workspace: body.workspace,
+    };
+    let value = context(&state, link, &scope).await?;
+    let mut payload = scope_body(&value);
+    payload["run_id"] = json!(body.run_id);
+    payload["revision"] = json!(body.revision);
+    payload["observations"] = body.observations;
+    call(value, "continue-observations", payload).await
+}
+
+#[cfg(test)]
+mod advice_tests {
+    use super::*;
+    #[test]
+    fn advice_uses_completed_results_without_inventing_missing_metrics() {
+        let run = json!({"id":"task","goal":"goal","workspace":"/project","completion":"check","state":"paused","continue_enabled":false,"used_tokens":123,"budgets":{"tokens":1000},"results":{"first":{"state":"passed","output_sha256":"hash"}},"chunks":[{},{}],"tracking":[],"observations":null});
+        let before = run.clone();
+        let input = advice_input(&run).unwrap();
+        assert_eq!(input["completed"], 1);
+        assert!(input["observations"].is_null());
+        assert_eq!(run, before);
+    }
 }
