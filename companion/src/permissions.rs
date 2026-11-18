@@ -16,11 +16,13 @@ pub fn run_workspace(workspace:Option<&str>) -> Result<(), String> {
                 let active=crate::visor::trust_request("/acp/context",None)?;
                 verify_workspace(&active,project,&mut initial_identity)?;
             }
-            if path == "/permissions/policy" {
+            let result=if path == "/permissions/policy" {
                 crate::access_policy::request(body.ok_or("Policy scope required")?)
             } else {
                 crate::visor::trust_request(path, body)
-            }
+            }?;
+            if let Some(project)=workspace {let active=crate::visor::trust_request("/acp/context",None)?;verify_workspace(&active,project,&mut initial_identity)?;}
+            Ok(result)
         },
         dialog,
         workspace,
