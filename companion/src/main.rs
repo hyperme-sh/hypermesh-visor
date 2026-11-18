@@ -19,6 +19,7 @@ mod mcp_connections;
 mod mcp_dialog;
 mod mcp_profiles;
 mod permissions;
+mod access_policy;
 mod mcp_servers;
 mod mcp_status;
 mod mcp_trust;

@@ -163,6 +163,11 @@ impl Bridge {
         self.request("POST", "/permission-service-execute", raw)
             .await
     }
+    pub async fn permission_read_admit(&self, body: Value) -> Result<Value, ()> {
+        let raw=serde_json::to_vec(&body).map_err(|_|())?;
+        if raw.len()>196608 {return Err(())}
+        self.request("POST","/permission-read-admit",raw).await
+    }
     pub async fn permission_read_review(&self, body: Value) -> Result<Value, ()> {
         let raw=serde_json::to_vec(&body).map_err(|_|())?;
         if raw.len()>196608 {return Err(())}

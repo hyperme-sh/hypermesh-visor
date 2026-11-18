@@ -454,9 +454,10 @@ pub fn perform(
         .cloned();
     let rules:Vec<Value>=body.selection.rules.iter().map(|r|json!({"operation":r.operation,"target":r.target,"limits":{"max_bytes":r.max_bytes,"timeout_seconds":r.timeout_seconds}})).collect();
     let mut request = json!({"request_id":body.request_id,"project":workspace,"template_version":1,"template":rules,"action":action});
-    if let Some(p) = &previous {
-        request["expected_policy_revision"] = json!(p.policy_revision);
-    }
+    store
+        .allows
+        .retain(|a| !(a.identity == *identity && a.project == workspace && a.action == action));
+    reads::save(dir, &store)?;
     let first = review(request.clone(), 0)?;
     reads::verify(&first, &request, identity)?;
     if !valid() {
@@ -465,10 +466,16 @@ pub fn perform(
     request["expected_policy_revision"] = first["policy_revision"].clone();
     let (mut output, admitted) = match prepared {
         Prepared::Service => {
-            let output = review(request.clone(), 3)?;
+            let mut execution = request.clone();
+            // Older bridges reject this new required field before executing.
+            execution["require_dispatch_admission"] = json!(true);
+            let output = review(execution, 3)?;
             let admitted = output["review"].clone();
             reads::verify(&admitted, &request, identity)?;
-            if output["completed"] != true || admitted["reserved"] != true {
+            if output["completed"] != true
+                || admitted["reserved"] != true
+                || admitted["dispatch_admitted"] != true
+            {
                 return Err(ERROR);
             }
             (json!({"completed":true,"unit":body.target}), admitted)
@@ -476,7 +483,7 @@ pub fn perform(
         other => {
             let admitted = review(request.clone(), 1)?;
             reads::verify(&admitted, &request, identity)?;
-            if admitted["reserved"] != true || !valid() {
+            if admitted["reserved"] != true || admitted["dispatch_admitted"] != true || !valid() {
                 return Err(ERROR);
             }
             let expires = admitted["expires_at"].as_f64().ok_or(ERROR)?;
@@ -515,7 +522,13 @@ pub fn perform(
     let saved = reads::save(dir, &store).is_ok();
     output["request_id"] = json!(body.request_id);
     output["learned"] = json!(learn && saved);
-    output["reused"] = json!(learn && saved && previous.is_some());
+    output["reused"] = json!(
+        learn
+            && saved
+            && previous
+                .as_ref()
+                .is_some_and(|a| json!(a.policy_revision) == admitted["policy_revision"])
+    );
     output["review_pending"] = json!(pending);
     Ok(output)
 }
@@ -819,7 +832,7 @@ mod admission_contract {
             content_base64: Some("cHJpdmF0ZSBjb250ZW50".into()),
         };
         let revision = uuid::Uuid::new_v4();
-        let response = |r: &Value, reserved: bool| json!({"version":1,"request_id":r["request_id"],"project":r["project"],"action":r["action"],"limits":r["action"]["limits"],"preview_only":false,"identity":identity,"permitted":true,"decision":"advisory","learning_eligible":true,"policy_revision":revision,"expires_at":reads::now()+9.0,"reserved":reserved});
+        let response = |r: &Value, reserved: bool| json!({"version":1,"request_id":r["request_id"],"project":r["project"],"action":r["action"],"limits":r["action"]["limits"],"preview_only":false,"identity":identity,"permitted":true,"decision":"advisory","learning_eligible":true,"policy_revision":revision,"expires_at":reads::now()+9.0,"reserved":reserved,"dispatch_admitted":reserved});
         let failed = perform(
             &dir,
             input.clone(),

@@ -854,6 +854,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/permissions/reads", post(local_reads::read))
         .route("/permissions/actions", post(access_actions::run))
         .route("/permissions/allows", get(local_reads::list))
+        .route("/permissions/cache", post(local_reads::invalidate))
         .route("/mcp/servers", get(mcp_servers).post(mcp_server_edit))
         .route("/session/:id/stream", post(session_stream))
         .route("/session/:id/inbox", get(session_inbox))
