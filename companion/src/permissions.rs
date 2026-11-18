@@ -275,6 +275,27 @@ fn render(result: &Value) -> Result<String, String> {
 mod tests {
     use super::*;
     #[test]
+    fn verified_read_uses_saved_scope_and_displays_learning() {
+        let mut answers = vec![
+            Some("/project"),
+            Some("2"),
+            Some("/project/file"),
+            None,
+            None,
+        ]
+        .into_iter();
+        let selection = json!({"version":1,"scope":{"organization":"org","device":"device","project":"/project"},"preset":"local_inspection","rules":[{"operation":"read","target":"/project/file","max_bytes":1024,"timeout_seconds":10}]});
+        let mut reads = 0;
+        screen(|path,body|Ok(match path {
+            "/permissions/context"=>json!({"device_id":"device","binding":{"organization_id":"org"}}),
+            "/permissions/templates"=>json!({"version":1,"selections":[selection.clone()]}),
+            "/acp/context"=>json!({"workspace":"/project","session_id":"session"}),
+            "/permissions/reads"=>{reads+=1;let body=body.unwrap();assert_eq!(body["selection"],selection);assert_eq!(body["target"],"/project/file");assert!(uuid::Uuid::parse_str(body["request_id"].as_str().unwrap()).is_ok());json!({"content_base64":"aGVsbG8=","learned":true,"reused":false,"review_pending":true})},
+            _=>panic!("unexpected route")
+        }),|_,text|{if let Some(text)=text {assert!(text.contains("hello"));assert!(text.contains("Learned: true"));}Ok(answers.next().unwrap().map(str::to_owned))}).unwrap();
+        assert_eq!(reads, 1);
+    }
+    #[test]
     fn advisory_is_not_rendered_as_a_block() {
         let text=render(&json!({"preview_only":true,"decision":"advisory","reason":"Review later","learning_eligible":false})).unwrap();
         assert!(text.contains("Permitted with advisory"));
