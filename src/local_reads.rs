@@ -280,7 +280,7 @@ pub fn perform(
         return Err(ERROR);
     }
     let mut store = load(dir)?;
-    if store.requests.contains(&body.request_id) || store.requests.len() >= 1024 {
+    if store.requests.contains(&body.request_id) {
         return Err(ERROR);
     }
     if workspace != body.selection.scope.project
@@ -314,7 +314,11 @@ pub fn perform(
         return Err(ERROR);
     }
     // Consume the ID before OS reading. A disconnected or restarted caller may
-    // start a new request but cannot replay this ID or retrieve cached contents.
+    // start a new request; the last 1,024 consumed IDs remain replay-protected
+    // across restarts. Older IDs require fresh verification, never cached output.
+    if store.requests.len() == 1024 {
+        store.requests.remove(0);
+    }
     store.requests.push(body.request_id);
     save(dir, &store)?;
     let expiry = review["expires_at"].as_f64().ok_or(ERROR)?;
@@ -329,6 +333,8 @@ pub fn perform(
     }
     let learn = final_review["learning_eligible"] == true;
     let reused = previous.is_some() && learn;
+    let pending = final_review["decision"] == "advisory"
+        || (learn && previous.as_ref().is_some_and(|a| a.review_pending));
     store.allows.retain(|a| {
         !(a.identity == *identity
             && a.project == body.selection.scope.project
@@ -350,8 +356,7 @@ pub fn perform(
             origin: "conductor_aiuditor_verified".into(),
             last_use: now(),
             expires_at: now() + 86400.0,
-            review_pending: final_review["decision"] == "advisory"
-                || previous.is_some_and(|a| a.review_pending),
+            review_pending: pending,
         });
     }
     save(dir, &store)?;
@@ -359,7 +364,7 @@ pub fn perform(
         return Err(ERROR);
     }
     Ok(
-        json!({"request_id":body.request_id,"content_base64":base64::engine::general_purpose::STANDARD.encode(bytes),"learned":learn,"reused":reused,"review_pending":final_review["decision"]=="advisory"}),
+        json!({"request_id":body.request_id,"content_base64":base64::engine::general_purpose::STANDARD.encode(bytes),"learned":learn,"reused":reused,"review_pending":pending}),
     )
 }
 
@@ -450,6 +455,45 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+    #[test]
+    fn retry_window_rolls_without_disabling_new_reads() {
+        let f = Fixture::new();
+        let mut store = Store::default();
+        store.requests = (0..1024).map(|_| Uuid::new_v4()).collect();
+        let oldest = store.requests[0];
+        let recent = store.requests[1023];
+        save(&f.dir, &store).unwrap();
+        let fresh = Uuid::new_v4();
+        f.run(fresh).unwrap();
+        let after = load(&f.dir).unwrap();
+        assert_eq!(after.requests.len(), 1024);
+        assert!(!after.requests.contains(&oldest));
+        assert!(after.requests.contains(&recent));
+        assert!(after.requests.contains(&fresh));
+        assert!(f.run(recent).is_err());
+        assert!(f.run(fresh).is_err());
+    }
+    #[test]
+    fn allowed_reuse_preserves_pending_advisory_review() {
+        let f = Fixture::new();
+        f.run(Uuid::new_v4()).unwrap();
+        let result = perform(
+            &f.dir,
+            f.body(Uuid::new_v4()),
+            &f.identity,
+            &f.project,
+            |r| {
+                let mut value = f.review(&r);
+                value["decision"] = json!("allowed");
+                Ok(value)
+            },
+            || true,
+        )
+        .unwrap();
+        assert_eq!(result["reused"], true);
+        assert_eq!(result["review_pending"], true);
+        assert!(load(&f.dir).unwrap().allows[0].review_pending);
     }
     #[test]
     fn first_read_learns_restart_reuses_and_revision_change_refuses() {
