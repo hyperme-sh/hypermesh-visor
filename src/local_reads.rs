@@ -30,7 +30,7 @@ pub struct Learned {
     pub expires_at: f64,
     pub review_pending: bool,
 }
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Store {
     pub allows: Vec<Learned>,
@@ -60,10 +60,24 @@ pub fn load(dir: &Path) -> Result<Store, &'static str> {
     Ok(s)
 }
 pub fn save(dir: &Path, store: &Store) -> Result<(), &'static str> {
-    let bytes = serde_json::to_vec(store).map_err(|_| ERROR)?;
-    if bytes.len() > 524288 || store.allows.len() > 256 || store.requests.len() > 1024 {
+    let mut bounded = store.clone();
+    if bounded.requests.len() > 1024 {
         return Err(ERROR);
     }
+    let bytes = loop {
+        let bytes = serde_json::to_vec(&bounded).map_err(|_| ERROR)?;
+        if bytes.len() <= 524288 && bounded.allows.len() <= 256 {
+            break bytes;
+        }
+        let oldest = bounded
+            .allows
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| a.last_use.total_cmp(&b.last_use))
+            .map(|(i, _)| i)
+            .ok_or(ERROR)?;
+        bounded.allows.remove(oldest);
+    };
     let temp = dir.join(format!(".read-{}", Uuid::new_v4()));
     let result = (|| {
         let mut f = storage::open(&temp, storage::Open::New).map_err(|_| ERROR)?;
@@ -342,9 +356,7 @@ pub fn perform(
     });
     if learn {
         store.allows.retain(|a| a.expires_at > now());
-        if store.allows.len() >= 256 {
-            return Err(ERROR);
-        }
+
         store.allows.push(Learned {
             identity: identity.clone(),
             project: body.selection.scope.project,
@@ -455,6 +467,28 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
+    }
+    #[test]
+    fn full_optional_cache_does_not_block_new_verified_reads() {
+        let f = Fixture::new();
+        f.run(Uuid::new_v4()).unwrap();
+        let mut store = load(&f.dir).unwrap();
+        let old = store.allows[0].clone();
+        store.allows = (0..256)
+            .map(|i| {
+                let mut a = old.clone();
+                a.action["arguments_sha256"] = json!(format!("{i:064x}"));
+                a.last_use = i as f64;
+                a
+            })
+            .collect();
+        save(&f.dir, &store).unwrap();
+        let result = f.run(Uuid::new_v4()).unwrap();
+        assert_eq!(result["learned"], true);
+        assert_eq!(result["reused"], false);
+        let after = load(&f.dir).unwrap();
+        assert_eq!(after.allows.len(), 256);
+        assert!(!after.allows.iter().any(|a| a.last_use == 0.0));
     }
     #[test]
     fn retry_window_rolls_without_disabling_new_reads() {

@@ -11,7 +11,9 @@ still checks current identity, policy revision, consent, expiry and OS access.
 Advisories permit otherwise authorized reads and mark the allow for later review.
 Prohibitions refuse reads; no-always-allow rules prevent remembering permission.
 The allow list shows origin, scope, policy revision, last use and pending review.
-Stored metadata never includes file contents or machine credentials.
+Stored metadata never includes file contents or machine credentials. The optional
+allow cache evicts least recently used entries to stay within 256 entries and
+512 KiB; a full cache does not turn into a quota on authorized reads.
 
 The last 1,024 consumed request IDs remain deduplicated across restarts. New reads
 retire the oldest ID when this bounded retry window fills. An ID outside that
