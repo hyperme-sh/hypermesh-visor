@@ -450,6 +450,20 @@ jobs:
       - name: Test shared discovery code on the native filesystem
         run: cargo test --locked --manifest-path ci/mcp-discovery/Cargo.toml
 
+  native-macos-keychain:
+    name: Native macOS isolated keychain
+    # This contract changes the user's default keychain. Keep it disposable;
+    # the persistent Mac mini handles builds and all other macOS units.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - name: Native CLI isolated keychain contract
+        run: python3 native/macos/test-keychain.py
+
   native-macos-workspace:
     name: Native macOS workspace
     needs: native-crash-sdk
@@ -473,8 +487,6 @@ jobs:
         run: |
           "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-arm64/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop" --self-test
           python3 native/macos/test-bridge-refusal.py "$RUNNER_TEMP/visor-distribution/hypermesh-visor-macos-arm64/Hypermesh Visor Development.app/Contents/MacOS/hypermesh-native-desktop"
-      - name: Native CLI isolated keychain contract
-        run: python3 native/macos/test-keychain.py
       - name: Native workspace unit contracts
         env:
           TMPDIR: /tmp
