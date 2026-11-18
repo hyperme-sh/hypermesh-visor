@@ -552,6 +552,7 @@ fn connection_request(session: &str, server: &str, reconnect: bool) -> Result<St
 fn trust_response_limit(path: &str) -> usize {
     match path {
         "/permissions/reads" | "/permissions/actions" => 2 * 1024 * 1024,
+        "/permissions/dream" => 2 * 1024 * 1024 + 8192,
         "/permissions/allows" => 512 * 1024 + 8192,
         _ => POLL_READ_MAX,
     }
@@ -563,7 +564,7 @@ pub fn trust_request(
 ) -> Result<serde_json::Value, String> {
     if !matches!(
         path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/acp/context"
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context"
     ) {
         return Err("Invalid trust endpoint".into());
     }

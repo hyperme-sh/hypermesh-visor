@@ -109,3 +109,5 @@ pub mod health_hardware;
 pub mod feedback_intake;
 
 pub mod access_actions;
+
+mod permission_dream;

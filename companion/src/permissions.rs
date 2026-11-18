@@ -148,6 +148,8 @@ fn screen(
             )?;
         } else if action == 3 {
             let store = request("/permissions/allows", None)?;
+            let mut history = request("/permissions/dream", None)?;
+            history["history"]=json!(history_for_project(&history,&project));
             let rows:Vec<String>=store["allows"].as_array().ok_or("Learned allows unavailable")?.iter()
                 .filter(|a|a["project"]==project&&a["identity"]["organization_id"]==organization&&a["identity"]["device_id"]==device)
                 .map(|a|format!("{}\nScope: {}\nOrigin: {}\nSession: {}\nPolicy: {}\nLast use: {} (Unix seconds)\nExpires: {} (Unix seconds)\nPending dreaming review: {}",a["action"]["target"].as_str().unwrap_or(""),a["action"],a["origin"].as_str().unwrap_or(""),a["identity"]["session_id"].as_str().unwrap_or(""),a["policy_revision"].as_str().unwrap_or(""),a["last_use"],a["expires_at"],a["review_pending"])).collect();
@@ -155,9 +157,9 @@ fn screen(
                 &mut ui,
                 "Learned allows — current policy is checked on every use",
                 &if rows.is_empty() {
-                    "No learned allows in this scope".into()
+                    format!("No learned allows in this scope\nDreaming reviews: {}",history["history"])
                 } else {
-                    rows.join("\n\n")
+                    format!("{}\n\nDreaming reviews:\n{}",rows.join("\n\n"),history["history"].as_array().map(|items|items.iter().map(|h|format!("{}: {} — {}\nBefore: {}\nAfter: {}\nSource: {}",h["kind"],h["status"],h["reason"],h["before"],h["after"],h["source_review"])).collect::<Vec<_>>().join("\n\n")).unwrap_or_default())
                 },
                 false,
             )?;
@@ -670,3 +672,8 @@ mod policy_tests {
         assert_eq!((updates, clears), (1, 1));
     }
 }
+
+fn history_for_project(history:&Value,project:&str)->Vec<Value>{ history["history"].as_array().map(|items|items.iter().filter(|h|h["project"]==project).cloned().collect()).unwrap_or_default() }
+
+#[cfg(test)]
+mod history_tests { use super::*; #[test] fn selected_project_never_displays_active_other_project(){ let history=json!({"history":[{"project":"/active","reason":"private"}]});assert!(history_for_project(&history,"/selected").is_empty());assert_eq!(history_for_project(&history,"/active").len(),1); } }
