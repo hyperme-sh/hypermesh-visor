@@ -549,6 +549,14 @@ fn connection_request(session: &str, server: &str, reconnect: bool) -> Result<St
     Ok(format!("POST /session/{session}/mcp/refresh HTTP/1.1\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()))
 }
 
+fn trust_response_limit(path: &str) -> usize {
+    match path {
+        "/permissions/reads" => 2 * 1024 * 1024,
+        "/permissions/allows" => 512 * 1024 + 8192,
+        _ => POLL_READ_MAX,
+    }
+}
+
 pub fn trust_request(
     path: &str,
     body: Option<serde_json::Value>,
@@ -564,7 +572,7 @@ pub fn trust_request(
     let protocol = if path == "/permissions/reads" { "HTTP/1.0" } else { "HTTP/1.1" };
     let request = format!("{method} {path} {protocol}\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
     let socket = socket_path().ok_or("Companion socket unavailable")?;
-    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if path == "/permissions/reads" {70} else if path == "/permissions/preview" {20} else {5}), if path == "/permissions/reads" {2 * 1024 * 1024} else {POLL_READ_MAX})
+    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if path == "/permissions/reads" {70} else if path == "/permissions/preview" {20} else {5}), trust_response_limit(path))
     else {
         return Err("Cannot reach visor; no trust change confirmed".into());
     };
@@ -775,6 +783,20 @@ fn note_poll(epoch: &mut u64, fresh: bool) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn learned_allow_response_accepts_full_store_and_headers() {
+        let (mut reader,mut writer)=std::os::unix::net::UnixStream::pair().unwrap();
+        let body="x".repeat(512*1024);
+        let response=format!("HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{}",body.len(),body);
+        let expected=response.len();
+        let send=std::thread::spawn(move||{std::io::Write::write_all(&mut writer,response.as_bytes()).unwrap();});
+        match super::read_capped_bound(&mut reader,super::trust_response_limit("/permissions/allows")) {
+            super::Exchange::Body(value)=>assert_eq!(value.len(),expected),
+            _=>panic!("valid learned store was truncated"),
+        }
+        send.join().unwrap();
+    }
+
     use std::collections::VecDeque;
 
     use super::*;
