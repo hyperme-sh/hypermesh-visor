@@ -47,6 +47,7 @@ mod mcp_prompts;
 mod host;
 mod permissions;
 mod local_reads;
+mod permission_dream;
 mod access_actions;
 mod acp_machine;
 
@@ -855,6 +856,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/permissions/actions", post(access_actions::run))
         .route("/permissions/allows", get(local_reads::list))
         .route("/permissions/cache", post(local_reads::invalidate))
+        .route("/permissions/dream", post(permission_dream::run).get(permission_dream::history))
         .route("/mcp/servers", get(mcp_servers).post(mcp_server_edit))
         .route("/session/:id/stream", post(session_stream))
         .route("/session/:id/inbox", get(session_inbox))

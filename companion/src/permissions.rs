@@ -148,6 +148,7 @@ fn screen(
             )?;
         } else if action == 3 {
             let store = request("/permissions/allows", None)?;
+            let history = request("/permissions/dream", None)?;
             let rows:Vec<String>=store["allows"].as_array().ok_or("Learned allows unavailable")?.iter()
                 .filter(|a|a["project"]==project&&a["identity"]["organization_id"]==organization&&a["identity"]["device_id"]==device)
                 .map(|a|format!("{}\nScope: {}\nOrigin: {}\nSession: {}\nPolicy: {}\nLast use: {} (Unix seconds)\nExpires: {} (Unix seconds)\nPending dreaming review: {}",a["action"]["target"].as_str().unwrap_or(""),a["action"],a["origin"].as_str().unwrap_or(""),a["identity"]["session_id"].as_str().unwrap_or(""),a["policy_revision"].as_str().unwrap_or(""),a["last_use"],a["expires_at"],a["review_pending"])).collect();
@@ -155,9 +156,9 @@ fn screen(
                 &mut ui,
                 "Learned allows — current policy is checked on every use",
                 &if rows.is_empty() {
-                    "No learned allows in this scope".into()
+                    format!("No learned allows in this scope\nDreaming reviews: {}",history["history"])
                 } else {
-                    rows.join("\n\n")
+                    format!("{}\n\nDreaming reviews:\n{}",rows.join("\n\n"),history["history"].as_array().map(|items|items.iter().map(|h|format!("{}: {} — {}\nBefore: {}\nAfter: {}\nSource: {}",h["kind"],h["status"],h["reason"],h["before"],h["after"],h["source_review"])).collect::<Vec<_>>().join("\n\n")).unwrap_or_default())
                 },
                 false,
             )?;

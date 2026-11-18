@@ -35,6 +35,8 @@ impl ManagedConductor {
         command
             .arg("serve")
             .arg("--stdin-listener")
+            .arg("--permission-dream-socket")
+            .arg(hypermesh_visor::runtime_dir().map_err(|e|e.to_string())?.join("companion.sock"))
             .arg("--config")
             .arg(config)
             .arg("--journal")
