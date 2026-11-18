@@ -37,7 +37,12 @@ pub fn exchange(workspace: &str, control: Option<Value>) -> Result<Value, String
     let mut body = json!({"workspace":workspace,"session_id":active["session_id"]});
     let path = if let Some(control) = control {
         let object = control.as_object().ok_or("Invalid task control")?;
-        if object.len() != 3
+        let handoff = matches!(
+            control["action"].as_str(),
+            Some("restart" | "reassign" | "retire")
+        );
+        if object.len() != if handoff { 4 } else { 3 }
+            || (handoff && !object.contains_key("request_id"))
             || !["run_id", "revision", "action"]
                 .iter()
                 .all(|k| object.contains_key(*k))
@@ -47,7 +52,11 @@ pub fn exchange(workspace: &str, control: Option<Value>) -> Result<Value, String
         for (k, v) in object {
             body[k] = v.clone();
         }
-        "/continue/control"
+        if handoff {
+            "/continue/handoff"
+        } else {
+            "/continue/control"
+        }
     } else {
         "/continue/view"
     };
@@ -391,8 +400,11 @@ fn screen(
             &mut ui,
             "Continue task",
             &format!(
-                "{}\nLocal execution: {}",
+                "{}\nWorker: {} (generation {})\nLast handoff: {}\nLocal execution: {}",
                 summary(run),
+                run["worker_id"],
+                run["worker_generation"],
+                run["last_handoff"].get("action").unwrap_or(&Value::Null),
                 if fresh["local_running"] == true {
                     "running"
                 } else {
@@ -410,11 +422,49 @@ fn screen(
                 "Project style and defaults".into(),
                 "Agent recommendation and handoff".into(),
                 "Update work observations".into(),
+                "Restart task worker".into(),
+                "Reassign unfinished task".into(),
+                "Retire task worker".into(),
             ],
         )?
         else {
             return Ok(());
         };
+        if (10..=12).contains(&action) {
+            if run.is_null() {
+                continue;
+            }
+            let command = ["restart", "reassign", "retire"][action - 10];
+            let text=format!("{command} the task worker within the current machine/session/workspace? A checkpoint preserves completed work, limits and pause/Continue. Queued or uncertain work must be resolved first. Retirement keeps unfinished work for explicit reassignment. No daemon or host is restarted.");
+            if choose(
+                &mut ui,
+                "Confirm worker handoff",
+                &text,
+                &["Apply selected action".into(), "Cancel".into()],
+            )? != Some(0)
+            {
+                continue;
+            }
+            let mut body = scope.clone();
+            body["run_id"] = run["id"].clone();
+            body["revision"] = run["revision"].clone();
+            body["request_id"] = json!(uuid::Uuid::new_v4());
+            body["action"] = json!(command);
+            let result = request("/continue/handoff", Some(body))?;
+            choose(
+                &mut ui,
+                "Worker handoff applied",
+                &format!(
+                    "Old worker: {}\nNew worker: {}\nGeneration: {}\nUnfinished task retained: {}",
+                    result["handoff"]["old_worker"],
+                    result["handoff"]["new_worker"],
+                    result["handoff"]["generation"],
+                    result["handoff"]["unfinished"]
+                ),
+                &["Back".into()],
+            )?;
+            continue;
+        }
         if action == 8 {
             let result = request("/continue/advice", Some(scope.clone()))?;
             let text=format!("Recommendation: {}\nReasons: {}\nContributing observations: {}\nConfidence: {}\nUnknown: {}\nNext action: {}\nProposed handoff: {}\nThresholds: {}\nViewing advice never restarts or retires a worker.",result["action"],result["reasons"],result["contributing"],result["confidence"],result["unknown"],result["next_action"],result["handoff"],result["thresholds"]);
@@ -557,5 +607,29 @@ mod tests {
         assert!(!paths
             .iter()
             .any(|p| p == "/continue/control" || p == "/continue/local-resume"));
+    }
+    #[test]
+    fn worker_change_requires_confirmation_and_current_revision() {
+        for confirmed in [false, true] {
+            let mut calls = Vec::new();
+            let mut choices = if confirmed {
+                vec![
+                    Some("10".to_owned()),
+                    Some("0".to_owned()),
+                    Some("0".to_owned()),
+                    None,
+                ]
+            } else {
+                vec![Some("10".to_owned()), Some("1".to_owned()), None]
+            }
+            .into_iter();
+            screen("/project",|path,body|{if path=="/continue/handoff"{calls.push(body.unwrap())}match path{"/continue/context"=>Ok(json!({"workspace":"/project","session_id":"s","identity":{"session_id":"s"}})),_=>Ok(json!({"run":{"id":"r","revision":7,"state":"paused"},"handoff":{"generation":2}}))}},|_,_|Ok(choices.next().unwrap())).unwrap();
+            assert_eq!(calls.len(), usize::from(confirmed));
+            if confirmed {
+                assert_eq!(calls[0]["revision"], 7);
+                assert_eq!(calls[0]["action"], "restart");
+                assert!(uuid::Uuid::parse_str(calls[0]["request_id"].as_str().unwrap()).is_ok())
+            }
+        }
     }
 }

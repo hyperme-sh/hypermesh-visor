@@ -16,9 +16,19 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(inputs.platforms) }}
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.os == 'macos-latest' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && fromJSON('["self-hosted","macOS","ARM64","macmini-apple"]') || matrix.os }}
     steps:
       - uses: actions/checkout@v7.0.1
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up macOS CMake
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          if ! command -v cmake >/dev/null; then
+            python3 -m venv "$RUNNER_TEMP/visor-cmake"
+            "$RUNNER_TEMP/visor-cmake/bin/python" -m pip install 'cmake>=3.25,<5'
+            echo "$RUNNER_TEMP/visor-cmake/bin" >> "$GITHUB_PATH"
+          fi
       - name: Capture ownership unit contracts
         run: cargo test --locked -p hypermesh-crash-guard -p hypermesh-crash-retention
       - name: Runtime staging file contracts
