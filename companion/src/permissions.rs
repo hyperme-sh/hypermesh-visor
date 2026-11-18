@@ -9,8 +9,13 @@ pub fn run_workspace(workspace:Option<&str>) -> Result<(), String> {
         &hypermesh_session::Endpoints::panopticon(),
     )
     .map_err(|_| "Sign in again to open Permissions")?;
+    let mut initial_identity=None;
     screen_for(
         |path, body| {
+            if let Some(project)=workspace {
+                let active=crate::visor::trust_request("/acp/context",None)?;
+                verify_workspace(&active,project,&mut initial_identity)?;
+            }
             if path == "/permissions/policy" {
                 crate::access_policy::request(body.ok_or("Policy scope required")?)
             } else {
@@ -709,3 +714,12 @@ mod workspace_tests {
   assert!(result.unwrap_err().contains("scope changed"));
  }
 }
+
+fn verify_workspace(active:&Value,project:&str,initial:&mut Option<Value>)->Result<(),String>{
+ if active["workspace"]!=project || !active["identity"].is_object(){return Err("Workspace assignment changed; reconnect and reopen Permissions".into())}
+ if let Some(identity)=initial.as_ref(){if *identity!=active["identity"]{return Err("Session or organization changed; reopen Permissions".into())}}
+ else{*initial=Some(active["identity"].clone());}
+ Ok(())
+}
+#[cfg(test)]
+mod refresh_tests {use super::*; #[test] fn reconnect_or_org_switch_refuses_stale_mutation(){let mut identity=None;let first=json!({"workspace":"/project","identity":{"organization_id":"a","session_id":"one"}});verify_workspace(&first,"/project",&mut identity).unwrap();let changed=json!({"workspace":"/project","identity":{"organization_id":"b","session_id":"two"}});assert!(verify_workspace(&changed,"/project",&mut identity).is_err());}}

@@ -9,3 +9,10 @@ Results are retain, narrow to per-use verification, expire, or revoke. Ordinary 
 Visor removes only the unchanged reviewed local rule and stores before/after scope, source review, reason and status. An interrupted attempt resumes its original ID; a removed or changed local rule is never restored. History is bounded to 128 records and 2 MiB and shown in the Permissions view for the current principal, organization and workspace.
 
 Related: Conductor #70. Unit and contract checks use local disposable files and named owner substitutes. No release or version change is included.
+
+The IDE's workspace permissions command opens the installed native companion
+with `--permissions-workspace PATH`. It checks the assigned workspace and fresh
+session/org context before each request. Reconnect or scope changes close the
+old view and require reopening; policy edits retain the server-confirmed revision
+and current owner authorization. The editor stores no grants, tokens or policy
+copy. Failed coding actions offer a route to the same workspace permission view.
