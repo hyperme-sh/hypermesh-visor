@@ -14,6 +14,8 @@ use std::{
 pub struct Journal {
     pub pending: Option<Value>,
     pub history: Vec<Value>,
+    #[serde(default)]
+    pub cursor: usize,
 }
 fn hash(a: &reads::Learned) -> Result<String, &'static str> {
     Ok(format!(
@@ -84,7 +86,12 @@ pub fn perform(
     }
     if journal.pending.is_none() {
         let mut records = Vec::new();
-        for a in &store.allows {
+        let start = journal.cursor;
+        let mut next = start;
+        for offset in 0..store.allows.len() {
+            let index = (start + offset) % store.allows.len();
+            let a = &store.allows[index];
+            next = index + 1;
             if a.identity != *identity || a.project != project {
                 continue;
             }
@@ -110,6 +117,7 @@ pub fn perform(
                 break;
             }
         }
+        journal.cursor = next;
         if records.is_empty() {
             while journal.history.len() > 128 {
                 journal.history.remove(0);
@@ -133,7 +141,16 @@ pub fn perform(
     {
         return Err(reads::ERROR);
     }
+    drop(_unlock);
     let result = review(request.clone())?;
+    storage::lock(&guard).map_err(|_| reads::ERROR)?;
+    let _unlock = storage::UnlockOnDrop(&guard);
+    store = reads::load(dir)?;
+    journal = load(dir)?;
+    if journal.pending.as_ref().map(|p| &p["request"]) != Some(&request) {
+        return Ok(json!({"version":1,"status":"superseded"}));
+    }
+
     let outcomes = result["outcomes"].as_array().ok_or(reads::ERROR)?;
     let records = request["records"].as_array().ok_or(reads::ERROR)?;
     if result["version"] != 1
@@ -246,6 +263,77 @@ mod tests {
         perform(&dir,&id,"/project",|request|{let r=&request["records"][0];Ok(json!({"version":1,"request_id":request["request_id"],"identity":id,"project":"/project","outcomes":[{"rule_hash":r["rule_hash"],"kind":"revoke","status":"applied","before":r["action"],"after":null}]}))}).unwrap();
         assert_eq!(reads::load(&dir).unwrap().allows.len(), 1);
         assert_eq!(load(&dir).unwrap().history[0]["status"], "superseded");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod concurrent_tests {
+    use super::*;
+    #[test]
+    fn remote_wait_does_not_lock_foreground_store_and_reload_preserves_edit() {
+        let dir = std::env::temp_dir().join(format!("dream-lock-{}", uuid::Uuid::new_v4()));
+        storage::create_dir(&dir).unwrap();
+        let id = json!({"principal":"owner"});
+        let a = reads::Learned {
+            identity: id.clone(),
+            project: "/project".into(),
+            action: json!({"operation":"read"}),
+            policy_revision: "revision".into(),
+            origin: "learned".into(),
+            last_use: 1.0,
+            expires_at: 9999999999.0,
+            review_pending: true,
+        };
+        reads::save(
+            &dir,
+            &reads::Store {
+                allows: vec![a],
+                requests: vec![],
+            },
+        )
+        .unwrap();
+        perform(&dir,&id,"/project",|request|{
+   let guard=storage::open(&dir.join("lock"),storage::Open::Lock).unwrap();storage::lock(&guard).expect("foreground must not be blocked");let _unlock=storage::UnlockOnDrop(&guard);
+   let mut store=reads::load(&dir).unwrap();store.allows[0].last_use=2.0;reads::save(&dir,&store).unwrap();
+   let r=&request["records"][0];Ok(json!({"version":1,"request_id":request["request_id"],"identity":id,"project":"/project","outcomes":[{"rule_hash":r["rule_hash"],"kind":"revoke","status":"applied","before":r["action"],"after":null}]}))
+  }).unwrap();
+        assert_eq!(reads::load(&dir).unwrap().allows[0].last_use, 2.0);
+        assert_eq!(load(&dir).unwrap().history[0]["status"], "superseded");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn unsuccessful_batch_does_not_starve_ninth_rule() {
+        let dir = std::env::temp_dir().join(format!("dream-fair-{}", uuid::Uuid::new_v4()));
+        storage::create_dir(&dir).unwrap();
+        let id = json!({"principal":"owner"});
+        let allows = (0..9)
+            .map(|i| reads::Learned {
+                identity: id.clone(),
+                project: "/project".into(),
+                action: json!({"target":format!("/project/{i}")}),
+                policy_revision: "revision".into(),
+                origin: "learned".into(),
+                last_use: 1.0,
+                expires_at: 9999999999.0,
+                review_pending: true,
+            })
+            .collect();
+        reads::save(
+            &dir,
+            &reads::Store {
+                allows,
+                requests: vec![],
+            },
+        )
+        .unwrap();
+        for pass in 0..2 {
+            perform(&dir,&id,"/project",|request|{
+   let rows=request["records"].as_array().unwrap();if pass==1{assert_eq!(rows[0]["action"]["target"],"/project/8")}
+   let outcomes:Vec<_>=rows.iter().map(|r|json!({"rule_hash":r["rule_hash"],"kind":"narrow","status":"failed","before":r["action"],"after":r["action"]})).collect();
+   Ok(json!({"version":1,"request_id":request["request_id"],"identity":id,"project":"/project","outcomes":outcomes}))
+  }).unwrap();
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
