@@ -551,7 +551,7 @@ fn connection_request(session: &str, server: &str, reconnect: bool) -> Result<St
 
 fn trust_response_limit(path: &str) -> usize {
     match path {
-        "/permissions/reads" => 2 * 1024 * 1024,
+        "/permissions/reads" | "/permissions/actions" => 2 * 1024 * 1024,
         "/permissions/allows" => 512 * 1024 + 8192,
         _ => POLL_READ_MAX,
     }
@@ -563,16 +563,16 @@ pub fn trust_request(
 ) -> Result<serde_json::Value, String> {
     if !matches!(
         path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/allows" | "/acp/context"
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/acp/context"
     ) {
         return Err("Invalid trust endpoint".into());
     }
     let method = if body.is_some() { "POST" } else { "GET" };
     let body = body.map(|v| v.to_string()).unwrap_or_default();
-    let protocol = if path == "/permissions/reads" { "HTTP/1.0" } else { "HTTP/1.1" };
+    let protocol = if matches!(path, "/permissions/reads" | "/permissions/actions") { "HTTP/1.0" } else { "HTTP/1.1" };
     let request = format!("{method} {path} {protocol}\r\nhost: hypermesh\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",body.len());
     let socket = socket_path().ok_or("Companion socket unavailable")?;
-    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if path == "/permissions/reads" {70} else if path == "/permissions/preview" {20} else {5}), trust_response_limit(path))
+    let Exchange::Body(response) = exchange_read_bound(&socket, &request, Duration::from_secs(if matches!(path, "/permissions/reads" | "/permissions/actions") {70} else if path == "/permissions/preview" {20} else {5}), trust_response_limit(path))
     else {
         return Err("Cannot reach visor; no trust change confirmed".into());
     };

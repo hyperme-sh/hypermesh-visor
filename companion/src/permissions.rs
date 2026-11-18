@@ -50,16 +50,95 @@ fn screen(
                 "Preview a concrete action".into(),
                 "Read a verified local file".into(),
                 "View learned allows".into(),
+                "Run a verified typed action".into(),
             ],
         )?
         else {
             return Ok(());
         };
-        if action == 3 {
+        if action == 4 {
+            let Some(selection) = current else { continue };
+            let machine = request("/acp/context", None)?;
+            if machine["workspace"] != project {
+                return Err("Selected project differs from the active assignment".into());
+            }
+            let rules: Vec<Value> = selection["rules"]
+                .as_array()
+                .ok_or("Template unavailable")?
+                .iter()
+                .filter(|r| {
+                    matches!(
+                        r["operation"].as_str(),
+                        Some("https" | "write" | "service_restart")
+                    )
+                })
+                .cloned()
+                .collect();
+            if rules.is_empty() {
+                return Err(
+                    "Add an HTTPS, write or named service rule to the template first".into(),
+                );
+            }
+            let labels: Vec<String> = rules
+                .iter()
+                .map(|r| {
+                    format!(
+                        "{}: {}",
+                        r["operation"].as_str().unwrap_or(""),
+                        r["target"].as_str().unwrap_or("")
+                    )
+                })
+                .collect();
+            let Some(index)=choose(&mut ui,"Verified action","Choose an exact configured scope. Writes create a new file directly inside the project; existing files are never replaced.",&labels)? else{continue};
+            let rule = &rules[index];
+            let operation = rule["operation"].as_str().ok_or("Operation unavailable")?;
+            let Some(target) = entry(
+                &mut ui,
+                "Exact action target",
+                rule["target"].as_str().unwrap_or(""),
+            )?
+            else {
+                continue;
+            };
+            let mut body = json!({"request_id":uuid::Uuid::new_v4().to_string(),"session_id":machine["session_id"],"selection":selection,"operation":operation,"target":target,"max_bytes":rule["max_bytes"].as_u64().unwrap_or(0).min(1048576),"timeout_seconds":rule["timeout_seconds"].as_u64().unwrap_or(0).min(30)});
+            if operation == "https" {
+                let Some(method) = choose(
+                    &mut ui,
+                    "HTTPS method",
+                    "Requests use verified HTTPS, with no redirects or forwarded credentials.",
+                    &["GET".into(), "POST".into()],
+                )?
+                else {
+                    continue;
+                };
+                body["method"] = json!(if method == 0 { "GET" } else { "POST" });
+            }
+            if operation == "write" || body["method"] == "POST" {
+                let Some(content) = entry(&mut ui, "UTF-8 content to send or create", "")? else {
+                    continue;
+                };
+                use base64::Engine;
+                body["content_base64"] =
+                    json!(base64::engine::general_purpose::STANDARD.encode(content.as_bytes()));
+            }
+            let result = request("/permissions/actions", Some(body))?;
+            if result["completed"] != true {
+                return Err("Action did not confirm completion; outcome may be unknown. Do not automatically retry.".into());
+            }
+            crate::mcp_dialog::text(
+                &mut ui,
+                "Verified action completed",
+                &format!(
+                    "Target: {target}\nLearned: {} · Reused: {} · Pending review: {}",
+                    result["learned"], result["reused"], result["review_pending"]
+                ),
+                false,
+            )?;
+        } else if action == 3 {
             let store = request("/permissions/allows", None)?;
             let rows:Vec<String>=store["allows"].as_array().ok_or("Learned allows unavailable")?.iter()
                 .filter(|a|a["project"]==project&&a["identity"]["organization_id"]==organization&&a["identity"]["device_id"]==device)
-                .map(|a|format!("{}\nOrigin: {}\nSession: {}\nPolicy: {}\nLast use: {} (Unix seconds)\nExpires: {} (Unix seconds)\nPending dreaming review: {}",a["action"]["target"].as_str().unwrap_or(""),a["origin"].as_str().unwrap_or(""),a["identity"]["session_id"].as_str().unwrap_or(""),a["policy_revision"].as_str().unwrap_or(""),a["last_use"],a["expires_at"],a["review_pending"])).collect();
+                .map(|a|format!("{}\nScope: {}\nOrigin: {}\nSession: {}\nPolicy: {}\nLast use: {} (Unix seconds)\nExpires: {} (Unix seconds)\nPending dreaming review: {}",a["action"]["target"].as_str().unwrap_or(""),a["action"],a["origin"].as_str().unwrap_or(""),a["identity"]["session_id"].as_str().unwrap_or(""),a["policy_revision"].as_str().unwrap_or(""),a["last_use"],a["expires_at"],a["review_pending"])).collect();
             crate::mcp_dialog::text(
                 &mut ui,
                 "Learned allows — current policy is checked on every use",
@@ -294,6 +373,45 @@ mod tests {
             _=>panic!("unexpected route")
         }),|_,text|{if let Some(text)=text {assert!(text.contains("hello"));assert!(text.contains("Learned: true"));}Ok(answers.next().unwrap().map(str::to_owned))}).unwrap();
         assert_eq!(reads, 1);
+    }
+    #[test]
+    fn typed_write_uses_saved_scope_and_does_not_retry_unknown_outcome() {
+        let selection = json!({"version":1,"scope":{"organization":"org","device":"device","project":"/project"},"preset":"project_development","rules":[{"operation":"write","target":"/project/new","max_bytes":1024,"timeout_seconds":10}]});
+        let mut answers = vec![
+            Some("/project"),
+            Some("4"),
+            Some("0"),
+            Some("/project/new"),
+            Some("hello"),
+        ]
+        .into_iter();
+        let mut calls = 0;
+        let result = screen(
+            |path, body| {
+                Ok(match path {
+                    "/permissions/context" => {
+                        json!({"device_id":"device","binding":{"organization_id":"org"}})
+                    }
+                    "/permissions/templates" => {
+                        json!({"version":1,"selections":[selection.clone()]})
+                    }
+                    "/acp/context" => json!({"workspace":"/project","session_id":"session"}),
+                    "/permissions/actions" => {
+                        calls += 1;
+                        let body = body.unwrap();
+                        assert_eq!(body["selection"], selection);
+                        assert_eq!(body["operation"], "write");
+                        assert_eq!(body["content_base64"], "aGVsbG8=");
+                        assert!(body.get("credential").is_none());
+                        json!({"error":"unknown"})
+                    }
+                    _ => panic!("unexpected route"),
+                })
+            },
+            |_, _| Ok(answers.next().unwrap().map(str::to_owned)),
+        );
+        assert!(result.unwrap_err().contains("outcome may be unknown"));
+        assert_eq!(calls, 1);
     }
     #[test]
     fn advisory_is_not_rendered_as_a_block() {
