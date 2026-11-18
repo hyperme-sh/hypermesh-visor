@@ -50,6 +50,7 @@ mod local_reads;
 mod permission_dream;
 mod access_actions;
 mod acp_machine;
+mod coding_tasks;
 
 pub struct AppState {
     companions: std::sync::OnceLock<Arc<crate::companion_runtime::Runtime>>,
@@ -59,6 +60,7 @@ pub struct AppState {
     prompts_stopped: AtomicBool,
     host_bridge: Option<crate::host_bridge::Bridge>,
     tasks: tasks::Queue,
+    coding_status: Mutex<serde_json::Value>,
     sessions: Mutex<HashMap<Uuid, Session>>,
     desktop: Arc<dyn Desktop>,
     watch_poll: Duration,
@@ -184,6 +186,7 @@ impl AppState {
             prompts_stopped: AtomicBool::new(false),
             host_bridge: None,
             tasks: tasks::Queue::new(),
+            coding_status: Mutex::new(serde_json::json!({})),
             sessions: Mutex::new(HashMap::new()),
             selected_session: Mutex::new(None),
             selected_approved: AtomicBool::new(false),
@@ -848,6 +851,7 @@ fn routes(state: Arc<AppState>, from_companion: bool) -> Router {
         .route("/mcp/sources", get(mcp_sources))
         .route("/mcp/profiles", get(mcp_profiles).post(mcp_profile_edit))
         .route("/permissions/templates", get(permissions::list).post(permissions::save))
+        .route("/coding/status", get(coding_tasks::status))
         .route("/acp/context", get(acp_machine::context))
         .route("/acp/prompt", post(acp_machine::prompt))
         .route("/permissions/context", get(permissions::context))
@@ -1250,6 +1254,7 @@ pub async fn serve_until(
     });
     let mut jobs = vec![companion, control];
     if let Some(client) = remote_bot {
+        jobs.push(tokio::spawn(coding_tasks::run(Arc::clone(&state), cancel_rx.clone())));
         jobs.push(tokio::spawn(remote_bot::run(client, Arc::clone(&state), cancel_rx.clone())));
     }
     if let (Some(listener), Some(token)) = (tcp_listener, token) {
