@@ -135,6 +135,11 @@ impl Bridge {
     pub async fn permission_context(&self) -> Result<Value, ()> {
         self.request("GET", "/permission-context", vec![]).await
     }
+    pub async fn permission_read_review(&self, body: Value) -> Result<Value, ()> {
+        let raw=serde_json::to_vec(&body).map_err(|_|())?;
+        if raw.len()>196608 {return Err(())}
+        self.request("POST","/permission-read-review",raw).await
+    }
     pub async fn permission_preview(&self, body: Value) -> Result<Value, ()> {
         let raw = serde_json::to_vec(&body).map_err(|_| ())?;
         if raw.len() > 196608 { return Err(()); }

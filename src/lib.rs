@@ -47,6 +47,7 @@ mod mcp;
 mod orchestrator;
 mod prompt;
 pub mod permission_templates;
+pub mod local_reads;
 mod session;
 mod stream;
 pub mod telemetry;

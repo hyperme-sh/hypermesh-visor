@@ -1,4 +1,4 @@
-//! Native permission templates and owner-backed previews; no execution controls.
+//! Native permission templates, current reviews and bounded local reads.
 use crate::mcp_dialog::{args, choose, dialog};
 use serde_json::{json, Value};
 
@@ -48,12 +48,72 @@ fn screen(
             &[
                 "Select or edit template".into(),
                 "Preview a concrete action".into(),
+                "Read a verified local file".into(),
+                "View learned allows".into(),
             ],
         )?
         else {
             return Ok(());
         };
-        if action == 0 {
+        if action == 3 {
+            let store = request("/permissions/allows", None)?;
+            let rows:Vec<String>=store["allows"].as_array().ok_or("Learned allows unavailable")?.iter()
+                .filter(|a|a["project"]==project&&a["identity"]["organization_id"]==organization&&a["identity"]["device_id"]==device)
+                .map(|a|format!("{}\nOrigin: {}\nSession: {}\nPolicy: {}\nLast use: {} (Unix seconds)\nExpires: {} (Unix seconds)\nPending dreaming review: {}",a["action"]["target"].as_str().unwrap_or(""),a["origin"].as_str().unwrap_or(""),a["identity"]["session_id"].as_str().unwrap_or(""),a["policy_revision"].as_str().unwrap_or(""),a["last_use"],a["expires_at"],a["review_pending"])).collect();
+            crate::mcp_dialog::text(
+                &mut ui,
+                "Learned allows — current policy is checked on every use",
+                &if rows.is_empty() {
+                    "No learned allows in this scope".into()
+                } else {
+                    rows.join("\n\n")
+                },
+                false,
+            )?;
+        } else if action == 2 {
+            let Some(selection) = current else { continue };
+            let machine = request("/acp/context", None)?;
+            if machine["workspace"] != project {
+                return Err("Selected project differs from the active assignment".into());
+            }
+            let Some(target) = entry(&mut ui, "Exact local file to read", "")? else {
+                continue;
+            };
+            let rule = selection["rules"]
+                .as_array()
+                .and_then(|rs| {
+                    rs.iter()
+                        .find(|r| r["operation"] == "read" && r["target"] == target)
+                })
+                .ok_or("Select an exact read target in the template first")?;
+            let result = request(
+                "/permissions/reads",
+                Some(
+                    json!({"request_id":uuid::Uuid::new_v4().to_string(),"session_id":machine["session_id"],"selection":selection,"target":target,"max_bytes":rule["max_bytes"].as_u64().unwrap_or(0).min(1048576),"timeout_seconds":rule["timeout_seconds"].as_u64().unwrap_or(0).min(30)}),
+                ),
+            )?;
+            if !result["error"].is_null() {
+                return Err("Read refused or verification unavailable; not retried".into());
+            }
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(
+                    result["content_base64"]
+                        .as_str()
+                        .ok_or("Read unavailable")?,
+                )
+                .map_err(|_| "Read unavailable")?;
+            let message = format!(
+                "Learned: {} · Reused: {} · Pending review: {}\n\n{}",
+                result["learned"],
+                result["reused"],
+                result["review_pending"],
+                String::from_utf8(bytes).unwrap_or_else(|_| {
+                    "Binary file read successfully; contents are not displayed".into()
+                })
+            );
+            crate::mcp_dialog::text(&mut ui, "Verified file read", &message, false)?;
+        } else if action == 0 {
             let Some(preset) = choose(
                 &mut ui,
                 "Permission template",
@@ -214,6 +274,27 @@ fn render(result: &Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn verified_read_uses_saved_scope_and_displays_learning() {
+        let mut answers = vec![
+            Some("/project"),
+            Some("2"),
+            Some("/project/file"),
+            None,
+            None,
+        ]
+        .into_iter();
+        let selection = json!({"version":1,"scope":{"organization":"org","device":"device","project":"/project"},"preset":"local_inspection","rules":[{"operation":"read","target":"/project/file","max_bytes":1024,"timeout_seconds":10}]});
+        let mut reads = 0;
+        screen(|path,body|Ok(match path {
+            "/permissions/context"=>json!({"device_id":"device","binding":{"organization_id":"org"}}),
+            "/permissions/templates"=>json!({"version":1,"selections":[selection.clone()]}),
+            "/acp/context"=>json!({"workspace":"/project","session_id":"session"}),
+            "/permissions/reads"=>{reads+=1;let body=body.unwrap();assert_eq!(body["selection"],selection);assert_eq!(body["target"],"/project/file");assert!(uuid::Uuid::parse_str(body["request_id"].as_str().unwrap()).is_ok());json!({"content_base64":"aGVsbG8=","learned":true,"reused":false,"review_pending":true})},
+            _=>panic!("unexpected route")
+        }),|_,text|{if let Some(text)=text {assert!(text.contains("hello"));assert!(text.contains("Learned: true"));}Ok(answers.next().unwrap().map(str::to_owned))}).unwrap();
+        assert_eq!(reads, 1);
+    }
     #[test]
     fn advisory_is_not_rendered_as_a_block() {
         let text=render(&json!({"preview_only":true,"decision":"advisory","reason":"Review later","learning_eligible":false})).unwrap();
