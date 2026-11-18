@@ -397,6 +397,9 @@ mod tests {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("visor-read-{}", Uuid::new_v4()));
             storage::create_dir(&root).unwrap();
+            // macOS temporary roots include a /var alias. Select the real
+            // owned fixture path; production still refuses every symlink.
+            let root = root.canonicalize().unwrap();
             let dir = root.join("store");
             storage::create_dir(&dir).unwrap();
             let project = root.join("project");
