@@ -203,6 +203,17 @@ fn visor_loop(
         if keyboard_report.load(Ordering::SeqCst) && post_interrupt() {
             keyboard_report.store(false, Ordering::SeqCst);
         }
+        let level = keyboard_level.load(Ordering::SeqCst);
+        let observed = observer_sample
+            .lock()
+            .map(|sample| sample.elapsed() < Duration::from_millis(500))
+            .unwrap_or(false);
+        let Some(keyboard) = observer_poll(level, observed) else {
+            // A stalled observer must not refresh the watchdog, but it has
+            // not reported a permanent loss of keyboard support.
+            thread::sleep(Duration::from_millis(40));
+            continue;
+        };
         let batch = {
             let mut queued = queue.lock().unwrap();
             queued.drain(..).collect::<Vec<_>>()
@@ -218,9 +229,6 @@ fn visor_loop(
         if stop.load(Ordering::SeqCst) {
             break;
         }
-        let observed = observer_sample.lock().map(|sample| sample.elapsed() < Duration::from_millis(500)).unwrap_or(false);
-        let level = keyboard_level.load(Ordering::SeqCst);
-        let keyboard = if observed || level == 0 { keyboard_header(level) } else { Some(false) };
         let fetched = fetch(keyboard);
         let fresh = {
             let mut queued = queue.lock().unwrap();
@@ -311,6 +319,18 @@ enum PollFetch {
     Down,
     /// A 200 that was cut off or did not parse. Automation may still be running.
     Unreadable,
+}
+
+fn observer_poll(level: u8, observed: bool) -> Option<Option<bool>> {
+    (observed || level == 0).then(|| keyboard_header(level))
+}
+
+#[test]
+fn stale_observer_does_not_poll_or_report_permanent_keyboard_loss() {
+    assert_eq!(observer_poll(1, false), None);
+    assert_eq!(observer_poll(1, true), Some(Some(true)));
+    assert_eq!(observer_poll(2, true), Some(Some(false)));
+    assert_eq!(observer_poll(0, false), Some(None));
 }
 
 fn keyboard_header(level: u8) -> Option<bool> {
