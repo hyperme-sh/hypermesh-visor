@@ -120,23 +120,30 @@ impl Network {
             .set("Content-Type", "application/octet-stream")
             .send_bytes(&self.body)
             .map_err(|_| ERROR)?;
-        if !(200..300).contains(&response.status()) || !valid() {
-            return Err(ERROR);
-        }
-        let mut output = Vec::new();
-        response
-            .into_reader()
-            .take(max + 1)
-            .read_to_end(&mut output)
-            .map_err(|_| ERROR)?;
-        if output.len() as u64 > max || !valid() {
-            return Err(ERROR);
-        }
-        use base64::Engine;
-        Ok(
-            json!({"completed":true,"content_base64":base64::engine::general_purpose::STANDARD.encode(output)}),
-        )
+        finish_response(response, max, valid)
     }
+}
+fn finish_response(
+    response: ureq::Response,
+    max: u64,
+    valid: impl Fn() -> bool,
+) -> Result<Value, &'static str> {
+    if !(200..300).contains(&response.status()) || !valid() {
+        return Err(ERROR);
+    }
+    let mut output = Vec::new();
+    response
+        .into_reader()
+        .take(max + 1)
+        .read_to_end(&mut output)
+        .map_err(|_| ERROR)?;
+    if output.len() as u64 > max || !valid() {
+        return Err(ERROR);
+    }
+    use base64::Engine;
+    Ok(
+        json!({"completed":true,"content_base64":base64::engine::general_purpose::STANDARD.encode(output)}),
+    )
 }
 fn public(ip: IpAddr) -> bool {
     match ip {
@@ -281,10 +288,15 @@ impl NewFile {
             if !valid() || directory_mark(&self.parent)? != self.parent_mark {
                 return Err(ERROR);
             }
+            let current = Self::prepare(&self.project, &self.target, Vec::new())?;
+            if current.parent_mark != self.parent_mark {
+                return Err(ERROR);
+            }
             // Atomic create-only publication: an intervening file or symlink wins and
             // is never overwritten. The reviewed parent descriptor owns this operation.
             let r = unsafe {
-                libc::renameat2(
+                libc::syscall(
+                    libc::SYS_renameat2,
                     self.parent.as_raw_fd(),
                     temporary.as_ptr(),
                     self.parent.as_raw_fd(),
@@ -556,6 +568,33 @@ mod tests {
         }
     }
     #[test]
+    fn named_http_response_contract_refuses_redirects_and_oversize() {
+        let permitted =
+            finish_response(ureq::Response::new(200, "OK", "hello").unwrap(), 5, || true).unwrap();
+        assert_eq!(permitted["completed"], true);
+        assert_eq!(permitted["content_base64"], "aGVsbG8=");
+        for status in [301, 302, 303, 307, 308] {
+            assert!(finish_response(
+                ureq::Response::new(status, "Redirect", "").unwrap(),
+                5,
+                || true
+            )
+            .is_err());
+        }
+        assert!(finish_response(
+            ureq::Response::new(200, "OK", "too large").unwrap(),
+            5,
+            || true
+        )
+        .is_err());
+        assert!(
+            finish_response(ureq::Response::new(200, "OK", "hello").unwrap(), 5, || {
+                false
+            })
+            .is_err()
+        );
+    }
+    #[test]
     fn arguments_bind_operation_target_and_content() {
         let a = action(
             "write",
@@ -608,6 +647,34 @@ mod tests {
             vec![]
         )
         .is_err());
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn parent_moved_during_write_is_refused() {
+        let dir = TempDir::new();
+        let root = dir.path().canonicalize().unwrap();
+        let project = root.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let file = NewFile::prepare(
+            project.to_str().unwrap(),
+            project.join("new").to_str().unwrap(),
+            b"content".to_vec(),
+        )
+        .unwrap();
+        let calls = std::cell::Cell::new(0);
+        assert!(file
+            .execute(|| {
+                calls.set(calls.get() + 1);
+                if calls.get() == 2 {
+                    std::fs::rename(&project, root.join("moved")).unwrap();
+                    std::fs::create_dir(&project).unwrap();
+                }
+                true
+            })
+            .is_err());
+        assert!(!project.join("new").exists());
+        assert!(!root.join("moved/new").exists());
+        assert_eq!(std::fs::read_dir(root.join("moved")).unwrap().count(), 0);
     }
     #[cfg(target_os = "linux")]
     #[test]
