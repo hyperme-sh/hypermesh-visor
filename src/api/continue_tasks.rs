@@ -29,6 +29,10 @@ pub(super) struct Start {
     chunks: Vec<Chunk>,
     seconds: u64,
     tokens: u64,
+    #[serde(default)]
+    money: Option<Value>,
+    #[serde(default)]
+    execution: Option<Value>,
     continue_enabled: bool,
     #[serde(default)]
     tracking: Vec<String>,
@@ -74,6 +78,50 @@ fn start_body(context: &Value, body: &Start) -> Result<Value, ()> {
     {
         return Err(());
     }
+    if let Some(money) = &body.money {
+        let object = money.as_object().ok_or(())?;
+        let currency = money["currency"].as_str().ok_or(())?;
+        if object.len() != 2
+            || currency.len() != 3
+            || !currency.bytes().all(|b| b.is_ascii_uppercase())
+            || money["limit_micros"].as_u64().ok_or(())? > 1_000_000_000_000
+        {
+            return Err(());
+        }
+    }
+    if let Some(execution) = &body.execution {
+        let obj = execution.as_object().ok_or(())?;
+        let files = execution["files"].as_array().ok_or(())?;
+        let checks = execution["checks"].as_array().ok_or(())?;
+        let configured = context["checks"].as_array().ok_or(())?;
+        if obj.len() != 3
+            || files.is_empty()
+            || files.len() > 12
+            || checks.is_empty()
+            || checks.len() > 4
+            || execution["max_repairs"].as_u64().ok_or(())? > 3
+            || body.money.is_none()
+            || checks
+                .iter()
+                .any(|c| !c.is_string() || !configured.contains(c))
+        {
+            return Err(());
+        }
+        for file in files {
+            let path = file.as_str().ok_or(())?;
+            if path.is_empty()
+                || path.len() > 256
+                || path.starts_with('/')
+                || path
+                    .split('/')
+                    .any(|p| p.is_empty() || p == "." || p == ".." || p == ".git")
+                || path.contains(['\\', '*', '?'])
+                || path.chars().any(char::is_control)
+            {
+                return Err(());
+            }
+        }
+    }
     let identity = &context["identity"];
     let mut chunks = Vec::new();
     for (i, chunk) in body.chunks.iter().enumerate() {
@@ -98,6 +146,12 @@ fn start_body(context: &Value, body: &Start) -> Result<Value, ()> {
     result["run_id"] = json!(body.run_id);
     result["continue_enabled"] = json!(body.continue_enabled);
     result["plan"] = json!({"version":1,"workspace":body.workspace,"goal":body.goal,"completion":body.completion,"chunks":chunks,"tracking":body.tracking,"budgets":{"seconds":body.seconds,"tokens":body.tokens,"chunks":body.chunks.len()}});
+    if let Some(money) = &body.money {
+        result["plan"]["budgets"]["money"] = money.clone();
+    }
+    if let Some(execution) = &body.execution {
+        result["plan"]["execution"] = execution.clone();
+    }
     if let Some(project) = &body.project {
         let mut project = project.clone();
         let units = project["units"].as_array_mut().ok_or(())?;
@@ -216,6 +270,7 @@ pub(super) async fn current_context(
         acp_machine::binding(&value, value["workspace"].as_str().ok_or_else(unavailable)?)
             .map_err(|_| unavailable())?;
     let mut view = acp_machine::context_view(&value, session);
+    view["checks"] = value["checks"].clone();
     let gate = lock(&state.automation);
     view["local_epoch"] = json!(gate.epoch());
     view["local_running"] =
@@ -339,6 +394,8 @@ mod tests {
             ],
             seconds: 120,
             tokens: 2048,
+            execution: None,
+            money: Some(json!({"currency":"USD","limit_micros":5000000})),
             continue_enabled: true,
             tracking: vec![],
             project: None,
@@ -356,6 +413,24 @@ mod tests {
             a["plan"]["chunks"][0]["id"]
         );
         assert_eq!(a["continue_enabled"], true);
+    }
+    #[test]
+    fn edit_scope_requires_configured_checks_and_exact_money() {
+        let (mut context, mut body) = fixture();
+        body.execution = Some(json!({"files":["src/file.rs"],"checks":["unit"],"max_repairs":2}));
+        assert!(start_body(&context, &body).is_err());
+        context["checks"] = json!(["unit"]);
+        let encoded = start_body(&context, &body).unwrap();
+        assert_eq!(
+            encoded["plan"]["execution"],
+            body.execution.clone().unwrap()
+        );
+        assert_eq!(encoded["plan"]["budgets"]["money"]["limit_micros"], 5000000);
+        body.money = Some(json!({"currency":"USD","limit_micros":true}));
+        assert!(start_body(&context, &body).is_err());
+        body.money = Some(json!({"currency":"USD","limit_micros":0}));
+        body.execution.as_mut().unwrap()["files"] = json!(["../outside"]);
+        assert!(start_body(&context, &body).is_err());
     }
     #[test]
     fn scope_and_limits_cannot_come_from_prompt() {
