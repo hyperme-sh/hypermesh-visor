@@ -58,3 +58,19 @@ Repeated failed approaches and correction/drift signals can suggest a strategy
 change even with low context use. Productive high-context work suggests a
 checkpoint/compaction. A temporary tool failure does not justify retirement.
 Completion can suggest retirement, but applying it is a separate action.
+
+
+Worker handoffs are explicit task actions within the current assigned machine,
+session and workspace. They do not restart the Conductor daemon or move a task
+to a new host. The owner commits a checkpoint and task-worker generation in one
+row transaction. A repeated request returns the same transition; a competing
+stale revision is refused. The next bounded worker reads the checkpoint in its
+owner-prepared prompt and reserves that context against the remaining budget.
+
+Resolve a queued, in-flight or uncertain chunk before a handoff. No replacement
+retries a consumed operation. Old-generation claims and operation callbacks are
+refused. Restart preserves pause, Continue, spent limits and scope. Retirement
+releases the task worker while preserving unfinished work, history and files;
+explicit reassignment selects a fresh worker under the same scope. Both clients
+show the old/new worker and whether unfinished work remains. Advice alone never
+applies these actions.

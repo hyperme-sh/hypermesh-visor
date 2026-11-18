@@ -506,3 +506,36 @@ mod advice_tests {
         assert_eq!(run, before);
     }
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Handoff {
+    session_id: Uuid,
+    workspace: String,
+    run_id: Uuid,
+    revision: u64,
+    request_id: Uuid,
+    action: String,
+}
+pub(super) async fn handoff(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Handoff>,
+) -> Result<Json<Value>, ApiError> {
+    if !["restart", "reassign", "retire"].contains(&body.action.as_str())
+        || body.request_id.is_nil()
+    {
+        return Err(ApiError::bad("Explicit worker action required"));
+    }
+    let scope = Scope {
+        session_id: body.session_id,
+        workspace: body.workspace,
+    };
+    let value = context(&state, link, &scope).await?;
+    let mut payload = scope_body(&value);
+    payload["run_id"] = json!(body.run_id);
+    payload["revision"] = json!(body.revision);
+    payload["request_id"] = json!(body.request_id);
+    payload["action"] = json!(body.action);
+    call(value, "continue-handoff", payload).await
+}

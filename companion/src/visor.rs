@@ -561,7 +561,7 @@ fn trust_response_limit(path: &str) -> usize {
 
 fn trust_endpoint(path:&str)->bool { matches!(
         path,
-        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context" | "/continue/context" | "/continue/view" | "/continue/advice" | "/continue/observations" | "/continue/plan" | "/continue/project" | "/continue/start" | "/continue/control" | "/continue/local-resume"
+        "/mcp/trust" | "/mcp/discovery" | "/mcp/sources" | "/mcp/profiles" | "/mcp/servers" | "/permissions/templates" | "/permissions/context" | "/permissions/preview" | "/permissions/reads" | "/permissions/actions" | "/permissions/allows" | "/permissions/cache" | "/permissions/dream" | "/acp/context" | "/continue/context" | "/continue/view" | "/continue/handoff" | "/continue/advice" | "/continue/observations" | "/continue/plan" | "/continue/project" | "/continue/start" | "/continue/control" | "/continue/local-resume"
     ) }
 
 #[test]
