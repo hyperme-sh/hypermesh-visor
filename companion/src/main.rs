@@ -60,6 +60,7 @@ fn main() -> ExitCode {
                 ExitCode::from(1)
             }
         },
+        Some("--continue-advice-workspace")=>{let Some(workspace)=args.next() else{return ExitCode::FAILURE};if args.next().is_some(){return ExitCode::FAILURE}match continue_tasks::advice_exchange(&workspace){Ok(value)=>{println!("{value}");ExitCode::SUCCESS},Err(_)=>ExitCode::FAILURE}},
         Some(action @ ("--continue-status-workspace"|"--continue-control-workspace")) => {
             let Some(workspace)=args.next() else{return ExitCode::FAILURE};if args.next().is_some(){return ExitCode::FAILURE}
             let control=if action=="--continue-control-workspace" {

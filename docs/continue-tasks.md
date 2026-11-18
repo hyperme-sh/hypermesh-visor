@@ -44,3 +44,17 @@ an existing plan preserves submissions, completed work, assignment, scope and
 spent budgets; new completion/stop defaults apply to a future task. A spike's
 prompt explicitly stops at its declared research output. The tool guide favors
 the existing central tracker; no tracker issues are created by this feature.
+
+
+Agent advice uses the current scoped task's completed checks and bounded,
+timestamped owner observations. Blank context, cost, ownership or work-quality
+fields remain unknown. A recommendation includes reasons, contributing signals,
+confidence, unknowns, next action and a proposed handoff. Both clients display
+it without applying a control. Update observations explicitly when the task's
+work quality changes; they expire for advice after five minutes by default.
+
+Conductor's documented thresholds are configurable in the advice request.
+Repeated failed approaches and correction/drift signals can suggest a strategy
+change even with low context use. Productive high-context work suggests a
+checkpoint/compaction. A temporary tool failure does not justify retirement.
+Completion can suggest retirement, but applying it is a separate action.
