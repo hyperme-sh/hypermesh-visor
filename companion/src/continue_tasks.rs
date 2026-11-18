@@ -174,7 +174,15 @@ fn screen(
         let Some(action) = choose(
             &mut ui,
             "Continue task",
-            &summary(run),
+            &format!(
+                "{}\nLocal execution: {}",
+                summary(run),
+                if fresh["local_running"] == true {
+                    "running"
+                } else {
+                    "paused; use Resume local execution when ready"
+                }
+            ),
             &[
                 "Refresh status".into(),
                 "Start a task".into(),
@@ -182,11 +190,20 @@ fn screen(
                 "Pause".into(),
                 "Resume".into(),
                 "Stop task".into(),
+                "Resume local execution for this session".into(),
             ],
         )?
         else {
             return Ok(());
         };
+        if action == 6 {
+            let latest = request("/continue/context", None)?;
+            verify_scope(&latest, workspace, &mut identity)?;
+            let mut body = scope.clone();
+            body["expected_epoch"] = latest["local_epoch"].clone();
+            request("/continue/local-resume", Some(body))?;
+            return Ok(());
+        }
         if action == 0 {
             continue;
         }

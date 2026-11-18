@@ -22,3 +22,10 @@ private companion-socket APIs. They bind workspace/session to the current Host
 context and use the existing owner session for Plane controls. Neither native
 UI nor IDE carries owner or machine credentials. Task IDs derive stable chunk
 and operation IDs; refresh after an uncertain submission before starting again.
+
+Typing in the form may pause local automation. Preparing the task never resumes
+that pause. Status and cancellation stay available through scope-only context.
+When ready, choose **Resume local execution for this session**: it uses the
+existing selected-session and current-epoch check, then closes the dialog.
+An intervening pause or session change refuses the resume. Execution still waits
+for the existing current Plane assignment and local consent heartbeat.

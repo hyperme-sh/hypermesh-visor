@@ -201,7 +201,38 @@ pub(super) async fn current_context(
     let session =
         acp_machine::binding(&value, value["workspace"].as_str().ok_or_else(unavailable)?)
             .map_err(|_| unavailable())?;
-    Ok(Json(acp_machine::context_view(&value, session)))
+    let mut view = acp_machine::context_view(&value, session);
+    let gate = lock(&state.automation);
+    view["local_epoch"] = json!(gate.epoch());
+    view["local_running"] =
+        json!(gate.phase() == Phase::Running && gate.session() == Some(session));
+    Ok(Json(view))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Resume {
+    session_id: Uuid,
+    workspace: String,
+    expected_epoch: u64,
+}
+pub(super) async fn local_resume(
+    State(state): State<Arc<AppState>>,
+    Extension(link): Extension<CompanionLink>,
+    Json(body): Json<Resume>,
+) -> Result<Json<Value>, ApiError> {
+    let scope = Scope {
+        session_id: body.session_id,
+        workspace: body.workspace,
+    };
+    context(&state, link, &scope).await?;
+    state.control_automation_at(
+        automation::Control::Resume,
+        true,
+        Some(body.session_id),
+        Some(body.expected_epoch),
+    )?;
+    Ok(Json(json!({"acknowledged":true})))
 }
 
 pub(super) async fn view(
@@ -223,12 +254,6 @@ pub(super) async fn start(
         workspace: body.workspace.clone(),
     };
     let value = context(&state, link, &scope).await?;
-    {
-        let gate = lock(&state.automation);
-        if gate.phase() != Phase::Running || gate.session() != Some(body.session_id) {
-            return Err(unavailable());
-        }
-    }
     let mut payload =
         start_body(&value, &body).map_err(|_| ApiError::bad("Invalid bounded task plan"))?;
     payload.as_object_mut().unwrap().remove("workspace");
