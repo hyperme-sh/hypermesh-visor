@@ -2634,6 +2634,7 @@ scenario_managed_companions() {
   export HYPERMESH_COMPANION_STATE_DIR
   export HYPERMESH_COMPANION_IMAGE="ghcr.io/hyperme-sh/hypermesh-visor:nightly-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
   start_visor
+  open_session
   start_companion
   python3 "$checker" start --socket "$RUNTIME/companion.sock"
   uinput_cmd "rel 30 12"
@@ -2641,6 +2642,7 @@ scenario_managed_companions() {
   stop_companion
   stop_visor
   start_visor
+  open_session
   start_companion
   python3 "$checker" recovered --socket "$RUNTIME/companion.sock"
   stop_companion
