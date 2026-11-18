@@ -55,9 +55,15 @@ pub(super) async fn context(
         return Err(unavailable());
     }
     Ok(Json(
-        json!({"session_id":session,"workspace":value["workspace"]}),
+        context_view(&value,session),
     ))
 }
+
+fn context_view(value:&Value,session:Uuid)->Value{
+ let identity:Value=["tenant_id","owner_id","principal","organization_id","device_id","bot_id","assignment_id","session_id"].into_iter().map(|key|(key.to_owned(),value["identity"][key].clone())).collect::<serde_json::Map<String,Value>>().into();
+ json!({"session_id":session,"workspace":value["workspace"],"identity":identity})
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Prompt {
@@ -354,6 +360,12 @@ mod tests {
             identity[key] = json!(Uuid::new_v4());
         }
         let value = json!({"identity":identity,"workspace":"/project","class":"coding","destination":"owner-route","max_output_tokens":1024});
+        let view=context_view(&value,session);
+        assert_eq!(view["identity"]["device_id"],value["identity"]["device_id"]);
+        assert_eq!(view["identity"]["organization_id"],value["identity"]["organization_id"]);
+        assert_eq!(view["session_id"],session.to_string());
+        assert_eq!(view["workspace"],"/project");
+        assert!(view.get("class").is_none());
         let mut body = Prompt {
             session_id: session,
             workspace: "/project".into(),
