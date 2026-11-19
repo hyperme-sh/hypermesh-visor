@@ -95,11 +95,53 @@ fn entry(
 }
 fn start_form(
     scope: &Value,
+    available_checks: &Value,
     ui: &mut impl FnMut(&[String], Option<&str>) -> Result<Option<String>, String>,
     request: &mut impl FnMut(&str, Option<Value>) -> Result<Value, String>,
 ) -> Result<Option<Value>, String> {
     let Some(goal) = entry(ui, "Goal", "")? else {
         return Ok(None);
+    };
+    let Some(mode)=choose(ui,"Task execution","Edit tasks use only selected files and configured checks in a network-isolated workspace. Failed checks allow a bounded repair; uncertain operations stop.",&["Edit, check, repair".into(),"Model response only".into()])? else{return Ok(None)};
+    let execution = if mode == 0 {
+        let configured = available_checks
+            .as_array()
+            .filter(|v| !v.is_empty())
+            .ok_or(
+            "Configure named checks in the Host workspace settings before starting an edit task",
+        )?;
+        let Some(paths) = entry(
+            ui,
+            "Selected existing project files, comma separated (up to twelve; 10 KB combined)",
+            "",
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(checks) = entry(
+            ui,
+            &format!(
+                "Named checks, comma separated. Available: {}",
+                available_checks
+            ),
+            configured[0].as_str().unwrap_or(""),
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(repairs) = entry(
+            ui,
+            "Maximum repair attempts after a failed check (0–3)",
+            "2",
+        )?
+        else {
+            return Ok(None);
+        };
+        Some(
+            json!({"files":paths.split(',').map(str::trim).filter(|s|!s.is_empty()).collect::<Vec<_>>(),"checks":checks.split(',').map(str::trim).filter(|s|!s.is_empty()).collect::<Vec<_>>(),"max_repairs":repairs.parse::<u64>().map_err(|_|"Invalid repair count")?}),
+        )
+    } else {
+        None
     };
     let Some(links) = entry(
         ui,
@@ -139,7 +181,11 @@ fn start_form(
         let Some(criterion) = entry(
             ui,
             &format!("Chunk {}: completion description", i + 1),
-            "One complete text response",
+            if execution.is_some() {
+                "Selected checks pass after scoped edits"
+            } else {
+                "One complete text response"
+            },
         )?
         else {
             return Ok(None);
@@ -191,9 +237,24 @@ fn start_form(
     else {
         return Ok(None);
     };
+    let Some(currency) = entry(ui, "Spending currency (three uppercase letters)", "USD")? else {
+        return Ok(None);
+    };
+    let Some(limit) = entry(
+        ui,
+        "Maximum task spend (decimal amount; unknown prices stop dispatch)",
+        "1.00",
+    )?
+    else {
+        return Ok(None);
+    };
+    let limit_micros = money_micros(&limit)?;
+    if currency.len() != 3 || !currency.bytes().all(|b| b.is_ascii_uppercase()) {
+        return Err("Use a three-letter uppercase currency".into());
+    }
     let seconds: u64 = seconds.parse().map_err(|_| "Enter a numeric time limit")?;
     let tokens: u64 = tokens.parse().map_err(|_| "Enter a numeric token limit")?;
-    let Some(enabled)=choose(ui,"Continue","Continue is on by default for this task only. Every chunk still uses current policy. The first task contract checks complete, nonempty model responses; it does not execute generated commands.",&["On (default)".into(),"Off — start paused".into()])? else{return Ok(None)};
+    let Some(enabled)=choose(ui,"Continue","Continue is on by default for this task only. Every chunk still uses current policy. Edit mode runs configured checks and bounded repairs; response-only mode checks the returned text. Model-generated commands are never executed.",&["On (default)".into(),"Off — start paused".into()])? else{return Ok(None)};
     let mut body = scope.clone();
     body["run_id"] = json!(uuid::Uuid::new_v4());
     body["goal"] = json!(goal);
@@ -213,6 +274,13 @@ fn start_form(
         ));
     }
     let shown=format!("{}\nModel/context: {}\nSettings: {}\nIssue mapping: {}\nAcceptance units: {}\nExecution remains serial within the WIP ceiling. No issues are created.",preview["guide"].as_str().unwrap_or(""),preview["budget"],preview["settings"],preview["issues"],preview["chunks"].as_array().ok_or("Missing plan chunks")?.iter().map(|u|json!({"id":u["id"],"outcome":u["outcome"],"acceptance":u["acceptance"],"scope":u["scope"],"depends_on":u["depends_on"],"estimated_input":u["estimated_input"]})).collect::<Vec<_>>().iter().map(Value::to_string).collect::<Vec<_>>().join("\n"));
+    let shown = format!(
+        "{shown}\nExecution: {}\nMaximum spending: {currency} {limit}",
+        execution
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or("Model response only".into())
+    );
     if choose(
         ui,
         "Preview project plan",
@@ -228,6 +296,8 @@ fn start_form(
     body["tracking"] = json!(merge_tracking(&tracking, &preview["issues"])?);
     body["seconds"] = json!(seconds);
     body["tokens"] = json!(tokens);
+    body["money"] = json!({"currency":currency,"limit_micros":limit_micros});
+    body["execution"] = json!(execution);
     body["continue_enabled"] = json!(enabled == 0);
     Ok(Some(body))
 }
@@ -371,6 +441,29 @@ fn planned_chunks(preview: &Value) -> Result<(Vec<Value>, Value), String> {
     ))
 }
 
+fn money_micros(value: &str) -> Result<u64, String> {
+    let parts: Vec<_> = value.split('.').collect();
+    if parts.len() > 2
+        || parts[0].is_empty()
+        || !parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit()))
+        || parts.get(1).is_some_and(|p| p.len() > 6)
+    {
+        return Err("Use a nonnegative amount with at most six decimal places".into());
+    }
+    let whole = parts[0]
+        .parse::<u64>()
+        .map_err(|_| "Spending amount too large")?;
+    let fraction = format!("{:0<6}", parts.get(1).copied().unwrap_or(""));
+    let amount = whole
+        .checked_mul(1_000_000)
+        .and_then(|n| n.checked_add(fraction.parse::<u64>().ok()?))
+        .ok_or("Spending amount too large")?;
+    if amount > 1_000_000_000_000 {
+        return Err("Spending amount too large".into());
+    };
+    Ok(amount)
+}
+
 fn summary(run: &Value) -> String {
     if run.is_null() {
         return "No selected task. Start a scoped task to enable Continue.".into();
@@ -380,7 +473,24 @@ fn summary(run: &Value) -> String {
         .and_then(|v| v.iter().find(|c| c["state"] == "pending"))
         .map(|c| c["id"].as_str().unwrap_or("—"))
         .unwrap_or("—");
-    format!("Task: {}\nState: {} ({})\nContinue: {}\nCurrent: {}\nNext declared chunk: {}\nChunks: {} / {}\nReserved tokens: {} / {}\nDeadline: {}\nPause/stop requests cancellation; an in-flight operation may remain uncertain. Scope and limits are fixed for this task. Stop it before starting a replacement.",run["id"].as_str().unwrap_or("—"),run["state"].as_str().unwrap_or("unknown"),run["reason"].as_str().unwrap_or("unknown"),if run["continue_enabled"]==true{"on"}else{"off"},run["current"].as_str().unwrap_or("—"),next,run["used_chunks"],run["budgets"]["chunks"],run["used_tokens"],run["budgets"]["tokens"],run["deadline"])
+    let money = if run["budgets"]["money"].is_object() {
+        let display = |n: u64| format!("{}.{:06}", n / 1_000_000, n % 1_000_000);
+        format!(
+            "{} {} reserved maximum / {} limit",
+            run["budgets"]["money"]["currency"].as_str().unwrap_or("?"),
+            display(run["reserved_micros"].as_u64().unwrap_or(0)),
+            display(
+                run["budgets"]["money"]["limit_micros"]
+                    .as_u64()
+                    .unwrap_or(0)
+            )
+        )
+    } else {
+        "No monetary cap (older task)".into()
+    };
+    let attempts = run["budgets"]["chunks"].as_u64().unwrap_or(0)
+        * (1 + run["execution"]["max_repairs"].as_u64().unwrap_or(0));
+    format!("Spending: {money}\nTask: {}\nState: {} ({})\nContinue: {}\nCurrent: {}\nNext declared chunk: {}\nAttempts: {} / {}\nReserved tokens: {} / {}\nDeadline: {}\nPause/stop requests cancellation; an in-flight operation may remain uncertain. Scope and limits are fixed for this task. Stop it before starting a replacement.",run["id"].as_str().unwrap_or("—"),run["state"].as_str().unwrap_or("unknown"),run["reason"].as_str().unwrap_or("unknown"),if run["continue_enabled"]==true{"on"}else{"off"},run["current"].as_str().unwrap_or("—"),next,run["used_chunks"],attempts,run["used_tokens"],run["budgets"]["tokens"],run["deadline"])
 }
 fn screen(
     workspace: &str,
@@ -512,7 +622,7 @@ fn screen(
             if !run.is_null() && run["state"] != "completed" && run["stopped"] != true {
                 return Err("Stop the selected task before replacing its scope or limits".into());
             }
-            if let Some(body) = start_form(&scope, &mut ui, &mut request)? {
+            if let Some(body) = start_form(&scope, &fresh["checks"], &mut ui, &mut request)? {
                 request("/continue/start", Some(body))?;
             }
         } else {
@@ -544,6 +654,14 @@ fn screen(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn monetary_input_uses_exact_decimal_units() {
+        assert_eq!(money_micros("1.000001").unwrap(), 1_000_001);
+        assert_eq!(money_micros("0").unwrap(), 0);
+        for value in ["-1", "NaN", "1e2", "0.0000001", "1000001", ".5", "1.2.3"] {
+            assert!(money_micros(value).is_err(), "{value}");
+        }
+    }
     #[test]
     fn workspace_or_assignment_change_refuses() {
         let mut i = None;
