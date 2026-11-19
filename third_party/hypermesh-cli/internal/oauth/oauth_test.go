@@ -63,7 +63,7 @@ func TestDevicePollPendingSlowDownExpired(t *testing.T) {
 	defer srv.Close()
 	ep := Endpoints{TokenURL: srv.URL, ClientID: PublicClientID}
 	var slept []time.Duration
-	tokens, err := PollDevice(srv.Client(), ep, "device-1", 5*time.Second, time.Minute, func(d time.Duration) {
+	tokens, err := PollDevice(srv.Client(), ep, DeviceCodes{DeviceCode: "device-1", Interval: 5 * time.Second, ExpiresIn: time.Minute, verifier: "fixture-verifier"}, func(d time.Duration) {
 		slept = append(slept, d)
 	})
 	if err != nil || tokens.RefreshToken != "refresh-1" {
@@ -82,7 +82,7 @@ func TestDevicePollPendingSlowDownExpired(t *testing.T) {
 	defer slow.Close()
 	ep.TokenURL = slow.URL
 	slept = nil
-	if _, err := PollDevice(slow.Client(), ep, "device-2", 5*time.Second, time.Minute, func(d time.Duration) {
+	if _, err := PollDevice(slow.Client(), ep, DeviceCodes{DeviceCode: "device-2", Interval: 5 * time.Second, ExpiresIn: time.Minute, verifier: "fixture-verifier"}, func(d time.Duration) {
 		slept = append(slept, d)
 	}); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ func TestDevicePollPendingSlowDownExpired(t *testing.T) {
 	expired := scriptServer(t, &mu, &bodies, &step, []string{`{"error":"expired_token"}`})
 	defer expired.Close()
 	ep.TokenURL = expired.URL
-	_, err = PollDevice(expired.Client(), ep, "device-3", 5*time.Second, time.Minute, func(time.Duration) {})
+	_, err = PollDevice(expired.Client(), ep, DeviceCodes{DeviceCode: "device-3", Interval: 5 * time.Second, ExpiresIn: time.Minute, verifier: "fixture-verifier"}, func(time.Duration) {})
 	if err == nil || strings.Contains(err.Error(), "device-3") {
 		t.Fatal(err)
 	}
