@@ -114,7 +114,7 @@ func deviceSignIn(stderr io.Writer, ep oauth.Endpoints, client *http.Client) (oa
 	if codes.VerificationURIComplete != "" {
 		fmt.Fprintf(stderr, "%s\n", codes.VerificationURIComplete)
 	}
-	return oauth.PollDevice(client, ep, codes.DeviceCode, codes.Interval, codes.ExpiresIn, time.Sleep)
+	return oauth.PollDevice(client, ep, codes, time.Sleep)
 }
 
 func (r *run) noteTenant(access string) error {

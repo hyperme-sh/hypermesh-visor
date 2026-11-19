@@ -147,12 +147,19 @@ type DeviceCodes struct {
 	VerificationURIComplete string
 	Interval                time.Duration
 	ExpiresIn               time.Duration
+	verifier                string
 }
 
 func StartDevice(client *http.Client, ep Endpoints) (DeviceCodes, error) {
+	verifier, err := NewVerifier()
+	if err != nil {
+		return DeviceCodes{}, err
+	}
 	form := url.Values{}
 	form.Set("client_id", ep.ClientID)
 	form.Set("scope", Scope)
+	form.Set("code_challenge", ChallengeS256(verifier))
+	form.Set("code_challenge_method", "S256")
 	body, err := postForm(client, ep.DeviceURL, form)
 	if err != nil {
 		return DeviceCodes{}, err
@@ -182,16 +189,21 @@ func StartDevice(client *http.Client, ep Endpoints) (DeviceCodes, error) {
 		VerificationURIComplete: raw.VerificationURIComplete,
 		Interval:                interval,
 		ExpiresIn:               time.Duration(raw.ExpiresIn) * time.Second,
+		verifier:                verifier,
 	}, nil
 }
 
 // PollDevice waits, then polls. slow_down adds five seconds to the interval.
 // wait is injectable so tests do not sleep.
-func PollDevice(client *http.Client, ep Endpoints, deviceCode string, interval, expiresIn time.Duration, wait func(time.Duration)) (Tokens, error) {
+func PollDevice(client *http.Client, ep Endpoints, codes DeviceCodes, wait func(time.Duration)) (Tokens, error) {
+	if codes.verifier == "" {
+		return Tokens{}, fmt.Errorf("device login requires its PKCE verifier")
+	}
+	interval := codes.Interval
 	if interval <= 0 {
 		interval = 5 * time.Second
 	}
-	deadline := time.Now().Add(expiresIn)
+	deadline := time.Now().Add(codes.ExpiresIn)
 	for {
 		if !time.Now().Before(deadline) {
 			return Tokens{}, fmt.Errorf("sign-in expired before it was approved")
@@ -209,7 +221,8 @@ func PollDevice(client *http.Client, ep Endpoints, deviceCode string, interval, 
 		}
 		form := url.Values{}
 		form.Set("grant_type", deviceGrant)
-		form.Set("device_code", deviceCode)
+		form.Set("device_code", codes.DeviceCode)
+		form.Set("code_verifier", codes.verifier)
 		form.Set("client_id", ep.ClientID)
 		tokens, oauthErr, err := postToken(client, ep.TokenURL, form)
 		if err == nil && oauthErr == "" {
