@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -48,7 +49,7 @@ func TestDeviceLoginStoresRefreshTokenOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, _ = io.WriteString(&stderr, "Enter "+codes.UserCode+" at "+codes.VerificationURI+"\n")
-	tokens, err := oauth.PollDevice(srv.Client(), ep, codes.DeviceCode, codes.Interval, codes.ExpiresIn, func(time.Duration) {})
+	tokens, err := oauth.PollDevice(srv.Client(), ep, codes, func(time.Duration) {})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,6 +74,23 @@ func TestDeviceLoginStoresRefreshTokenOnly(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
+	if len(seen) != 3 {
+		t.Fatalf("expected an authorization request and two polls, got %d requests", len(seen))
+	}
+	authorization, err := url.ParseQuery(seen[0])
+	if err != nil || authorization.Get("code_challenge_method") != "S256" || authorization.Has("code_verifier") {
+		t.Fatal("device authorization must send only the S256 challenge")
+	}
+	for _, body := range seen[1:] {
+		poll, err := url.ParseQuery(body)
+		verifier := poll.Get("code_verifier")
+		if err != nil || len(verifier) < 43 || oauth.ChallengeS256(verifier) != authorization.Get("code_challenge") {
+			t.Fatal("device poll did not use the verifier for its authorization request")
+		}
+		if strings.Contains(stderr.String(), verifier) {
+			t.Fatal("PKCE verifier printed")
+		}
+	}
 	if strings.Contains(strings.Join(seen, "\n"), "client_secret") {
 		t.Fatal("client secret was sent")
 	}
