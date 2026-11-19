@@ -41,3 +41,13 @@ describe('memory-only feedback preparation', () => {
     expect(prior.title).not.toBe('');
   });
 });
+
+it('explains intake minimum lengths before native preparation', () => {
+  const base = draft();
+  let state=feedbackDraft(base,{type:'edit',field:'title',value:'abc'});
+  expect(feedbackDraft(state,{type:'preview'}).error).toContain('at least 4');
+  state=feedbackDraft(base,{type:'edit',field:'description',value:'123456789'});
+  expect(feedbackDraft(state,{type:'preview'}).error).toContain('at least 10');
+  state=feedbackDraft(base,{type:'edit',field:'title',value:'😀😀'});
+  expect(feedbackDraft(state,{type:'preview'}).preview).toBeNull();
+});

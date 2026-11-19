@@ -33,7 +33,7 @@ export interface VisorPromptNative extends VisorNative {
   submitPrompt(options: { operationId: string }): Promise<{ text: string }>;
   discardPrompt(options: { operationId: string }): Promise<void>;
 }
-const plugin = registerPlugin<VisorPromptNative>('Visor');
+const plugin = registerPlugin<VisorPromptNative & VisorFeedbackNative>('Visor');
 export function nativePromptClient(): VisorPromptNative {
   if (!Capacitor.isNativePlatform()) throw new Error('Open Visor in the mobile app.');
   return plugin;
@@ -49,4 +49,20 @@ export function checkedState(value: State): State {
     throw new Error('Connection status is unavailable.');
   }
   return { enrolled: value.enrolled, revoked: value.revoked, canConnect: value.canConnect, connection: value.connection };
+}
+
+export interface FeedbackPreview { operationId: string; kind: 'bug' | 'idea'; title: string; description: string }
+export interface VisorFeedbackNative {
+  feedbackStatus(): Promise<{ configured: boolean }>;
+  feedbackStart(options: { optedIn: true }): Promise<{ sessionId: string }>;
+  feedbackCancel(options: { sessionId: string }): Promise<void>;
+  feedbackConsent(options: { sessionId: string }): Promise<{ enabled: boolean }>;
+  feedbackSetConsent(options: { sessionId: string; enabled: boolean }): Promise<void>;
+  feedbackPrepare(options: { sessionId: string; kind: 'bug' | 'idea'; title: string; description: string }): Promise<FeedbackPreview>;
+  feedbackSubmit(options: { sessionId: string; operationId: string }): Promise<{ submitted: boolean; retryable: boolean }>;
+}
+const feedbackPlugin = plugin;
+export function nativeFeedbackClient(): VisorFeedbackNative {
+  if (!Capacitor.isNativePlatform()) throw new Error('Open Visor in the mobile app.');
+  return feedbackPlugin;
 }

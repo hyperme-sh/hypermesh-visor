@@ -53,18 +53,20 @@ private final class PhoneNativeState {
     let owner: MobileOwnerSignIn
     let tunnel: PhoneTunnel
     let machine: MobileMachine
+    var feedback: MobileFeedbackClient?
     let workspaceId: String
     let workspaceName: String
-    init(issuer: String, auth: String, plane: String, workspace: String, name: String, conductor: String?, ca: String?) throws {
+    init(issuer: String, auth: String, plane: String, workspace: String, name: String, conductor: String?, ca: String?, feedbackOrigin: String?) throws {
         guard UUID(uuidString: workspace)?.uuidString.lowercased() == workspace,
               !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 128 else {
             throw PhoneFailure.unavailable
         }
-        binding = [issuer, auth, plane, workspace, name, conductor ?? "", ca ?? ""]
+        binding = [issuer, auth, plane, workspace, name, conductor ?? "", ca ?? "", feedbackOrigin ?? ""]
         workspaceId = workspace; workspaceName = name
         machine = try appleMachineIdentity(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", planeOrigin: plane)
         owner = try appleOwnerSignIn(service: "sh.hyperme.visor.mobile", ownerAccount: "device-owner-v1", issuer: issuer, authOrigin: auth)
         tunnel = PhoneTunnel(machine: machine, owner: owner, ca: ca)
+        if let origin = feedbackOrigin { feedback = try MobileFeedbackClient(machine: machine, intakeOrigin: origin) }
     }
 }
 
@@ -72,7 +74,7 @@ private final class PhoneNativeState {
 final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     let identifier = "VisorPlugin"
     let jsName = "Visor"
-    let pluginMethods: [CAPPluginMethod] = ["cancelPhone", "ownedSessions", "sendPrompt", "preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
+    let pluginMethods: [CAPPluginMethod] = ["feedbackStatus", "feedbackStart", "feedbackCancel", "feedbackConsent", "feedbackSetConsent", "feedbackPrepare", "feedbackSubmit", "cancelPhone", "ownedSessions", "sendPrompt", "preparePrompt", "submitPrompt", "discardPrompt", "status", "beginSignIn", "finishSignIn", "cancelSignIn", "enroll", "renew", "revoke", "connect", "disconnect"].map {
         CAPPluginMethod(name: $0, returnType: CAPPluginReturnPromise)!
     }
     private static var shared: PhoneNativeState?
@@ -88,11 +90,15 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
               let plane = config.getString("planeOrigin"), let workspace = config.getString("workspaceId"),
               let name = config.getString("workspaceName") else { return }
         let conductor = config.getString("conductorOrigin")
+        let feedbackOrigin = config.getBoolean("feedbackEnabled", false) ? config.getString("feedbackIntakeOrigin") : nil
+        if config.getBoolean("feedbackEnabled", false) && feedbackOrigin == nil { return }
         Self.stateLock.lock(); defer { Self.stateLock.unlock() }
         do {
-            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name, conductor: conductor, ca: config.getString("conductorCaPem")) }
-            guard Self.shared?.binding == [issuer, auth, plane, workspace, name, conductor ?? "", config.getString("conductorCaPem") ?? ""] else { return }
+            if Self.shared == nil { Self.shared = try PhoneNativeState(issuer: issuer, auth: auth, plane: plane, workspace: workspace, name: name, conductor: conductor, ca: config.getString("conductorCaPem"), feedbackOrigin: feedbackOrigin) }
+            guard Self.shared?.binding == [issuer, auth, plane, workspace, name, conductor ?? "", config.getString("conductorCaPem") ?? "", feedbackOrigin ?? ""] else { return }
             native = Self.shared
+            NotificationCenter.default.addObserver(self, selector: #selector(clearFeedback), name: UIApplication.didEnterBackgroundNotification, object: nil)
+
         } catch { /* Missing native storage/configuration never falls back to JS storage. */ }
     }
     private func run(_ call: CAPPluginCall, _ action: @escaping (PhoneNativeState) throws -> JSObject) {
@@ -123,6 +129,7 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
     @objc func beginSignIn(_ call: CAPPluginCall) {
+        clearFeedback()
         run(call) { state in
             state.tunnel.disconnect()
             let prompt = try state.owner.begin()
@@ -149,11 +156,13 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
     @objc func cancelSignIn(_ call: CAPPluginCall) {
+        clearFeedback()
         // Cancellation must bypass the worker while it polls the device grant.
         do { native?.tunnel.disconnect(); try native?.owner.cancel(); call.resolve() }
         catch { call.reject("Sign-in could not be cancelled.") }
     }
     @objc func enroll(_ call: CAPPluginCall) {
+        clearFeedback()
         let selected = call.getString("workspaceId")
         run(call) { state in
             guard selected == state.workspaceId else { throw PhoneFailure.unavailable }
@@ -169,11 +178,52 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
         run(call) { state in try state.machine.renew(); return try self.publicState(state) }
     }
     @objc func revoke(_ call: CAPPluginCall) {
+        clearFeedback()
         native?.tunnel.disconnect()
         run(call) { state in
             guard let current = try state.machine.status() else { throw PhoneFailure.unavailable }
             try state.owner.revokeMachine(machine: state.machine, tenantId: current.tenantId)
             return try self.publicState(state)
+        }
+    }
+    @objc private func clearFeedback() { native?.feedback?.cancelAll() }
+    @objc func feedbackStatus(_ call: CAPPluginCall) { call.resolve(["configured": native?.feedback != nil]) }
+    private func feedback(_ state: PhoneNativeState) throws -> MobileFeedbackClient {
+        guard let client = state.feedback else { throw PhoneFailure.unavailable }; return client
+    }
+    private func feedbackSession(_ call: CAPPluginCall) throws -> String {
+        guard let id = call.getString("sessionId") else { throw PhoneFailure.unavailable }; return id
+    }
+    @objc func feedbackStart(_ call: CAPPluginCall) {
+        do {
+            guard call.getBool("optedIn") == true, let state = native else { throw PhoneFailure.unavailable }
+            call.resolve(["sessionId": try feedback(state).start(localOptIn: true)])
+        } catch { call.reject("Feedback unavailable.") }
+    }
+    @objc func feedbackCancel(_ call: CAPPluginCall) {
+        do { native?.feedback?.cancel(sessionId: try feedbackSession(call)); call.resolve() }
+        catch { call.reject("Feedback unavailable.") }
+    }
+    @objc func feedbackConsent(_ call: CAPPluginCall) {
+        run(call) { state in ["enabled": try self.feedback(state).consent(sessionId: self.feedbackSession(call))] }
+    }
+    @objc func feedbackSetConsent(_ call: CAPPluginCall) {
+        run(call) { state in
+            guard let enabled = call.getBool("enabled") else { throw PhoneFailure.unavailable }
+            try self.feedback(state).setConsent(sessionId: self.feedbackSession(call), enabled: enabled); return [:]
+        }
+    }
+    @objc func feedbackPrepare(_ call: CAPPluginCall) {
+        run(call) { state in
+            guard let kind = call.getString("kind"), let title = call.getString("title"), let description = call.getString("description") else { throw PhoneFailure.unavailable }
+            let preview = try self.feedback(state).prepare(sessionId: self.feedbackSession(call), kind: kind, title: title, description: description)
+            return ["operationId": preview.operationId, "kind": preview.kind, "title": preview.title, "description": preview.description]
+        }
+    }
+    @objc func feedbackSubmit(_ call: CAPPluginCall) {
+        run(call) { state in
+            guard let op = call.getString("operationId") else { throw PhoneFailure.unavailable }
+            let sent = try self.feedback(state).submitReport(sessionId: self.feedbackSession(call), operationId: op); return ["submitted": sent.submitted, "retryable": sent.retryable]
         }
     }
     @objc func cancelPhone(_ call: CAPPluginCall) { native?.owner.cancelPhoneOperations(); call.resolve() }
@@ -223,5 +273,10 @@ final class VisorPlugin: CAPPlugin, CAPBridgedPlugin {
     }
     @objc func connect(_ call: CAPPluginCall) { run(call) { state in try state.tunnel.connect(); return try self.publicState(state) } }
     @objc func disconnect(_ call: CAPPluginCall) { native?.tunnel.disconnect(); run(call, publicState) }
-    deinit { native?.tunnel.disconnect(); try? native?.owner.cancel() }
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        native?.feedback?.cancelAll()
+        native?.tunnel.disconnect()
+        try? native?.owner.cancel()
+    }
 }
