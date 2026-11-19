@@ -33,11 +33,22 @@ jobs:
         with:
           targets: aarch64-unknown-linux-gnu
 
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+          cache: false
+
       - name: Install packagers
         timeout-minutes: 10
         run: |
+          # The hosted runner's regional mirror repeatedly stalled on cross-toolchain downloads.
+          sudo sed -i \
+            -e 's|mirror+file:/etc/apt/apt-mirrors.txt|https://archive.ubuntu.com/ubuntu|g' \
+            -e 's|http://security.ubuntu.com/ubuntu|https://security.ubuntu.com/ubuntu|g' \
+            /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y gcc-aarch64-linux-gnu rpm golang-go
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y gcc-aarch64-linux-gnu rpm
           curl -fsSL --connect-timeout 15 --max-time 120 --retry 3 --retry-all-errors -o /tmp/nfpm.tar.gz \
             https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz
           tar -C /tmp -xzf /tmp/nfpm.tar.gz nfpm
@@ -74,7 +85,7 @@ jobs:
   installed-x11:
     name: installed Debian X11 (${{ matrix.asset }})
     needs: packages
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -106,8 +117,8 @@ jobs:
           test "$(dpkg --print-architecture)" = "$QUALIFICATION_DEB_ARCH"
           test "$(dpkg-deb -f "dist/hypermesh-visor-${QUALIFICATION_ARCH}.deb" Architecture)" = "$QUALIFICATION_DEB_ARCH"
           (cd dist && sha256sum --check checksums.txt)
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y \
             "./dist/hypermesh-visor-${QUALIFICATION_ARCH}.deb" \
             xserver-xorg-core xserver-xorg-video-dummy \
             xserver-xorg-input-libinput xserver-xorg-input-evdev \
