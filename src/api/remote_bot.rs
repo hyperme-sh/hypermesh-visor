@@ -168,6 +168,7 @@ fn remote_forum_prompt(task: &Value) -> bool {
         return false;
     };
     task["capability"] == "prompt"
+        && delivery_id(task).is_some()
         && task["forum"]["kind"] == "remote-agent"
         && task["forum"]["id"]
             .as_str()
@@ -188,8 +189,15 @@ fn remote_forum_prompt(task: &Value) -> bool {
             })
 }
 
+fn delivery_id(task: &Value) -> Option<Uuid> {
+    Uuid::parse_str(task["delivery_id"].as_str()?)
+        .ok()
+        .filter(|id| !id.is_nil())
+}
+
 struct RemoteClaim {
     task: Uuid,
+    delivery: Uuid,
     consent: tasks::Consent,
 }
 
@@ -198,6 +206,7 @@ fn remote_delivered(status: &Value, claim: &RemoteClaim) -> bool {
         && status["tasks"].as_array().is_some_and(|tasks| {
             tasks.iter().any(|t| {
                 t["id"] == claim.task.to_string()
+                    && delivery_id(t) == Some(claim.delivery)
                     && task_binding(t, status, claim.consent.session)
                     && t["cancel_requested"] != true
             })
@@ -360,6 +369,7 @@ async fn poll(
                         .map_err(|_| "invalid remote-agent task ID")?;
                     remote = Some(RemoteClaim {
                         task: task_id,
+                        delivery: delivery_id(task).ok_or("invalid forum delivery ID")?,
                         consent: consent_word,
                     });
                 } else if task["capability"] == "desktop" {
@@ -385,7 +395,7 @@ async fn poll(
         }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(2)) => {},
-            _ = stop.wait_for(|v| *v) => {
+            _ = async { let _ = stop.wait_for(|v| *v).await; } => {
                 if remote.is_some() {
                     client.post("heartbeat", json!({"connection_id":client.connection,"local_consent":false})).await?;
                 }
@@ -449,6 +459,7 @@ mod tests {
     fn remote_forum_claim_is_a_digest_only_prompt() {
         let mut task = json!({
             "capability": "prompt",
+            "delivery_id": Uuid::new_v4(),
             "forum": {"kind": "remote-agent", "id": "fixture", "source_task_id": Uuid::new_v4()},
             "payload": {"version": 1, "request_sha256": "b".repeat(64)}
         });
