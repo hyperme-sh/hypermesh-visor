@@ -100,3 +100,16 @@ uncertain submission; recover its durable task state instead.
 The adapter remains responsible for current forum/tenant permissions and task
 reference access, and should cancel immediately when either is revoked. This
 local endpoint grants no forum membership or artifact access.
+
+## Remote-agent forum prompt claims
+
+An owner who has a Plane server with the forum intent contract may add
+`"forum_prompt": true` to the private bot configuration. Visor requests only
+digest-bound prompt deliveries in this mode, alongside its existing desktop
+capabilities. It keeps the claim under the same local consent epoch and
+published heartbeat. Loss of consent ends the claim, even if the local
+companion resumed between polls.
+
+The enrolled remote agent submits the exact owner-admitted bytes to
+Conductor. Visor does not receive those bytes or the remote credential.
+Conductor and Plane own the operation and its durable completion.
