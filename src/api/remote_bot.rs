@@ -557,6 +557,7 @@ mod tests {
             session_id: Uuid::nil(),
             mode: "interactive".into(),
             credential_file: PathBuf::from("/private/token"),
+            forum_prompt: false,
         };
         let mut updated = serde_json::to_value(&settings).unwrap();
         std::fs::write(&path, updated.to_string()).unwrap();
