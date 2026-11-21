@@ -15,6 +15,8 @@ struct Settings {
     credential_file: PathBuf,
     #[serde(default)]
     forum_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forum_reporter_socket: Option<PathBuf>,
 }
 
 pub(super) struct Client {
@@ -70,6 +72,10 @@ pub(super) fn configured() -> Result<Option<Arc<Client>>, String> {
     settings.origin = validate_origin(&settings.origin)?;
     if !matches!(settings.mode.as_str(), "interactive" | "container")
         || !settings.credential_file.is_absolute()
+        || settings
+            .forum_reporter_socket
+            .as_ref()
+            .is_some_and(|path| !cfg!(unix) || !path.is_absolute())
     {
         return Err("bot mode and absolute credential file are required".into());
     }
@@ -107,6 +113,7 @@ impl Client {
             || updated.mode != self.settings.mode
             || updated.credential_file != self.settings.credential_file
             || updated.forum_prompt != self.settings.forum_prompt
+            || updated.forum_reporter_socket != self.settings.forum_reporter_socket
         {
             return Err("bot identity configuration changed; restart required".into());
         }
@@ -232,6 +239,105 @@ fn may_claim(status: &Value, session: Uuid, consent: bool) -> bool {
         && status["assignment"]["session_id"].as_str() == Some(session.to_string().as_str())
 }
 
+fn forum_report(
+    status: &Value,
+    task: &Value,
+    session: Uuid,
+    connection: Uuid,
+    now: f64,
+) -> Option<(Uuid, Value)> {
+    let delivery = delivery_id(task)?;
+    if status["desired"] != "running"
+        || status["assignment"]["session_id"] != session.to_string()
+        || status["assignment"]["id"] != task["assignment_id"]
+        || task["session_id"] != session.to_string()
+        || task["connection_id"] != connection.to_string()
+        || task["cancel_requested"] == true
+        || !matches!(task["status"].as_str(), Some("completed" | "failed"))
+        || !matches!(
+            task["forum"]["kind"].as_str(),
+            Some("local" | "remote-agent")
+        )
+        || task["editor_deadline"]
+            .as_f64()
+            .is_none_or(|deadline| deadline <= now)
+    {
+        return None;
+    }
+    let forum = task["forum"]["id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256)?;
+    let principal = task["forum"]["principal"]
+        .as_str()
+        .filter(|key| key.len() == 87)?;
+    Some((
+        delivery,
+        json!({
+            "tenant": status["tenant_id"], "botId": status["bot_id"], "assignmentId": task["assignment_id"],
+            "sessionId": task["session_id"], "taskId": task["id"], "deliveryId": delivery,
+            "forumId": forum, "principal": principal, "status": task["status"],
+        }),
+    ))
+}
+
+#[cfg(unix)]
+async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("forum reporter directory unavailable"))?;
+    let directory = std::fs::symlink_metadata(parent)?;
+    let socket = std::fs::symlink_metadata(path)?;
+    let owner = unsafe { libc::geteuid() };
+    if !directory.is_dir()
+        || directory.uid() != owner
+        || directory.mode() & 0o077 != 0
+        || !socket.file_type().is_socket()
+        || socket.uid() != owner
+    {
+        return Err(std::io::Error::other(
+            "private forum reporter socket required",
+        ));
+    }
+    let mut stream = tokio::net::UnixStream::connect(path).await?;
+    let mut body = report.to_string();
+    body.push('\n');
+    stream.write_all(body.as_bytes()).await?;
+    let mut reply = [0u8; 3];
+    stream.read_exact(&mut reply).await?;
+    if &reply != b"ok\n" {
+        return Err(std::io::Error::other("forum reporter refused"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn send_forum_report(_path: &std::path::Path, _report: Value) -> std::io::Result<()> {
+    Err(std::io::Error::other("forum reporter socket unavailable"))
+}
+
+async fn report_while_consented(
+    path: &std::path::Path,
+    report: Value,
+    state: &AppState,
+    permit: tasks::Consent,
+) -> bool {
+    let request = tokio::time::timeout(Duration::from_secs(5), send_forum_report(path, report));
+    tokio::pin!(request);
+    let mut guard = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        if !permit.matches(&lock(&state.automation)) {
+            return false;
+        }
+        tokio::select! {
+            result = &mut request => return matches!(result, Ok(Ok(()))),
+            _ = guard.tick() => {},
+        }
+    }
+}
+
 pub(super) async fn run(
     client: Arc<Client>,
     state: Arc<AppState>,
@@ -253,6 +359,7 @@ async fn poll(
     let mut previous_session = client.settings.session_id;
     let mut active: Option<(String, String)> = None;
     let mut remote: Option<RemoteClaim> = None;
+    let mut reported = std::collections::HashSet::new();
     loop {
         if *stop.borrow() {
             return Ok(());
@@ -393,6 +500,25 @@ async fn poll(
                 }
             }
         }
+        if let (Some(path), Some(permit), Some(items)) = (
+            &client.settings.forum_reporter_socket,
+            consent_word,
+            status["tasks"].as_array(),
+        ) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "invalid system clock")?
+                .as_secs_f64();
+            let next = items
+                .iter()
+                .filter_map(|task| forum_report(&status, task, session, client.connection, now))
+                .find(|(delivery, _)| !reported.contains(delivery));
+            if let Some((delivery, report)) = next {
+                if consent && report_while_consented(path, report, &state, permit).await {
+                    reported.insert(delivery);
+                }
+            }
+        }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(2)) => {},
             _ = async { let _ = stop.wait_for(|v| *v).await; } => {
@@ -471,6 +597,24 @@ mod tests {
         assert!(!remote_forum_prompt(&task));
     }
     #[test]
+    fn forum_report_only_projects_terminal_status_from_current_delivery() {
+        let session = Uuid::new_v4();
+        let connection = Uuid::new_v4();
+        let assignment = Uuid::new_v4();
+        let status = json!({"desired":"running", "assignment":{"id":assignment,"session_id":session},
+            "tenant_id":Uuid::new_v4(),"bot_id":Uuid::new_v4()});
+        let mut task = json!({"id":Uuid::new_v4(),"assignment_id":assignment,"session_id":session,
+            "connection_id":connection,"delivery_id":Uuid::new_v4(),"status":"completed","editor_deadline":200,
+            "forum":{"id":"forum-fixture","principal":"a".repeat(87),"kind":"local"},"result":"private"});
+        let (_, projected) = forum_report(&status, &task, session, connection, 100.0).unwrap();
+        assert!(projected.get("result").is_none());
+        assert!(forum_report(&status, &task, session, connection, 200.0).is_none());
+        assert!(forum_report(&status, &task, session, Uuid::new_v4(), 100.0).is_none());
+        task["status"] = json!("queued");
+        assert!(forum_report(&status, &task, session, connection, 100.0).is_none());
+    }
+
+    #[test]
     fn private_configuration_refuses_symlinks_and_shared_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("visor-bot-private-{}", Uuid::new_v4()));
@@ -539,6 +683,7 @@ mod tests {
                     mode: "interactive".into(),
                     credential_file: PathBuf::new(),
                     forum_prompt: false,
+                    forum_reporter_socket: None,
                 },
                 credential: zeroize::Zeroizing::new(credential),
                 connection: Uuid::new_v4(),
@@ -569,6 +714,7 @@ mod tests {
             mode: "interactive".into(),
             credential_file: PathBuf::from("/private/token"),
             forum_prompt: false,
+            forum_reporter_socket: None,
         };
         let mut updated = serde_json::to_value(&settings).unwrap();
         std::fs::write(&path, updated.to_string()).unwrap();

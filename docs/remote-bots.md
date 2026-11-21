@@ -113,3 +113,10 @@ companion resumed between polls.
 The enrolled remote agent submits the exact owner-admitted bytes to
 Conductor. Visor does not receive those bytes or the remote credential.
 Conductor and Plane own the operation and its durable completion.
+
+Set `forum_reporter_socket` to the absolute Unix socket path of the local
+s3r.ch forum reporter. The socket and private parent directory must belong
+to the Visor user. Visor sends the delivery binding and terminal status
+only. It stops waiting as soon as the local consent epoch changes. The
+reporter owns the forum signing key and submits the signed status through
+delivery-bound admission.
