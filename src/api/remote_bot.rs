@@ -13,6 +13,10 @@ struct Settings {
     session_id: Uuid,
     mode: String,
     credential_file: PathBuf,
+    #[serde(default)]
+    forum_prompt: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    forum_reporter_socket: Option<PathBuf>,
 }
 
 pub(super) struct Client {
@@ -24,14 +28,13 @@ pub(super) struct Client {
 }
 
 fn private_file(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    let file = hypermesh_local_storage::open(path, hypermesh_local_storage::Open::Read { private: true })
-        .map_err(|_| "bot configuration cannot be opened")?;
+    let file =
+        hypermesh_local_storage::open(path, hypermesh_local_storage::Open::Read { private: true })
+            .map_err(|_| "bot configuration cannot be opened")?;
     let meta = file
         .metadata()
         .map_err(|_| "bot configuration cannot be inspected")?;
-    if !meta.is_file()
-        || meta.len() > 8192
-    {
+    if !meta.is_file() || meta.len() > 8192 {
         return Err("bot configuration must be an owner-only regular file under 8 KiB".into());
     }
     let mut data = Vec::new();
@@ -69,6 +72,10 @@ pub(super) fn configured() -> Result<Option<Arc<Client>>, String> {
     settings.origin = validate_origin(&settings.origin)?;
     if !matches!(settings.mode.as_str(), "interactive" | "container")
         || !settings.credential_file.is_absolute()
+        || settings
+            .forum_reporter_socket
+            .as_ref()
+            .is_some_and(|path| !cfg!(unix) || !path.is_absolute())
     {
         return Err("bot mode and absolute credential file are required".into());
     }
@@ -105,6 +112,8 @@ impl Client {
             || updated.bot_id != self.settings.bot_id
             || updated.mode != self.settings.mode
             || updated.credential_file != self.settings.credential_file
+            || updated.forum_prompt != self.settings.forum_prompt
+            || updated.forum_reporter_socket != self.settings.forum_reporter_socket
         {
             return Err("bot identity configuration changed; restart required".into());
         }
@@ -153,13 +162,62 @@ impl Client {
 }
 
 fn task_binding(task: &Value, bot: &Value, session: Uuid) -> bool {
-    task["capability"] == "desktop"
-        && task["session_id"].as_str() == Some(session.to_string().as_str())
+    task["session_id"].as_str() == Some(session.to_string().as_str())
         && bot["assignment"]["session_id"] == task["session_id"]
         && task["assignment_id"].is_string()
         && bot["assignment"]["id"] == task["assignment_id"]
         && task["status"] == "delivered"
         && Uuid::parse_str(task["id"].as_str().unwrap_or("")).is_ok()
+}
+
+fn remote_forum_prompt(task: &Value) -> bool {
+    let Some(payload) = task["payload"].as_object() else {
+        return false;
+    };
+    task["capability"] == "prompt"
+        && delivery_id(task).is_some()
+        && task["forum"]["kind"] == "remote-agent"
+        && task["forum"]["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty() && id.len() <= 256)
+        && task["forum"]["source_task_id"]
+            .as_str()
+            .and_then(|id| Uuid::parse_str(id).ok())
+            .is_some_and(|id| !id.is_nil())
+        && payload.len() == 2
+        && task["payload"]["version"] == 1
+        && task["payload"]["request_sha256"]
+            .as_str()
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
+}
+
+fn delivery_id(task: &Value) -> Option<Uuid> {
+    Uuid::parse_str(task["delivery_id"].as_str()?)
+        .ok()
+        .filter(|id| !id.is_nil())
+}
+
+struct RemoteClaim {
+    task: Uuid,
+    delivery: Uuid,
+    consent: tasks::Consent,
+}
+
+fn remote_delivered(status: &Value, claim: &RemoteClaim) -> bool {
+    status["desired"] == "running"
+        && status["tasks"].as_array().is_some_and(|tasks| {
+            tasks.iter().any(|t| {
+                t["id"] == claim.task.to_string()
+                    && delivery_id(t) == Some(claim.delivery)
+                    && task_binding(t, status, claim.consent.session)
+                    && t["cancel_requested"] != true
+            })
+        })
 }
 
 fn remaining(deadline: f64, now: f64) -> Result<Duration, String> {
@@ -179,6 +237,105 @@ fn may_claim(status: &Value, session: Uuid, consent: bool) -> bool {
         && !session.is_nil()
         && status["desired"] == "running"
         && status["assignment"]["session_id"].as_str() == Some(session.to_string().as_str())
+}
+
+fn forum_report(
+    status: &Value,
+    task: &Value,
+    session: Uuid,
+    connection: Uuid,
+    now: f64,
+) -> Option<(Uuid, Value)> {
+    let delivery = delivery_id(task)?;
+    if status["desired"] != "running"
+        || status["assignment"]["session_id"] != session.to_string()
+        || status["assignment"]["id"] != task["assignment_id"]
+        || task["session_id"] != session.to_string()
+        || task["connection_id"] != connection.to_string()
+        || task["cancel_requested"] == true
+        || !matches!(task["status"].as_str(), Some("completed" | "failed"))
+        || !matches!(
+            task["forum"]["kind"].as_str(),
+            Some("local" | "remote-agent")
+        )
+        || task["editor_deadline"]
+            .as_f64()
+            .is_none_or(|deadline| deadline <= now)
+    {
+        return None;
+    }
+    let forum = task["forum"]["id"]
+        .as_str()
+        .filter(|id| !id.is_empty() && id.len() <= 256)?;
+    let principal = task["forum"]["principal"]
+        .as_str()
+        .filter(|key| key.len() == 87)?;
+    Some((
+        delivery,
+        json!({
+            "tenant": status["tenant_id"], "botId": status["bot_id"], "assignmentId": task["assignment_id"],
+            "sessionId": task["session_id"], "taskId": task["id"], "deliveryId": delivery,
+            "forumId": forum, "principal": principal, "status": task["status"],
+        }),
+    ))
+}
+
+#[cfg(unix)]
+async fn send_forum_report(path: &std::path::Path, report: Value) -> std::io::Result<()> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("forum reporter directory unavailable"))?;
+    let directory = std::fs::symlink_metadata(parent)?;
+    let socket = std::fs::symlink_metadata(path)?;
+    let owner = unsafe { libc::geteuid() };
+    if !directory.is_dir()
+        || directory.uid() != owner
+        || directory.mode() & 0o077 != 0
+        || !socket.file_type().is_socket()
+        || socket.uid() != owner
+    {
+        return Err(std::io::Error::other(
+            "private forum reporter socket required",
+        ));
+    }
+    let mut stream = tokio::net::UnixStream::connect(path).await?;
+    let mut body = report.to_string();
+    body.push('\n');
+    stream.write_all(body.as_bytes()).await?;
+    let mut reply = [0u8; 3];
+    stream.read_exact(&mut reply).await?;
+    if &reply != b"ok\n" {
+        return Err(std::io::Error::other("forum reporter refused"));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn send_forum_report(_path: &std::path::Path, _report: Value) -> std::io::Result<()> {
+    Err(std::io::Error::other("forum reporter socket unavailable"))
+}
+
+async fn report_while_consented(
+    path: &std::path::Path,
+    report: Value,
+    state: &AppState,
+    permit: tasks::Consent,
+) -> bool {
+    let request = tokio::time::timeout(Duration::from_secs(5), send_forum_report(path, report));
+    tokio::pin!(request);
+    let mut guard = tokio::time::interval(Duration::from_millis(100));
+    loop {
+        if !permit.matches(&lock(&state.automation)) {
+            return false;
+        }
+        tokio::select! {
+            result = &mut request => return matches!(result, Ok(Ok(()))),
+            _ = guard.tick() => {},
+        }
+    }
 }
 
 pub(super) async fn run(
@@ -201,17 +358,36 @@ async fn poll(
 ) -> Result<(), String> {
     let mut previous_session = client.settings.session_id;
     let mut active: Option<(String, String)> = None;
+    let mut remote: Option<RemoteClaim> = None;
+    let mut reported = std::collections::HashSet::new();
     loop {
         if *stop.borrow() {
             return Ok(());
         }
         let session = client.bound_session()?;
-        if active.is_some() && session != previous_session {
+        if (active.is_some() || remote.is_some()) && session != previous_session {
+            if remote.is_some() {
+                client
+                    .post(
+                        "heartbeat",
+                        json!({"connection_id":client.connection,"local_consent":false}),
+                    )
+                    .await?;
+            }
             return Err("bot session changed during active work".into());
         }
         previous_session = session;
-        let consent =
-            state.has_session(session) && { let gate = lock(&state.automation); gate.phase() == Phase::Running && gate.session() == Some(session) };
+        let has_session = state.has_session(session);
+        let consent_word = {
+            let gate = lock(&state.automation);
+            (has_session && gate.phase() == Phase::Running && gate.session() == Some(session))
+                .then(|| tasks::Consent::capture(&gate, session))
+        };
+        // A local pause/resume between polls must not renew the prior delivery.
+        let consent = consent_word.is_some()
+            && remote
+                .as_ref()
+                .is_none_or(|claim| claim.consent.matches(&lock(&state.automation)));
         let status = client
             .post(
                 "heartbeat",
@@ -221,7 +397,14 @@ async fn poll(
         if !client.status_matches(&status) {
             return Err("bot registration binding differs".into());
         }
-        if let Some((cloud_id, local_id)) = &active {
+        if let Some(claim) = &remote {
+            if !consent || !remote_delivered(&status, claim) {
+                if status["desired"] != "running" {
+                    lock(&state.automation).pause();
+                }
+                remote = None;
+            }
+        } else if let Some((cloud_id, local_id)) = &active {
             let cancelled = status["tasks"]
                 .as_array()
                 .and_then(|items| items.iter().find(|t| t["id"] == *cloud_id))
@@ -253,9 +436,11 @@ async fn poll(
                 active = None;
             }
         } else if may_claim(&status, session, consent) {
-            let reply = client
-                .post("claim", json!({"connection_id":client.connection}))
-                .await?;
+            let mut claim_request = json!({"connection_id":client.connection});
+            if client.settings.forum_prompt {
+                claim_request["forum_prompt"] = json!(true);
+            }
+            let reply = client.post("claim", claim_request).await?;
             if !client.status_matches(&reply["bot"]) {
                 return Err("bot claim binding differs".into());
             }
@@ -276,33 +461,72 @@ async fn poll(
                         .ok_or("missing bot deadline")?,
                     now,
                 )?;
-                let consent_word = {
-                    let gate = lock(&state.automation);
-                    if gate.phase() != Phase::Running || gate.session() != Some(session) {
-                        return Err("local bot consent changed".into());
-                    }
-                    tasks::Consent::capture(&gate, session)
-                };
-                let body = serde_json::from_value(task["payload"].clone())
-                    .map_err(|_| "invalid bot task payload")?;
-                let (_, Json(local)) = tasks::submit_bounded(
-                    Arc::clone(&state),
-                    session.to_string(),
-                    body,
-                    deadline,
-                    Some(consent_word),
-                )
-                .await
-                .map_err(|_| "bot task refused locally")?;
-                active = Some((
-                    task["id"].as_str().unwrap().into(),
-                    local["id"].as_str().ok_or("missing local task ID")?.into(),
-                ));
+                let consent_word = consent_word.ok_or("local bot consent unavailable")?;
+                if !consent_word.matches(&lock(&state.automation)) {
+                    client
+                        .post(
+                            "heartbeat",
+                            json!({"connection_id":client.connection,"local_consent":false}),
+                        )
+                        .await?;
+                    return Err("local bot consent changed".into());
+                }
+                if client.settings.forum_prompt && remote_forum_prompt(task) {
+                    let task_id = serde_json::from_value(task["id"].clone())
+                        .map_err(|_| "invalid remote-agent task ID")?;
+                    remote = Some(RemoteClaim {
+                        task: task_id,
+                        delivery: delivery_id(task).ok_or("invalid forum delivery ID")?,
+                        consent: consent_word,
+                    });
+                } else if task["capability"] == "desktop" {
+                    let body = serde_json::from_value(task["payload"].clone())
+                        .map_err(|_| "invalid bot task payload")?;
+                    let (_, Json(local)) = tasks::submit_bounded(
+                        Arc::clone(&state),
+                        session.to_string(),
+                        body,
+                        deadline,
+                        Some(consent_word),
+                    )
+                    .await
+                    .map_err(|_| "bot task refused locally")?;
+                    active = Some((
+                        task["id"].as_str().unwrap().into(),
+                        local["id"].as_str().ok_or("missing local task ID")?.into(),
+                    ));
+                } else {
+                    return Err("bot task capability or delivery differs".into());
+                }
+            }
+        }
+        if let (Some(path), Some(permit), Some(items)) = (
+            &client.settings.forum_reporter_socket,
+            consent_word,
+            status["tasks"].as_array(),
+        ) {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "invalid system clock")?
+                .as_secs_f64();
+            let next = items
+                .iter()
+                .filter_map(|task| forum_report(&status, task, session, client.connection, now))
+                .find(|(delivery, _)| !reported.contains(delivery));
+            if let Some((delivery, report)) = next {
+                if consent && report_while_consented(path, report, &state, permit).await {
+                    reported.insert(delivery);
+                }
             }
         }
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(2)) => {},
-            _ = stop.wait_for(|v| *v) => return Ok(()),
+            _ = async { let _ = stop.wait_for(|v| *v).await; } => {
+                if remote.is_some() {
+                    client.post("heartbeat", json!({"connection_id":client.connection,"local_consent":false})).await?;
+                }
+                return Ok(());
+            }
         }
     }
 }
@@ -357,6 +581,39 @@ mod tests {
         task["assignment_id"] = json!(Uuid::new_v4());
         assert!(!task_binding(&task, &bot, session));
     }
+    #[test]
+    fn remote_forum_claim_is_a_digest_only_prompt() {
+        let mut task = json!({
+            "capability": "prompt",
+            "delivery_id": Uuid::new_v4(),
+            "forum": {"kind": "remote-agent", "id": "fixture", "source_task_id": Uuid::new_v4()},
+            "payload": {"version": 1, "request_sha256": "b".repeat(64)}
+        });
+        assert!(remote_forum_prompt(&task));
+        task["payload"]["steps"] = json!([]);
+        assert!(!remote_forum_prompt(&task));
+        task["payload"].as_object_mut().unwrap().remove("steps");
+        task["forum"]["kind"] = json!("local");
+        assert!(!remote_forum_prompt(&task));
+    }
+    #[test]
+    fn forum_report_only_projects_terminal_status_from_current_delivery() {
+        let session = Uuid::new_v4();
+        let connection = Uuid::new_v4();
+        let assignment = Uuid::new_v4();
+        let status = json!({"desired":"running", "assignment":{"id":assignment,"session_id":session},
+            "tenant_id":Uuid::new_v4(),"bot_id":Uuid::new_v4()});
+        let mut task = json!({"id":Uuid::new_v4(),"assignment_id":assignment,"session_id":session,
+            "connection_id":connection,"delivery_id":Uuid::new_v4(),"status":"completed","editor_deadline":200,
+            "forum":{"id":"forum-fixture","principal":"a".repeat(87),"kind":"local"},"result":"private"});
+        let (_, projected) = forum_report(&status, &task, session, connection, 100.0).unwrap();
+        assert!(projected.get("result").is_none());
+        assert!(forum_report(&status, &task, session, connection, 200.0).is_none());
+        assert!(forum_report(&status, &task, session, Uuid::new_v4(), 100.0).is_none());
+        task["status"] = json!("queued");
+        assert!(forum_report(&status, &task, session, connection, 100.0).is_none());
+    }
+
     #[test]
     fn private_configuration_refuses_symlinks_and_shared_permissions() {
         use std::os::unix::fs::PermissionsExt;
@@ -425,6 +682,8 @@ mod tests {
                     session_id: Uuid::new_v4(),
                     mode: "interactive".into(),
                     credential_file: PathBuf::new(),
+                    forum_prompt: false,
+                    forum_reporter_socket: None,
                 },
                 credential: zeroize::Zeroizing::new(credential),
                 connection: Uuid::new_v4(),
@@ -454,6 +713,8 @@ mod tests {
             session_id: Uuid::nil(),
             mode: "interactive".into(),
             credential_file: PathBuf::from("/private/token"),
+            forum_prompt: false,
+            forum_reporter_socket: None,
         };
         let mut updated = serde_json::to_value(&settings).unwrap();
         std::fs::write(&path, updated.to_string()).unwrap();
